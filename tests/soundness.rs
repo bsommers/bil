@@ -132,4 +132,79 @@ fn test_p0_6_ir_lowering_and_vm_do_not_invoke_smt_solver() {
     }
 }
 
+#[test]
+fn test_p0_3_euclidean_div_mod_and_checked_overflow_parity() {
+    let src = r#"
+        proof euclid_mod()
+          requires true
+          ensures  (-7) % 2 == 1 && (-7) / 2 == -4
+        {
+          true
+        }
+
+        fn neg_mod(x: Int) -> Int
+          requires x == -7
+          ensures  result == 1
+        =
+          x % 2
+
+        fn neg_div(x: Int) -> Int
+          requires x == -7
+          ensures  result == -4
+        =
+          x / 2
+
+        let r_mod = neg_mod(-7)
+        let r_div = neg_div(-7)
+        assert r_mod == 1
+        assert r_div == -4
+    "#;
+
+    // 1. Formal verification (bounded + SMT) agrees on Euclidean div/mod
+    let obs = verify_source(src).expect("verify euclid div/mod");
+    for ob in &obs {
+        assert!(ob.verified, "obligation failed: {:?}", ob);
+    }
+
+    // 2. AST Interpreter produces r_mod = 1, r_div = -4
+    let (interp_out, _) = bil::run_source(src, 42, false).expect("interp euclid div/mod");
+    assert_eq!(interp_out[0], ("r_mod".into(), bil::eval::Value::Int(1)));
+    assert_eq!(interp_out[1], ("r_div".into(), bil::eval::Value::Int(-4)));
+
+    // 3. Bytecode VM produces identical results
+    let (vm_out, _) = bil::run_vm_source(src, 42).expect("vm euclid div/mod");
+    assert_eq!(interp_out, vm_out);
+
+    // 4. Native AOT binary produces identical results
+    let out_bin = std::env::temp_dir().join("bil_test_p0_3_euclid_aot");
+    bil::build_native_source(src, &out_bin).expect("build native euclid div/mod");
+    let out = std::process::Command::new(&out_bin)
+        .output()
+        .expect("run native euclid binary");
+    let _ = std::fs::remove_file(&out_bin);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("r_mod = 1"), "stdout: {}", stdout);
+    assert!(stdout.contains("r_div = -4"), "stdout: {}", stdout);
+
+    // 5. Checked i64 overflow returns clean error instead of panicking or wrapping
+    let overflow_src = r#"
+        let max_int = 9223372036854775807
+        let boom = max_int + 1
+    "#;
+    let interp_err = bil::run_source(overflow_src, 42, false).unwrap_err();
+    assert!(
+        interp_err.to_lowercase().contains("overflow"),
+        "expected overflow error from interpreter, got: {}",
+        interp_err
+    );
+    let vm_err = bil::run_vm_source(overflow_src, 42).unwrap_err();
+    assert!(
+        vm_err.to_lowercase().contains("overflow"),
+        "expected overflow error from VM, got: {}",
+        vm_err
+    );
+}
+
+
 

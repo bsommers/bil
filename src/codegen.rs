@@ -135,7 +135,7 @@ impl fmt::Display for BilVal {{
     );
     let _ = writeln!(
         out,
-        "        \"abs\" => match &args[0] {{ BilVal::Int(a) => BilVal::Int(a.abs()), _ => panic!(\"abs\") }},"
+        "        \"abs\" => match &args[0] {{ BilVal::Int(a) => BilVal::Int(a.checked_abs().expect(\"Integer abs overflow\")), _ => panic!(\"abs\") }},"
     );
     let _ = writeln!(
         out,
@@ -143,7 +143,7 @@ impl fmt::Display for BilVal {{
     );
     let _ = writeln!(
         out,
-        "        \"sum\" => match &args[0] {{ BilVal::List(l) => BilVal::Int(l.iter().filter_map(|x| if let BilVal::Int(v) = x {{ Some(*v) }} else {{ None }}).sum()), _ => panic!(\"sum\") }},"
+        "        \"sum\" => match &args[0] {{ BilVal::List(l) => BilVal::Int(l.iter().filter_map(|x| if let BilVal::Int(v) = x {{ Some(*v) }} else {{ None }}).fold(0i64, |acc, v| acc.checked_add(v).expect(\"Integer addition overflow\"))), _ => panic!(\"sum\") }},"
     );
     for func in &lir.functions {
         let _ = writeln!(
@@ -186,11 +186,11 @@ impl fmt::Display for BilVal {{
         "in" => match (l, r) {{ (elem, BilVal::List(list)) => BilVal::Bool(list.contains(&elem)), _ => panic!("in") }},
         ".." => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::List(Rc::new((a..b).map(BilVal::Int).collect())), _ => panic!("..") }},
         "..=" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::List(Rc::new((a..=b).map(BilVal::Int).collect())), _ => panic!("..=") }},
-        "+" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a + b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a + b), (BilVal::Str(a), BilVal::Str(b)) => BilVal::Str(format!("{{}}{{}}", a, b)), _ => panic!("+") }},
-        "-" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a - b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a - b), _ => panic!("-") }},
-        "*" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a * b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a * b), _ => panic!("*") }},
-        "/" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a / b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a / b), _ => panic!("/") }},
-        "%" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a % b), _ => panic!("%") }},
+        "+" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_add(b).expect("Integer addition overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a + b), (BilVal::Str(a), BilVal::Str(b)) => BilVal::Str(format!("{{}}{{}}", a, b)), _ => panic!("+") }},
+        "-" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_sub(b).expect("Integer subtraction overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a - b), _ => panic!("-") }},
+        "*" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_mul(b).expect("Integer multiplication overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a * b), _ => panic!("*") }},
+        "/" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_div_euclid(b).expect("Division by zero or overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a / b), _ => panic!("/") }},
+        "%" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_rem_euclid(b).expect("Modulo by zero or overflow")), _ => panic!("%") }},
         _ => panic!("unknown op {{}}", op),
     }}
 }}
@@ -266,16 +266,19 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
         LirExpr::Bool(b) => Some(format!("{}", b)),
         LirExpr::Var(v) => Some(v.clone()),
         LirExpr::Unary(UnaryOp::Not, inner) => Some(format!("!({})", try_emit_direct_expr(inner)?)),
-        LirExpr::Unary(UnaryOp::Neg, inner) => Some(format!("-({})", try_emit_direct_expr(inner)?)),
+        LirExpr::Unary(UnaryOp::Neg, inner) => Some(format!(
+            "({}).checked_neg().expect(\"Integer negation overflow\")",
+            try_emit_direct_expr(inner)?
+        )),
         LirExpr::Binary(op, l, r) => {
             let ls = try_emit_direct_expr(l)?;
             let rs = try_emit_direct_expr(r)?;
             let op_s = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Mod => "%",
+                BinOp::Add => return Some(format!("({}).checked_add({}).expect(\"Integer addition overflow\")", ls, rs)),
+                BinOp::Sub => return Some(format!("({}).checked_sub({}).expect(\"Integer subtraction overflow\")", ls, rs)),
+                BinOp::Mul => return Some(format!("({}).checked_mul({}).expect(\"Integer multiplication overflow\")", ls, rs)),
+                BinOp::Div => return Some(format!("({}).checked_div_euclid({}).expect(\"Division by zero or overflow\")", ls, rs)),
+                BinOp::Mod => return Some(format!("({}).checked_rem_euclid({}).expect(\"Modulo by zero or overflow\")", ls, rs)),
                 BinOp::Eq => "==",
                 BinOp::Neq => "!=",
                 BinOp::Lt => "<",
@@ -369,7 +372,7 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
             emit_lir_val_expr(inner, indent)
         ),
         LirExpr::Unary(UnaryOp::Neg, inner) => format!(
-            "match {} {{ BilVal::Int(i) => BilVal::Int(-i), BilVal::Float(f) => BilVal::Float(-f), _ => panic!(\"-\") }}",
+            "match {} {{ BilVal::Int(i) => BilVal::Int(i.checked_neg().expect(\"Integer negation overflow\")), BilVal::Float(f) => BilVal::Float(-f), _ => panic!(\"-\") }}",
             emit_lir_val_expr(inner, indent)
         ),
         LirExpr::Binary(op, l, r) => format!(

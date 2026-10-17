@@ -6,6 +6,7 @@ pub mod lexer;
 pub mod model_check;
 pub mod ontology;
 pub mod parser;
+pub mod semantics;
 pub mod smt;
 pub mod types;
 pub mod verus;

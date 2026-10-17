@@ -442,7 +442,7 @@ impl BytecodeVm {
                     let v = stack.pop().ok_or("VM stack underflow on Unary")?;
                     let res = match (uop, v) {
                         (UnaryOp::Not, Value::Bool(b)) => Value::Bool(!b),
-                        (UnaryOp::Neg, Value::Int(i)) => Value::Int(-i),
+                        (UnaryOp::Neg, Value::Int(i)) => Value::Int(crate::semantics::int_neg(i)?),
                         (UnaryOp::Neg, Value::Float(f)) => Value::Float(-f),
                         _ => return Err("VM invalid unary operand".into()),
                     };
@@ -682,7 +682,7 @@ impl BytecodeVm {
                 _ => return Err("max expects Int".into()),
             },
             "abs" if args.len() == 1 => match &args[0] {
-                Value::Int(a) => return Ok(Value::Int(a.abs())),
+                Value::Int(a) => return Ok(Value::Int(crate::semantics::int_abs(*a)?)),
                 _ => return Err("abs expects Int".into()),
             },
             "count" if args.len() == 1 => match &args[0] {
@@ -694,7 +694,7 @@ impl BytecodeVm {
                     let mut s = 0i64;
                     for it in l.iter() {
                         if let Value::Int(v) = it {
-                            s += v;
+                            s = crate::semantics::int_add(s, *v)?;
                         }
                     }
                     return Ok(Value::Int(s));
@@ -741,7 +741,7 @@ impl BytecodeVm {
                     let mut s = 0i64;
                     for it in l.iter() {
                         if let Value::Int(v) = it {
-                            s += v;
+                            s = crate::semantics::int_add(s, *v)?;
                         }
                     }
                     Ok(Value::Int(s))
@@ -926,40 +926,28 @@ fn eval_vm_binop(op: BinOp, l: Value, r: Value) -> Result<Value, String> {
             _ => Err("..= expects Int".into()),
         },
         BinOp::Add => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_add(a, b)?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
             _ => Err("+ expects matching numeric or String".into()),
         },
         BinOp::Sub => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_sub(a, b)?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             _ => Err("- expects numeric".into()),
         },
         BinOp::Mul => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_mul(a, b)?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
             _ => Err("* expects numeric".into()),
         },
         BinOp::Div => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => {
-                if b == 0 {
-                    Err("Division by zero".into())
-                } else {
-                    Ok(Value::Int(a / b))
-                }
-            }
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_div(a, b)?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             _ => Err("/ expects numeric".into()),
         },
         BinOp::Mod => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => {
-                if b == 0 {
-                    Err("Modulo by zero".into())
-                } else {
-                    Ok(Value::Int(a % b))
-                }
-            }
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_mod(a, b)?)),
             _ => Err("% expects Int".into()),
         },
         BinOp::Pipe => Err("Raw Pipe in VM binary op".into()),

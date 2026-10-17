@@ -253,7 +253,9 @@ impl Interpreter {
                 let v = self.eval_expr(inner, env)?;
                 match (op, v) {
                     (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-                    (UnaryOp::Neg, Value::Int(i)) => Ok(Value::Int(-i)),
+                    (UnaryOp::Neg, Value::Int(i)) => crate::semantics::int_neg(i)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
                     (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
                     (_, other) => Err(RuntimeError {
                         message: format!("Invalid unary operation on {}", other),
@@ -312,27 +314,21 @@ impl Interpreter {
                         let items: Vec<Value> = (a..=b).map(Value::Int).collect();
                         Ok(Value::List(Rc::new(items)))
                     }
-                    (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-                    (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-                    (BinOp::Mul, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-                    (BinOp::Div, Value::Int(a), Value::Int(b)) => {
-                        if b == 0 {
-                            Err(RuntimeError {
-                                message: "Division by zero".into(),
-                            })
-                        } else {
-                            Ok(Value::Int(a / b))
-                        }
-                    }
-                    (BinOp::Mod, Value::Int(a), Value::Int(b)) => {
-                        if b == 0 {
-                            Err(RuntimeError {
-                                message: "Modulo by zero".into(),
-                            })
-                        } else {
-                            Ok(Value::Int(a % b))
-                        }
-                    }
+                    (BinOp::Add, Value::Int(a), Value::Int(b)) => crate::semantics::int_add(a, b)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
+                    (BinOp::Sub, Value::Int(a), Value::Int(b)) => crate::semantics::int_sub(a, b)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
+                    (BinOp::Mul, Value::Int(a), Value::Int(b)) => crate::semantics::int_mul(a, b)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
+                    (BinOp::Div, Value::Int(a), Value::Int(b)) => crate::semantics::int_div(a, b)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
+                    (BinOp::Mod, Value::Int(a), Value::Int(b)) => crate::semantics::int_mod(a, b)
+                        .map(Value::Int)
+                        .map_err(|message| RuntimeError { message }),
                     (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
                     (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
                     (BinOp::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
@@ -704,7 +700,9 @@ impl Interpreter {
                 }),
             },
             "abs" if args.len() == 1 => match &args[0] {
-                Value::Int(a) => Ok(Value::Int(a.abs())),
+                Value::Int(a) => crate::semantics::int_abs(*a)
+                    .map(Value::Int)
+                    .map_err(|message| RuntimeError { message }),
                 _ => Err(RuntimeError {
                     message: "abs expects an Int".into(),
                 }),
@@ -720,7 +718,8 @@ impl Interpreter {
                     let mut total = 0i64;
                     for item in items.iter() {
                         if let Value::Int(v) = item {
-                            total += v;
+                            total = crate::semantics::int_add(total, *v)
+                                .map_err(|message| RuntimeError { message })?;
                         }
                     }
                     Ok(Value::Int(total))
