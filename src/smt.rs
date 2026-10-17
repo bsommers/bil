@@ -630,31 +630,14 @@ pub fn expr_to_smt(
 
             None
         }
-        Expr::Call { func, args } => match func.as_str() {
-            "abs" if args.len() == 1 => {
-                let a = expr_to_smt(&args[0], ontology, entity_var)?;
-                Some(format!("(abs {})", a))
+        Expr::Call { func, args } => {
+            let b = crate::builtins::BuiltinFn::from_name(func)?;
+            let mut smt_args = Vec::with_capacity(args.len());
+            for a in args {
+                smt_args.push(expr_to_smt(a, ontology, entity_var)?);
             }
-            "min" if args.len() == 2 => {
-                let a = expr_to_smt(&args[0], ontology, entity_var)?;
-                let b = expr_to_smt(&args[1], ontology, entity_var)?;
-                Some(format!("(ite (<= {} {}) {} {})", a, b, a, b))
-            }
-            "max" if args.len() == 2 => {
-                let a = expr_to_smt(&args[0], ontology, entity_var)?;
-                let b = expr_to_smt(&args[1], ontology, entity_var)?;
-                Some(format!("(ite (>= {} {}) {} {})", a, b, a, b))
-            }
-            "is_a" if args.len() == 2 => {
-                let x = expr_to_smt(&args[0], ontology, entity_var)?;
-                if let Expr::Str(cname) = &args[1] {
-                    Some(format!("(is_{} {})", sanitize_smt_ident(cname), x))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        },
+            b.to_smt(&smt_args, args)
+        }
         Expr::LetIn { name, value, body } => {
             let v = expr_to_smt(value, ontology, entity_var)?;
             let b = expr_to_smt(body, ontology, entity_var)?;

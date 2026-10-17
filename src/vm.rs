@@ -667,36 +667,8 @@ impl BytecodeVm {
     }
 
     fn exec_call(&mut self, func: &str, args: Vec<Value>) -> Result<Value, String> {
-        match func {
-            "min" if args.len() == 2 => match (&args[0], &args[1]) {
-                (Value::Int(a), Value::Int(b)) => return Ok(Value::Int(*a.min(b))),
-                _ => return Err("min expects Int".into()),
-            },
-            "max" if args.len() == 2 => match (&args[0], &args[1]) {
-                (Value::Int(a), Value::Int(b)) => return Ok(Value::Int(*a.max(b))),
-                _ => return Err("max expects Int".into()),
-            },
-            "abs" if args.len() == 1 => match &args[0] {
-                Value::Int(a) => return Ok(Value::Int(crate::semantics::int_abs(*a)?)),
-                _ => return Err("abs expects Int".into()),
-            },
-            "count" if args.len() == 1 => match &args[0] {
-                Value::List(l) => return Ok(Value::Int(l.len() as i64)),
-                _ => return Err("count expects List".into()),
-            },
-            "sum" if args.len() == 1 => match &args[0] {
-                Value::List(l) => {
-                    let mut s = 0i64;
-                    for it in l.iter() {
-                        if let Value::Int(v) = it {
-                            s = crate::semantics::int_add(s, *v)?;
-                        }
-                    }
-                    return Ok(Value::Int(s));
-                }
-                _ => return Err("sum expects List<Int>".into()),
-            },
-            _ => {}
+        if let Some(builtin) = crate::builtins::BuiltinFn::from_name(func) {
+            return builtin.eval(&args, &self.ontology);
         }
 
         if self.prog.adt_variants.contains_key(func) {

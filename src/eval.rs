@@ -634,137 +634,92 @@ impl Interpreter {
         func: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        match func {
-            "min" if args.len() == 2 => match (&args[0], &args[1]) {
-                (Value::Int(a), Value::Int(b)) => Ok(Value::Int((*a).min(*b))),
-                _ => Err(RuntimeError {
-                    message: "min expects two Ints".into(),
-                }),
-            },
-            "max" if args.len() == 2 => match (&args[0], &args[1]) {
-                (Value::Int(a), Value::Int(b)) => Ok(Value::Int((*a).max(*b))),
-                _ => Err(RuntimeError {
-                    message: "max expects two Ints".into(),
-                }),
-            },
-            "abs" if args.len() == 1 => match &args[0] {
-                Value::Int(a) => crate::semantics::int_abs(*a)
-                    .map(Value::Int)
-                    .map_err(|message| RuntimeError { message }),
-                _ => Err(RuntimeError {
-                    message: "abs expects an Int".into(),
-                }),
-            },
-            "count" if args.len() == 1 => match &args[0] {
-                Value::List(items) => Ok(Value::Int(items.len() as i64)),
-                _ => Err(RuntimeError {
-                    message: "count expects a List".into(),
-                }),
-            },
-            "sum" if args.len() == 1 => match &args[0] {
-                Value::List(items) => {
-                    let mut total = 0i64;
-                    for item in items.iter() {
-                        if let Value::Int(v) = item {
-                            total = crate::semantics::int_add(total, *v)
-                                .map_err(|message| RuntimeError { message })?;
-                        }
-                    }
-                    Ok(Value::Int(total))
-                }
-                _ => Err(RuntimeError {
-                    message: "sum expects List<Int>".into(),
-                }),
-            },
-            "is_a" if args.len() == 2 => match (&args[0], &args[1]) {
-                (Value::ConceptInstance { concept, .. }, Value::Str(target)) => {
-                    Ok(Value::Bool(self.ontology.is_subconcept(concept, target)))
-                }
-                _ => Ok(Value::Bool(false)),
-            },
-            _ => {
-                if self.adt_variants.contains_key(func) {
-                    return Ok(Value::AdtVariant {
-                        variant: func.to_string(),
-                        fields: args,
-                    });
-                }
+        if let Some(builtin) = crate::builtins::BuiltinFn::from_name(func) {
+            return builtin
+                .eval(&args, &self.ontology)
+                .map_err(|message| RuntimeError { message });
+        }
 
-                let fdecl = self.functions.get(func).cloned().ok_or_else(|| RuntimeError {
-                    message: format!("Undefined function '{}'", func),
-                })?;
+        if self.adt_variants.contains_key(func) {
+            return Ok(Value::AdtVariant {
+                variant: func.to_string(),
+                fields: args,
+            });
+        }
 
-                let mut fn_env = BTreeMap::new();
-                for (param, arg_val) in fdecl.params.iter().zip(args.iter()) {
-                    fn_env.insert(param.name.clone(), arg_val.clone());
-                }
+        let fdecl = self.functions.get(func).cloned().ok_or_else(|| RuntimeError {
+            message: format!("Undefined function '{}'", func),
+        })?;
 
-                // Check function precondition (`requires`)
-                if let Some(req) = &fdecl.requires {
-                    if self.eval_expr(req, &fn_env)? != Value::Bool(true) {
-                        return Err(RuntimeError {
-                            message: format!(
-                                "Precondition ('requires') violated calling '{}'",
-                                func
-                            ),
-                        });
-                    }
-                }
+        let mut fn_env = BTreeMap::new();
+        for (param, arg_val) in fdecl.params.iter().zip(args.iter()) {
+            fn_env.insert(param.name.clone(), arg_val.clone());
+        }
 
-                // If function refines a spec, check spec precondition too
-                if let Some(spec_name) = &fdecl.refines {
-                    if let Some(spec) = self.specs.get(spec_name).cloned() {
-                        if let Some(sreq) = &spec.requires {
-                            if self.eval_expr(sreq, &fn_env)? != Value::Bool(true) {
-                                return Err(RuntimeError {
-                                    message: format!(
-                                        "Refined spec '{}' precondition violated calling '{}'",
-                                        spec_name, func
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                }
-
-                let result = self.eval_expr(&fdecl.body, &fn_env)?;
-                self.register_instance(&result);
-
-                // Check function postcondition (`ensures`)
-                if let Some(ens) = &fdecl.ensures {
-                    let mut post_env = fn_env.clone();
-                    post_env.insert("result".into(), result.clone());
-                    if self.eval_expr(ens, &post_env)? != Value::Bool(true) {
-                        return Err(RuntimeError {
-                            message: format!(
-                                "Postcondition ('ensures') violated in '{}' with result {}",
-                                func, result
-                            ),
-                        });
-                    }
-                }
-
-                // Check refined spec postcondition (`refines`)
-                if let Some(spec_name) = &fdecl.refines {
-                    if let Some(spec) = self.specs.get(spec_name).cloned() {
-                        if let Some(sens) = &spec.ensures {
-                            let mut post_env = fn_env;
-                            post_env.insert("result".into(), result.clone());
-                            if self.eval_expr(sens, &post_env)? != Value::Bool(true) {
-                                return Err(RuntimeError {
-                                    message: format!(
-                                        "Refinement contract '{}' postcondition violated by '{}' with result {}",
-                                        spec_name, func, result
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                }
-
-                Ok(result)
+        // Check function precondition (`requires`)
+        if let Some(req) = &fdecl.requires {
+            if self.eval_expr(req, &fn_env)? != Value::Bool(true) {
+                return Err(RuntimeError {
+                    message: format!(
+                        "Precondition ('requires') violated calling '{}'",
+                        func
+                    ),
+                });
             }
         }
+
+        // If function refines a spec, check spec precondition too
+        if let Some(spec_name) = &fdecl.refines {
+            if let Some(spec) = self.specs.get(spec_name).cloned() {
+                if let Some(sreq) = &spec.requires {
+                    if self.eval_expr(sreq, &fn_env)? != Value::Bool(true) {
+                        return Err(RuntimeError {
+                            message: format!(
+                                "Refined spec '{}' precondition violated calling '{}'",
+                                spec_name, func
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        let result = self.eval_expr(&fdecl.body, &fn_env)?;
+        self.register_instance(&result);
+
+        // Check function postcondition (`ensures`)
+        if let Some(ens) = &fdecl.ensures {
+            let mut post_env = fn_env.clone();
+            post_env.insert("result".into(), result.clone());
+            if self.eval_expr(ens, &post_env)? != Value::Bool(true) {
+                return Err(RuntimeError {
+                    message: format!(
+                        "Postcondition ('ensures') violated in '{}' with result {}",
+                        func, result
+                    ),
+                });
+            }
+        }
+
+        // Check refined spec postcondition (`refines`)
+        if let Some(spec_name) = &fdecl.refines {
+            if let Some(spec) = self.specs.get(spec_name).cloned() {
+                if let Some(sens) = &spec.ensures {
+                    let mut post_env = fn_env;
+                    post_env.insert("result".into(), result.clone());
+                    if self.eval_expr(sens, &post_env)? != Value::Bool(true) {
+                        return Err(RuntimeError {
+                            message: format!(
+                                "Refinement contract '{}' postcondition violated by '{}' with result {}",
+                                spec_name, func, result
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     fn eval_pipe(
@@ -773,9 +728,10 @@ impl Interpreter {
         right: &Expr,
         env: &BTreeMap<String, Value>,
     ) -> Result<Value, RuntimeError> {
+        use crate::builtins::PipeStageBuiltin;
         if let Expr::Call { func, args } = right {
-            match func.as_str() {
-                "where" | "filter" if args.len() == 1 => {
+            match PipeStageBuiltin::from_name(func) {
+                Some(PipeStageBuiltin::Where) if args.len() == 1 => {
                     let items = match left_val {
                         Value::List(l) => l,
                         other => {
@@ -809,7 +765,7 @@ impl Interpreter {
                     }
                     return Ok(Value::List(Rc::new(out)));
                 }
-                "map" | "select" if args.len() == 1 => {
+                Some(PipeStageBuiltin::Map) if args.len() == 1 => {
                     let items = match left_val {
                         Value::List(l) => l,
                         other => {
@@ -837,7 +793,7 @@ impl Interpreter {
                     }
                     return Ok(Value::List(Rc::new(out)));
                 }
-                "sort_by" if args.len() == 1 => {
+                Some(PipeStageBuiltin::SortBy) if args.len() == 1 => {
                     let items = match left_val {
                         Value::List(l) => l,
                         other => {
@@ -861,7 +817,7 @@ impl Interpreter {
                     let sorted: Vec<Value> = keyed.into_iter().map(|(_, v)| v).collect();
                     return Ok(Value::List(Rc::new(sorted)));
                 }
-                "all" if args.len() == 1 => {
+                Some(PipeStageBuiltin::All) if args.len() == 1 => {
                     let items = match left_val {
                         Value::List(l) => l,
                         other => {
@@ -879,7 +835,7 @@ impl Interpreter {
                     }
                     return Ok(Value::Bool(true));
                 }
-                "any" if args.len() == 1 => {
+                Some(PipeStageBuiltin::Any) if args.len() == 1 => {
                     let items = match left_val {
                         Value::List(l) => l,
                         other => {
@@ -897,10 +853,10 @@ impl Interpreter {
                     }
                     return Ok(Value::Bool(false));
                 }
-                "count" if args.is_empty() => {
+                Some(PipeStageBuiltin::Count) if args.is_empty() => {
                     return self.invoke_function("count", vec![left_val]);
                 }
-                "sum" if args.is_empty() => {
+                Some(PipeStageBuiltin::Sum) if args.is_empty() => {
                     return self.invoke_function("sum", vec![left_val]);
                 }
                 _ => {

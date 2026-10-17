@@ -80,17 +80,13 @@ impl TypeEnv {
             next_var: 0,
             subst: BTreeMap::new(),
         };
-        // Register standard math & query builtins
-        env.bindings.insert(
-            "min".into(),
-            Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-        );
-        env.bindings.insert(
-            "max".into(),
-            Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
-        );
-        env.bindings
-            .insert("abs".into(), Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+        // Register standard math & query builtins from centralized BuiltinFn registry
+        for b in crate::builtins::BuiltinFn::ALL {
+            if let Some((params, ret)) = b.monomorphic_signature() {
+                env.bindings
+                    .insert(b.as_str().into(), Type::Fn(params, Box::new(ret)));
+            }
+        }
         env
     }
 
@@ -884,22 +880,22 @@ impl TypeEnv {
                 }
             }
             Expr::Call { func, args } => {
-                if func == "is_a" && args.len() == 2 {
-                    let _ = self.infer_expr(&args[0], local, span)?;
-                    let t2 = self.infer_expr(&args[1], local, span)?;
-                    self.unify(&t2, &Type::Str, span)?;
-                    return Ok(Type::Bool);
-                }
-                if func == "count" && args.len() == 1 {
-                    let t = self.infer_expr(&args[0], local, span)?;
-                    let elem = self.fresh_var();
-                    self.unify(&t, &Type::List(Box::new(elem)), span)?;
-                    return Ok(Type::Int);
-                }
-                if func == "sum" && args.len() == 1 {
-                    let t = self.infer_expr(&args[0], local, span)?;
-                    self.unify(&t, &Type::List(Box::new(Type::Int)), span)?;
-                    return Ok(Type::Int);
+                if let Some(builtin) = crate::builtins::BuiltinFn::from_name(func) {
+                    match builtin {
+                        crate::builtins::BuiltinFn::IsA if args.len() == 2 => {
+                            let _ = self.infer_expr(&args[0], local, span)?;
+                            let t2 = self.infer_expr(&args[1], local, span)?;
+                            self.unify(&t2, &Type::Str, span)?;
+                            return Ok(Type::Bool);
+                        }
+                        crate::builtins::BuiltinFn::Count if args.len() == 1 => {
+                            let t = self.infer_expr(&args[0], local, span)?;
+                            let elem = self.fresh_var();
+                            self.unify(&t, &Type::List(Box::new(elem)), span)?;
+                            return Ok(Type::Int);
+                        }
+                        _ => {}
+                    }
                 }
 
                 let fn_ty = local.get(func).cloned().ok_or_else(|| TypeError {
@@ -966,10 +962,11 @@ impl TypeEnv {
         local: &mut BTreeMap<String, Type>,
         span: Span,
     ) -> Result<Type, TypeError> {
+        use crate::builtins::PipeStageBuiltin;
         let left_applied = self.apply(left_ty);
         if let Expr::Call { func, args } = right {
-            match func.as_str() {
-                "where" | "filter" if args.len() == 1 => {
+            match PipeStageBuiltin::from_name(func) {
+                Some(PipeStageBuiltin::Where) if args.len() == 1 => {
                     let elem_ty = self.fresh_var();
                     self.unify(&left_applied, &Type::List(Box::new(elem_ty.clone())), span)?;
                     let elem_resolved = self.apply(&elem_ty);
@@ -986,7 +983,7 @@ impl TypeEnv {
                     self.unify(&pt, &Type::Bool, span)?;
                     return Ok(Type::List(Box::new(elem_resolved)));
                 }
-                "map" | "select" if args.len() == 1 => {
+                Some(PipeStageBuiltin::Map) if args.len() == 1 => {
                     let elem_ty = self.fresh_var();
                     self.unify(&left_applied, &Type::List(Box::new(elem_ty.clone())), span)?;
                     let elem_resolved = self.apply(&elem_ty);
@@ -1001,7 +998,7 @@ impl TypeEnv {
                     }
                     return Ok(Type::List(Box::new(self.apply(&mt))));
                 }
-                "sort_by" if args.len() == 1 => {
+                Some(PipeStageBuiltin::SortBy) if args.len() == 1 => {
                     let elem_ty = self.fresh_var();
                     self.unify(&left_applied, &Type::List(Box::new(elem_ty.clone())), span)?;
                     let elem_resolved = self.apply(&elem_ty);
@@ -1010,7 +1007,7 @@ impl TypeEnv {
                     let _ = self.infer_expr(&args[0], &mut key_local, span)?;
                     return Ok(Type::List(Box::new(elem_resolved)));
                 }
-                "all" | "any" if args.len() == 1 => {
+                Some(PipeStageBuiltin::All | PipeStageBuiltin::Any) if args.len() == 1 => {
                     let elem_ty = self.fresh_var();
                     self.unify(&left_applied, &Type::List(Box::new(elem_ty.clone())), span)?;
                     let elem_resolved = self.apply(&elem_ty);
@@ -1020,12 +1017,12 @@ impl TypeEnv {
                     self.unify(&pt, &Type::Bool, span)?;
                     return Ok(Type::Bool);
                 }
-                "count" if args.is_empty() => {
+                Some(PipeStageBuiltin::Count) if args.is_empty() => {
                     let elem_ty = self.fresh_var();
                     self.unify(&left_applied, &Type::List(Box::new(elem_ty)), span)?;
                     return Ok(Type::Int);
                 }
-                "sum" if args.is_empty() => {
+                Some(PipeStageBuiltin::Sum) if args.is_empty() => {
                     self.unify(&left_applied, &Type::List(Box::new(Type::Int)), span)?;
                     return Ok(Type::Int);
                 }
