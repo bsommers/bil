@@ -384,3 +384,58 @@ fn test_p0_5_model_checker_truncation_completeness_and_linear_scaling() {
     );
     assert_eq!(col_rep.violations[0].trace.len(), 2);
 }
+
+#[test]
+fn test_p2_1_nested_do_od_under_let_and_boundary_constant_sampling() {
+    use bil::wp::{ObligationKind, Status};
+
+    // 1. A `do..od` nested inside `let start = n in do ... od` must generate full
+    //    Dijkstra loop obligations (Initialization, Preservation, VariantNonNegative, VariantDecrease, ExitPostcondition)
+    let nested_loop_src = r#"
+        fn countdown(n: Int) -> Int
+          requires n >= 0
+          ensures  result == 0
+        =
+          let start = n in
+          do c = start
+            invariant c >= 0
+            variant c
+            c > 0 -> c := c - 1
+          od then c
+    "#;
+    let obs = verify_source(nested_loop_src).expect("verify nested do..od under let");
+    assert!(
+        obs.iter()
+            .any(|o| matches!(o.kind, ObligationKind::DoOdInitialization)),
+        "do..od nested under let must generate DoOdInitialization obligation, got: {:?}",
+        obs
+    );
+    assert!(
+        obs.iter().all(|o| o.verified),
+        "all countdown obligations must verify: {:?}",
+        obs
+    );
+
+    // 2. Constant-guided boundary sampling must catch a bug that only triggers at x == 4321
+    //    (outside the static [-1, 0, 1, 2, 6, 12, 800, 950, 1250] list) even without SMT:
+    let threshold_src = r#"
+        fn buggy_threshold(x: Int) -> Int
+          requires x >= 0
+          ensures  result > 0
+        =
+          if x == 4321 -> 0
+          [] x != 4321 -> 1
+          fi
+    "#;
+    let thresh_obs = verify_source(threshold_src).expect("verify buggy_threshold");
+    let branch_0 = thresh_obs
+        .iter()
+        .find(|o| matches!(o.kind, ObligationKind::IfFiBranchPostcondition(0)))
+        .expect("Branch #1 obligation");
+    assert!(
+        matches!(branch_0.status, Status::Refuted { .. }),
+        "Constant-guided boundary sampling must find x = 4321 counterexample, got: {:?}",
+        branch_0
+    );
+}
+

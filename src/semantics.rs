@@ -82,9 +82,21 @@ pub fn eval_binary_value(op: BinOp, left: Value, right: Value) -> Result<Value, 
         (BinOp::Ge, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
         (BinOp::In, elem, Value::List(list)) => Ok(Value::Bool(list.contains(&elem))),
         (BinOp::Range, Value::Int(a), Value::Int(b)) => {
+            if b > a && (b as i128 - a as i128) > 100_000 {
+                return Err(format!(
+                    "Range {}..{} exceeds maximum materialized length (100000)",
+                    a, b
+                ));
+            }
             Ok(Value::List(Rc::new((a..b).map(Value::Int).collect())))
         }
         (BinOp::RangeInc, Value::Int(a), Value::Int(b)) => {
+            if b >= a && (b as i128 - a as i128 + 1) > 100_000 {
+                return Err(format!(
+                    "Range {}..={} exceeds maximum materialized length (100000)",
+                    a, b
+                ));
+            }
             Ok(Value::List(Rc::new((a..=b).map(Value::Int).collect())))
         }
         (BinOp::Add, Value::Int(a), Value::Int(b)) => int_add(a, b).map(Value::Int),

@@ -1067,9 +1067,17 @@ fn check_vc_bounded(
         }
     }
 
+    let mut extra_ints = BTreeSet::new();
+    extract_int_constants(vc, &mut extra_ints);
+
     let domains: Vec<(String, Vec<Value>)> = all_params
         .iter()
-        .map(|p| (p.name.clone(), sample_domain_for_type(&p.ty, ontology)))
+        .map(|p| {
+            (
+                p.name.clone(),
+                sample_domain_for_type(&p.ty, ontology, program, &extra_ints),
+            )
+        })
         .collect();
     let samples = domains
         .iter()
@@ -1097,10 +1105,22 @@ fn check_refinement_execution(
     f: &FnDecl,
     post: &Expr,
 ) -> (bool, Option<String>, usize) {
+    let mut extra_ints = BTreeSet::new();
+    if let Some(req) = &f.requires {
+        extract_int_constants(req, &mut extra_ints);
+    }
+    extract_int_constants(&f.body, &mut extra_ints);
+    extract_int_constants(post, &mut extra_ints);
+
     let domains: Vec<(String, Vec<Value>)> = f
         .params
         .iter()
-        .map(|p| (p.name.clone(), sample_domain_for_type(&p.ty, ontology)))
+        .map(|p| {
+            (
+                p.name.clone(),
+                sample_domain_for_type(&p.ty, ontology, program, &extra_ints),
+            )
+        })
         .collect();
     let samples = domains
         .iter()
@@ -1201,54 +1221,217 @@ fn format_env_assignment(env: &BTreeMap<String, Value>) -> String {
     format!("{{ {} }}", parts.join(", "))
 }
 
-fn sample_domain_for_type(ty: &TypeExpr, ontology: &OntologyRegistry) -> Vec<Value> {
+/// Extracts integer constants `c` and their immediate neighbors `c - 1, c, c + 1` from an expression
+/// so bounded counterexample search automatically probes threshold boundaries.
+fn extract_int_constants(expr: &Expr, out: &mut BTreeSet<i64>) {
+    match expr {
+        Expr::Int(c) => {
+            for v in [c.saturating_sub(1), *c, c.saturating_add(1)] {
+                if out.len() < 24 {
+                    out.insert(v);
+                }
+            }
+        }
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => {
+            if let Expr::Int(c) = &**inner {
+                let nc = c.saturating_neg();
+                for v in [nc.saturating_sub(1), nc, nc.saturating_add(1)] {
+                    if out.len() < 24 {
+                        out.insert(v);
+                    }
+                }
+            } else {
+                extract_int_constants(inner, out);
+            }
+        }
+        Expr::Unary { expr: inner, .. } => extract_int_constants(inner, out),
+        Expr::Binary { left, right, .. } => {
+            extract_int_constants(left, out);
+            extract_int_constants(right, out);
+        }
+        Expr::Quantifier { domain, body, .. } => {
+            extract_int_constants(domain, out);
+            extract_int_constants(body, out);
+        }
+        Expr::FieldAccess { base, .. } => extract_int_constants(base, out),
+        Expr::RecordInit { fields, .. } => {
+            for (_, v) in fields {
+                extract_int_constants(v, out);
+            }
+        }
+        Expr::RecordWith { base, updates } => {
+            extract_int_constants(base, out);
+            for (_, v) in updates {
+                extract_int_constants(v, out);
+            }
+        }
+        Expr::Call { args, .. } | Expr::List(args) => {
+            for a in args {
+                extract_int_constants(a, out);
+            }
+        }
+        Expr::LetIn { value, body, .. } => {
+            extract_int_constants(value, out);
+            extract_int_constants(body, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            extract_int_constants(scrutinee, out);
+            for a in arms {
+                extract_int_constants(&a.body, out);
+            }
+        }
+        Expr::IfFi { branches } => {
+            for br in branches {
+                extract_int_constants(&br.guard, out);
+                if let GclBody::Expr(e) = &br.body {
+                    extract_int_constants(e, out);
+                }
+            }
+        }
+        Expr::DoOd {
+            inits,
+            invariant,
+            variant,
+            branches,
+            then_expr,
+        } => {
+            for (_, ie) in inits {
+                extract_int_constants(ie, out);
+            }
+            if let Some(inv) = invariant {
+                extract_int_constants(inv, out);
+            }
+            if let Some(var) = variant {
+                extract_int_constants(var, out);
+            }
+            for br in branches {
+                extract_int_constants(&br.guard, out);
+                if let GclBody::Expr(e) = &br.body {
+                    extract_int_constants(e, out);
+                }
+            }
+            extract_int_constants(then_expr, out);
+        }
+        _ => {}
+    }
+}
+
+fn sample_domain_for_type(
+    ty: &TypeExpr,
+    ontology: &OntologyRegistry,
+    program: &Program,
+    extra_ints: &BTreeSet<i64>,
+) -> Vec<Value> {
+    use std::rc::Rc;
+
     match ty {
         TypeExpr::Named(n) => match n.as_str() {
-            "Int" | "Integer" => vec![
-                Value::Int(-1),
-                Value::Int(0),
-                Value::Int(2),
-                Value::Int(6),
-                Value::Int(12),
-                Value::Int(800),
-                Value::Int(950),
-                Value::Int(1250),
-            ],
+            "Int" | "Integer" => {
+                let mut set: BTreeSet<i64> = [-1, 0, 1, 2, 6, 12, 800, 950, 1250]
+                    .into_iter()
+                    .collect();
+                for &c in extra_ints {
+                    if set.len() < 16 {
+                        set.insert(c);
+                    }
+                }
+                set.into_iter().map(Value::Int).collect()
+            }
+            "Float" | "Double" => vec![Value::Float(-1.0), Value::Float(0.0), Value::Float(1.0)],
             "Bool" | "Boolean" => vec![Value::Bool(false), Value::Bool(true)],
-            "String" | "Str" => vec![Value::Str("id-1".into())],
+            "String" | "Str" => vec![Value::Str(String::new()), Value::Str("id-1".into())],
             other => {
                 if let Some(cinfo) = ontology.concepts.get(other) {
-                    // Generate representative boundary instances of the OntoLogic concept
-                    let int_samples = [-50, 0, 500, 800, 950, 1300];
-                    let mut instances = Vec::new();
-                    for &p in &int_samples {
-                        let mut fmap = BTreeMap::new();
-                        for (fname, fty) in &cinfo.all_fields {
-                            let fval = match fty {
-                                TypeExpr::Named(tn) if tn == "Int" || tn == "Integer" => {
-                                    Value::Int(p)
-                                }
-                                TypeExpr::Named(tn) if tn == "Bool" || tn == "Boolean" => {
-                                    Value::Bool(true)
-                                }
-                                TypeExpr::Named(tn) if tn == "String" || tn == "Str" => {
-                                    Value::Str("P-1".into())
-                                }
-                                _ => Value::Int(0),
-                            };
-                            fmap.insert(fname.clone(), fval);
+                    let mut int_samples: Vec<i64> = vec![-50, 0, 500, 800, 950, 1300];
+                    for &c in extra_ints.iter().take(4) {
+                        if !int_samples.contains(&c) {
+                            int_samples.push(c);
                         }
-                        instances.push(Value::ConceptInstance {
-                            concept: other.to_string(),
-                            fields: fmap,
-                        });
+                    }
+                    let mut instances = Vec::new();
+                    for (idx, &p) in int_samples.iter().enumerate() {
+                        let alt_p = int_samples[(idx + 1) % int_samples.len()];
+                        for skew in [false, true] {
+                            let mut fmap = BTreeMap::new();
+                            for (f_idx, (fname, fty)) in cinfo.all_fields.iter().enumerate() {
+                                let chosen_int = if skew && f_idx % 2 == 1 { alt_p } else { p };
+                                let fval = match fty {
+                                    TypeExpr::Named(tn) if tn == "Int" || tn == "Integer" => {
+                                        Value::Int(chosen_int)
+                                    }
+                                    TypeExpr::Named(tn) if tn == "Bool" || tn == "Boolean" => {
+                                        Value::Bool(!skew)
+                                    }
+                                    TypeExpr::Named(tn) if tn == "String" || tn == "Str" => {
+                                        Value::Str("P-1".into())
+                                    }
+                                    _ => Value::Int(0),
+                                };
+                                fmap.insert(fname.clone(), fval);
+                            }
+                            let inst = Value::ConceptInstance {
+                                concept: other.to_string(),
+                                fields: fmap,
+                            };
+                            if !instances.contains(&inst) {
+                                instances.push(inst);
+                            }
+                        }
                     }
                     instances
                 } else {
+                    for item in &program.items {
+                        if let Item::TypeDecl(adt) = item {
+                            if adt.name == other {
+                                let mut variants = Vec::new();
+                                for v in &adt.variants {
+                                    let fields: Vec<Value> = v
+                                        .payload
+                                        .iter()
+                                        .map(|pty| {
+                                            sample_domain_for_type(
+                                                pty,
+                                                ontology,
+                                                program,
+                                                extra_ints,
+                                            )
+                                            .into_iter()
+                                            .next()
+                                            .unwrap_or(Value::Unit)
+                                        })
+                                        .collect();
+                                    variants.push(Value::AdtVariant {
+                                        variant: v.name.clone(),
+                                        fields,
+                                    });
+                                }
+                                if !variants.is_empty() {
+                                    return variants;
+                                }
+                            }
+                        }
+                    }
                     vec![Value::Unit]
                 }
             }
         },
+        TypeExpr::List(inner) => {
+            let elem_samples = sample_domain_for_type(inner, ontology, program, extra_ints);
+            let mut lists = vec![Value::List(Rc::new(vec![]))];
+            if let Some(first) = elem_samples.first() {
+                lists.push(Value::List(Rc::new(vec![first.clone()])));
+            }
+            if elem_samples.len() >= 2 {
+                lists.push(Value::List(Rc::new(vec![
+                    elem_samples[0].clone(),
+                    elem_samples[1].clone(),
+                ])));
+            }
+            lists
+        }
         _ => vec![Value::Unit],
     }
 }

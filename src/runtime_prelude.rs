@@ -93,12 +93,24 @@ fn eval_binop(op: &str, l: BilVal, r: BilVal) -> BilVal {
         },
         ".." => match (l, r) {
             (BilVal::Int(a), BilVal::Int(b)) => {
+                assert!(
+                    !(b > a && (b as i128 - a as i128) > 100_000),
+                    "Range {}..{} exceeds maximum materialized length (100000)",
+                    a,
+                    b
+                );
                 BilVal::List(Rc::new((a..b).map(BilVal::Int).collect()))
             }
             _ => panic!(".."),
         },
         "..=" => match (l, r) {
             (BilVal::Int(a), BilVal::Int(b)) => {
+                assert!(
+                    !(b >= a && (b as i128 - a as i128 + 1) > 100_000),
+                    "Range {}..={} exceeds maximum materialized length (100000)",
+                    a,
+                    b
+                );
                 BilVal::List(Rc::new((a..=b).map(BilVal::Int).collect()))
             }
             _ => panic!("..="),
