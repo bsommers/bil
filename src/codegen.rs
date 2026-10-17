@@ -485,10 +485,27 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
             emit_lir_val_expr(body, indent + 1)
         ),
         LirExpr::GuardedSelect { branches } => {
-            let mut s = String::from("{\n");
-            for (idx, (g, act)) in branches.iter().enumerate() {
-                let kw = if idx == 0 { "if" } else { "else if" };
+            let mut s = format!("{{\n{}    let mut _enabled: Vec<usize> = Vec::new();\n", pad);
+            for (idx, (g, _)) in branches.iter().enumerate() {
                 let gs = emit_lir_val_expr(g, indent + 1);
+                let _ = writeln!(
+                    s,
+                    "{}    if {} == BilVal::Bool(true) {{ _enabled.push({}); }}",
+                    pad, gs, idx
+                );
+            }
+            let _ = writeln!(
+                s,
+                "{}    if _enabled.is_empty() {{ panic!(\"if..fi guard totality violated\"); }}",
+                pad
+            );
+            let _ = writeln!(
+                s,
+                "{}    let _chosen = _enabled[next_rand_index(_enabled.len())];",
+                pad
+            );
+            let _ = writeln!(s, "{}    match _chosen {{", pad);
+            for (idx, (_, act)) in branches.iter().enumerate() {
                 let bs = match act {
                     LirAction::ReturnExpr(e) => emit_lir_val_expr(e, indent + 2),
                     LirAction::AssignState(ups) => {
@@ -496,25 +513,21 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                         for (v, ue) in ups {
                             let _ = writeln!(
                                 up_s,
-                                "{}        let _nv = {}; env.insert({:?}.to_string(), _nv);",
+                                "{}            let _nv = {}; env.insert({:?}.to_string(), _nv);",
                                 pad,
-                                emit_lir_val_expr(ue, indent + 2),
+                                emit_lir_val_expr(ue, indent + 3),
                                 v
                             );
                         }
-                        let _ = write!(up_s, "{}        BilVal::Unit\n{}    }}", pad, pad);
+                        let _ = write!(up_s, "{}            BilVal::Unit\n{}        }}", pad, pad);
                         up_s
                     }
                     LirAction::Nop => "BilVal::Unit".to_string(),
                     LirAction::TrapAbort => "panic!(\"abort\")".to_string(),
                 };
-                let _ = writeln!(s, "{}    {} {} == BilVal::Bool(true) {{ {} }}", pad, kw, gs, bs);
+                let _ = writeln!(s, "{}        {} => {{ {} }}", pad, idx, bs);
             }
-            let _ = write!(
-                s,
-                "{}    else {{ panic!(\"if..fi guard totality violated\") }}\n{}}}",
-                pad, pad
-            );
+            let _ = write!(s, "{}        _ => unreachable!(),\n{}    }}\n{}}}", pad, pad, pad);
             s
         }
         LirExpr::GuardedLoop {
@@ -533,25 +546,39 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                 );
             }
             let _ = writeln!(s, "{}    loop {{", pad);
-            for (idx, (g, act)) in branches.iter().enumerate() {
-                let kw = if idx == 0 { "if" } else { "else if" };
+            let _ = writeln!(s, "{}        let mut _enabled: Vec<usize> = Vec::new();", pad);
+            for (idx, (g, _)) in branches.iter().enumerate() {
                 let gs = emit_lir_val_expr(g, indent + 2);
-                let _ = writeln!(s, "{}        {} {} == BilVal::Bool(true) {{", pad, kw, gs);
+                let _ = writeln!(
+                    s,
+                    "{}        if {} == BilVal::Bool(true) {{ _enabled.push({}); }}",
+                    pad, gs, idx
+                );
+            }
+            let _ = writeln!(s, "{}        if _enabled.is_empty() {{ break; }}", pad);
+            let _ = writeln!(
+                s,
+                "{}        let _chosen = _enabled[next_rand_index(_enabled.len())];",
+                pad
+            );
+            let _ = writeln!(s, "{}        match _chosen {{", pad);
+            for (idx, (_, act)) in branches.iter().enumerate() {
+                let _ = writeln!(s, "{}            {} => {{", pad, idx);
                 match act {
                     LirAction::AssignState(ups) => {
                         for (u_idx, (_, ue)) in ups.iter().enumerate() {
                             let _ = writeln!(
                                 s,
-                                "{}            let _u_{} = {};",
+                                "{}                let _u_{} = {};",
                                 pad,
                                 u_idx,
-                                emit_lir_val_expr(ue, indent + 3)
+                                emit_lir_val_expr(ue, indent + 4)
                             );
                         }
                         for (u_idx, (v, _)) in ups.iter().enumerate() {
                             let _ = writeln!(
                                 s,
-                                "{}            env.insert({:?}.to_string(), _u_{});",
+                                "{}                env.insert({:?}.to_string(), _u_{});",
                                 pad, v, u_idx
                             );
                         }
@@ -559,20 +586,21 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                     LirAction::ReturnExpr(e) => {
                         let _ = writeln!(
                             s,
-                            "{}            let _nv = {}; env.insert({:?}.to_string(), _nv);",
+                            "{}                let _nv = {}; env.insert({:?}.to_string(), _nv);",
                             pad,
-                            emit_lir_val_expr(e, indent + 3),
+                            emit_lir_val_expr(e, indent + 4),
                             inits[0].0
                         );
                     }
                     LirAction::Nop => {}
                     LirAction::TrapAbort => {
-                        let _ = writeln!(s, "{}            panic!(\"abort\");", pad);
+                        let _ = writeln!(s, "{}                panic!(\"abort\");", pad);
                     }
                 }
-                let _ = writeln!(s, "{}        }}", pad);
+                let _ = writeln!(s, "{}            }}", pad);
             }
-            let _ = writeln!(s, "{}        else {{ break; }}", pad);
+            let _ = writeln!(s, "{}            _ => unreachable!(),", pad);
+            let _ = writeln!(s, "{}        }}", pad);
             let _ = writeln!(s, "{}    }}", pad);
             let _ = writeln!(
                 s,

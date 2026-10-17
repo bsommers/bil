@@ -153,3 +153,22 @@ fn eval_binop(op: &str, l: BilVal, r: BilVal) -> BilVal {
         _ => panic!("unknown op {}", op),
     }
 }
+
+static BIL_RNG_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(42);
+
+fn next_rand_index(len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let mut x = BIL_RNG_STATE.load(std::sync::atomic::Ordering::Relaxed);
+    if x == 0 {
+        x = 0x9E3779B97F4A7C15;
+    }
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    BIL_RNG_STATE.store(x, std::sync::atomic::Ordering::Relaxed);
+    let r = x.wrapping_mul(0x2545F4914F6CDD1D);
+    (r as usize) % len
+}
+
