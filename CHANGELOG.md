@@ -5,6 +5,30 @@ All notable changes to **`bil` (Bounded Invariant Logic)** will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] - 2026-10-17
+
+### Fixed (P0 Soundness & Correctness)
+- **`P0.1` (`src/wp.rs`, `src/smt.rs`)**: Prevent circular self-assumption of `proof` lemmas (only assume previously proved lemmas in declaration order) and detect vacuous/inconsistent `axiom` assumptions prior to obligation verification.
+- **`P0.2` (`src/wp.rs`)**: Unify verification verdicts into `ObligationStatus` (`Proved`, `Refuted`, `BoundedOnly`, `Unknown`) via `ProofObligation::decide_status`, ensuring concrete bounded counterexamples always take precedence over inconclusive/spurious solver outputs.
+- **`P0.3` (`src/semantics.rs`, `src/eval.rs`, `src/vm.rs`, `src/codegen.rs`)**: Unify 64-bit integer arithmetic across all execution and verification backends with Euclidean division/modulo (`checked_div_euclid`, `checked_rem_euclid`, matching SMT-LIB2 `div`/`mod`) and checked overflow semantics.
+- **`P0.4` (`src/wp.rs`)**: Implement capture-avoiding alpha-renaming and complete expression coverage (`LetIn`, `Match`, `List`, `Pipe`, `IfFi`, `DoOd`) in `subst_expr`, and fail closed when bounded obligation evaluation encounters a `RuntimeError`.
+- **`P0.5` (`src/model_check.rs`)**: Replace per-queue-entry path cloning with parent-pointer trace reconstruction (`O(1)` memory per visited state) and report `truncated: bool` (`is_complete()`) when `--max-states` is reached.
+- **`P0.6` (`src/ir/vir.rs`, `src/wp.rs`)**: Decouple pure VC generation (`generate_program_obligations`) from SMT solver execution during `VIR` lowering (`bil vm`, `bil build`, `bil dump-ir`).
+
+### Changed (P1 Architecture Consolidation)
+- **`P1.1` (`src/semantics.rs`, `src/runtime_prelude.rs`)**: Unify runtime unary/binary operator evaluation and pattern matching across `eval` and `vm`, and extract the standalone AOT runtime prelude into compile-tested `src/runtime_prelude.rs`.
+- **`P1.2` (`src/builtins.rs`)**: Centralize `BuiltinFn` and `PipeStageBuiltin` metadata, type signatures, runtime evaluation, and SMT-LIB2 lowering.
+- **`P1.3` (`src/driver.rs`, `src/cli.rs`)**: Split high-level pipeline driver and CLI command dispatcher out of `src/lib.rs` and `src/main.rs`.
+- **`P1.4` (`src/symbol.rs`, `src/error.rs`)**: Add `Symbol`/`SymbolInterner` and structured `BilError` diagnostics with source spans.
+- **`P1.5` (`src/smt.rs`, `src/codegen.rs`)**: Support configurable external solver and compiler paths (`BIL_<SOLVER>_PATH`, `BIL_SOLVER_DIR`, `BIL_RUSTC_PATH`, `RUSTC`).
+
+### Security (`SEC-1`–`SEC-5`)
+- **`SEC-1` (`src/verus.rs`, `src/codegen.rs`)**: Escape string literals in Verus codegen and sanitize Rust keyword/special identifiers in native AOT codegen (`sanitize_rust_ident`).
+- **`SEC-2` (`src/codegen.rs`)**: Use atomic `OpenOptions::create_new(true)` temporary file creation in `compile_native_binary`.
+- **`SEC-3` (`src/smt.rs`)**: Add non-blocking pipe reader threads and hard wall-clock timeout (`BIL_SOLVER_TIMEOUT_MS`) killing hung solver subprocesses.
+- **`SEC-4` (`src/parser.rs`, `src/ontology.rs`, `src/eval.rs`, `src/vm.rs`)**: Enforce recursion depth limits (`MAX_PARSE_DEPTH = 128`, `MAX_CALL_DEPTH = 64`) and VM instruction fuel (`DEFAULT_VM_MAX_STEPS = 1_000_000`).
+- **`SEC-5` (`tests/security.rs`, `tests/soundness.rs`)**: Add dedicated soundness (`6` tests) and security (`5` tests) regression suites.
+
 ## [v0.2.0] - 2026-10-17
 
 ### Added
