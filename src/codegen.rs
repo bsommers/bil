@@ -653,7 +653,10 @@ pub fn compile_native_binary(
     fs::write(&tmp_rs, &rust_src)
         .map_err(|e| format!("Failed to write intermediate AOT source {}: {}", tmp_rs.display(), e))?;
 
-    let status = Command::new("rustc")
+    let rustc_bin = std::env::var("BIL_RUSTC_PATH")
+        .or_else(|_| std::env::var("RUSTC"))
+        .unwrap_or_else(|_| "rustc".to_string());
+    let status = Command::new(&rustc_bin)
         .arg("-O")
         .arg("--edition")
         .arg("2021")
@@ -663,7 +666,7 @@ pub fn compile_native_binary(
         .arg("-o")
         .arg(output_bin)
         .output()
-        .map_err(|e| format!("Failed to invoke `rustc` for native AOT compilation: {}", e))?;
+        .map_err(|e| format!("Failed to invoke `{}` for native AOT compilation: {}", rustc_bin, e))?;
 
     let _ = fs::remove_file(&tmp_rs);
 

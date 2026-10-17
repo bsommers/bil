@@ -103,18 +103,30 @@ pub enum SubsumptionResult {
     Unknown { detail: String },
 }
 
-/// Resolves an external solver binary using `clif2OntoLogic/toolchain.py` resolution order:
-/// 1. `BIL_<NAME>` or `CLIF2OL_<NAME>` environment variable
-/// 2. `~/.local/bin/<name>`
-/// 3. `PATH` lookup
+/// Resolves an external solver binary using configurable resolution order:
+/// 1. `BIL_<NAME>_PATH`, `BIL_<NAME>`, or `CLIF2OL_<NAME>` environment variable
+/// 2. `BIL_SOLVER_DIR/<name>` directory override
+/// 3. `~/.local/bin/<name>`
+/// 4. `PATH` lookup
 pub fn find_solver_binary(name: &str) -> Option<PathBuf> {
     let upper = name.to_ascii_uppercase().replace('-', "_");
-    for env_key in [format!("BIL_{}", upper), format!("CLIF2OL_{}", upper)] {
+    for env_key in [
+        format!("BIL_{}_PATH", upper),
+        format!("BIL_{}", upper),
+        format!("CLIF2OL_{}", upper),
+    ] {
         if let Ok(val) = env::var(&env_key) {
             let p = PathBuf::from(val.trim());
             if p.is_file() {
                 return Some(p);
             }
+        }
+    }
+
+    if let Ok(dir) = env::var("BIL_SOLVER_DIR") {
+        let candidate = Path::new(dir.trim()).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
 
