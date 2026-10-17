@@ -358,7 +358,14 @@ fn main() {
                                 );
                             }
                             if rep.violations.is_empty() {
-                                println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
+                                if rep.complete {
+                                    println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
+                                } else {
+                                    println!(
+                                        "  [BOUNDED / INCOMPLETE (truncated at {} states)] No violations found within state bound.",
+                                        rep.truncated_at.unwrap_or(rep.states_explored)
+                                    );
+                                }
                             } else {
                                 for v in &rep.violations {
                                     println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);

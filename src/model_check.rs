@@ -20,6 +20,8 @@ pub struct ModelCheckReport {
     pub transitions_fired: usize,
     pub max_depth: usize,
     pub max_branching_factor: usize,
+    pub complete: bool,
+    pub truncated_at: Option<usize>,
     pub temporal_results: Vec<TemporalCheckResult>,
     pub violations: Vec<ModelViolation>,
 }
@@ -66,9 +68,95 @@ pub struct ModelViolation {
     pub trace: Vec<String>,
 }
 
-fn canonical_state_key(state: &BTreeMap<String, Value>) -> String {
+fn display_state_key(state: &BTreeMap<String, Value>) -> String {
     let parts: Vec<String> = state.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
     parts.join("; ")
+}
+
+fn encode_value_canonical(v: &Value, out: &mut String) {
+    match v {
+        Value::Int(n) => out.push_str(&format!("I:{};", n)),
+        Value::Float(f) => out.push_str(&format!("F:{};", f.to_bits())),
+        Value::Bool(b) => out.push_str(if *b { "B:1;" } else { "B:0;" }),
+        Value::Str(s) => out.push_str(&format!("S:{}:{};", s.len(), s)),
+        Value::Unit => out.push_str("U;"),
+        Value::List(items) => {
+            out.push_str(&format!("L:{}:[", items.len()));
+            for item in items.iter() {
+                encode_value_canonical(item, out);
+            }
+            out.push_str("];");
+        }
+        Value::ConceptInstance { concept, fields } => {
+            out.push_str(&format!("R:{}:{}:{}:{{", concept.len(), concept, fields.len()));
+            for (k, fv) in fields {
+                out.push_str(&format!("{}:{}:", k.len(), k));
+                encode_value_canonical(fv, out);
+            }
+            out.push_str("};");
+        }
+        Value::AdtVariant { variant, fields } => {
+            out.push_str(&format!(
+                "V:{}:{}:{}:(",
+                variant.len(),
+                variant,
+                fields.len()
+            ));
+            for pv in fields {
+                encode_value_canonical(pv, out);
+            }
+            out.push_str(");");
+        }
+        Value::PartialCall { func, args } => {
+            out.push_str(&format!("P:{}:{}:{}:(", func.len(), func, args.len()));
+            for arg in args {
+                match arg {
+                    Some(av) => {
+                        out.push_str("1:");
+                        encode_value_canonical(av, out);
+                    }
+                    None => out.push_str("0;"),
+                }
+            }
+            out.push_str(");");
+        }
+    }
+}
+
+/// Collision-free length-prefixed canonical key for state table interning.
+fn collision_free_state_key(state: &BTreeMap<String, Value>) -> String {
+    let mut out = format!("N:{};", state.len());
+    for (k, v) in state {
+        out.push_str(&format!("K:{}:{}:", k.len(), k));
+        encode_value_canonical(v, &mut out);
+    }
+    out
+}
+
+/// Reconstructs a human-readable execution trace from the root state (`0`) to `state_id`
+/// using parent pointers in $O(\text{depth})$ time.
+fn reconstruct_trace(
+    state_id: usize,
+    state_display: &[String],
+    parent: &[Option<(usize, usize, usize)>],
+    transitions: &[GuardedTransition],
+) -> Vec<String> {
+    let mut steps = Vec::new();
+    let mut curr = state_id;
+    while let Some((p_id, br_idx, depth)) = parent[curr] {
+        let guard_str = format_expr_concise(&transitions[br_idx].guard);
+        steps.push(format!(
+            "Step {} [Guard #{} {}] -> {{ {} }}",
+            depth,
+            br_idx + 1,
+            guard_str,
+            state_display[curr]
+        ));
+        curr = p_id;
+    }
+    steps.push(format!("Init: {{ {} }}", state_display[curr]));
+    steps.reverse();
+    steps
 }
 
 /// Exhaustively explores the nondeterministic state space of all `system` blocks (SPIN/Promela + LTL style)
@@ -114,35 +202,44 @@ fn model_check_system(
         init_state.insert(st.name.clone(), v);
     }
 
-    let mut visited: BTreeSet<String> = BTreeSet::new();
-    let mut queue: VecDeque<(BTreeMap<String, Value>, Vec<String>, usize)> = VecDeque::new();
+    // Interned state-space graph structures (state ID = usize in 0..states.len())
+    let mut states: Vec<BTreeMap<String, Value>> = Vec::new();
+    let mut state_display: Vec<String> = Vec::new();
+    let mut state_to_id: BTreeMap<String, usize> = BTreeMap::new();
+    let mut parent: Vec<Option<(usize, usize, usize)>> = Vec::new();
+    let mut adj: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut enabled_map: Vec<BTreeSet<usize>> = Vec::new();
+    let mut truncated_frontier: BTreeSet<usize> = BTreeSet::new();
+    let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
 
-    // State-space graph structures for LTL & weak fairness verification
-    let mut state_map: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
-    let mut trace_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut adj: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
-    let mut enabled_map: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-
-    let init_key = canonical_state_key(&init_state);
-    let init_trace = vec![format!("Init: {{ {} }}", init_key)];
-    visited.insert(init_key.clone());
-    state_map.insert(init_key.clone(), init_state.clone());
-    trace_map.insert(init_key.clone(), init_trace.clone());
-    queue.push_back((init_state, init_trace, 0));
+    let init_id_key = collision_free_state_key(&init_state);
+    let init_disp = display_state_key(&init_state);
+    states.push(init_state);
+    state_display.push(init_disp);
+    state_to_id.insert(init_id_key, 0);
+    parent.push(None);
+    adj.push(Vec::new());
+    enabled_map.push(BTreeSet::new());
+    if max_states > 0 {
+        queue.push_back((0, 0));
+    }
 
     let mut states_explored = 0usize;
     let mut transitions_fired = 0usize;
     let mut max_depth = 0usize;
     let mut max_branching_factor = 0usize;
+    let mut complete = max_states > 0;
+    let mut truncated_at = if max_states == 0 { Some(0) } else { None };
     let mut violations = Vec::new();
 
-    while let Some((state, trace, depth)) = queue.pop_front() {
+    while let Some((curr_id, depth)) = queue.pop_front() {
         states_explored += 1;
         if depth > max_depth {
             max_depth = depth;
         }
-        let curr_key = canonical_state_key(&state);
-        let state_str = format!("{{ {} }}", curr_key);
+        let state = states[curr_id].clone();
+        let curr_disp = state_display[curr_id].clone();
+        let state_str = format!("{{ {} }}", curr_disp);
 
         // 1. Check all Safety Invariants in current reachable state
         for inv in &sys.invariants {
@@ -150,10 +247,11 @@ fn model_check_system(
                 .eval_expr(&inv.formula, &state)
                 .map_err(|e| e.to_string())?;
             if holds != Value::Bool(true) {
+                let trace = reconstruct_trace(curr_id, &state_display, &parent, &sys.transitions);
                 violations.push(ModelViolation {
                     kind: ViolationKind::InvariantViolation(inv.name.clone()),
-                    state_str: state_str.clone(),
-                    trace: trace.clone(),
+                    state_str,
+                    trace,
                 });
                 return Ok(ModelCheckReport {
                     system_name: sys.name.clone(),
@@ -161,6 +259,8 @@ fn model_check_system(
                     transitions_fired,
                     max_depth,
                     max_branching_factor,
+                    complete,
+                    truncated_at,
                     temporal_results: Vec::new(),
                     violations,
                 });
@@ -179,7 +279,7 @@ fn model_check_system(
                 enabled_indices.insert(idx);
             }
         }
-        enabled_map.insert(curr_key.clone(), enabled_indices);
+        enabled_map[curr_id] = enabled_indices;
 
         if enabled_branches.len() > max_branching_factor {
             max_branching_factor = enabled_branches.len();
@@ -187,7 +287,6 @@ fn model_check_system(
 
         // 3. Deadlock detection: if no guard is enabled, check whether `terminal` holds
         if enabled_branches.is_empty() {
-            adj.entry(curr_key.clone()).or_default();
             let is_terminal = if let Some(term_expr) = &sys.terminal {
                 interp
                     .eval_expr(term_expr, &state)
@@ -197,10 +296,11 @@ fn model_check_system(
                 false
             };
             if !is_terminal {
+                let trace = reconstruct_trace(curr_id, &state_display, &parent, &sys.transitions);
                 violations.push(ModelViolation {
                     kind: ViolationKind::Deadlock,
-                    state_str: state_str.clone(),
-                    trace: trace.clone(),
+                    state_str,
+                    trace,
                 });
                 return Ok(ModelCheckReport {
                     system_name: sys.name.clone(),
@@ -208,6 +308,8 @@ fn model_check_system(
                     transitions_fired,
                     max_depth,
                     max_branching_factor,
+                    complete,
+                    truncated_at,
                     temporal_results: Vec::new(),
                     violations,
                 });
@@ -222,10 +324,12 @@ fn model_check_system(
                 .map_err(|e| e.to_string())?
             {
                 if v < 0 {
+                    let trace =
+                        reconstruct_trace(curr_id, &state_display, &parent, &sys.transitions);
                     violations.push(ModelViolation {
                         kind: ViolationKind::VariantNegative { val: v },
-                        state_str: state_str.clone(),
-                        trace: trace.clone(),
+                        state_str,
+                        trace,
                     });
                     return Ok(ModelCheckReport {
                         system_name: sys.name.clone(),
@@ -233,6 +337,8 @@ fn model_check_system(
                         transitions_fired,
                         max_depth,
                         max_branching_factor,
+                        complete,
+                        truncated_at,
                         temporal_results: Vec::new(),
                         violations,
                     });
@@ -260,19 +366,7 @@ fn model_check_system(
                 next_state.insert(var, nv);
             }
 
-            let next_key = canonical_state_key(&next_state);
-            adj.entry(curr_key.clone())
-                .or_default()
-                .push((br_idx, next_key.clone()));
-
-            let mut next_trace = trace.clone();
-            next_trace.push(format!(
-                "Step {} [Guard #{} {}] -> {{ {} }}",
-                depth + 1,
-                br_idx + 1,
-                format_expr_concise(&tr.guard),
-                next_key
-            ));
+            let next_disp = display_state_key(&next_state);
 
             // Check variant strict decrease if variant is specified
             if let (Some(prev_v), Some(v_expr)) = (curr_variant, &sys.variant) {
@@ -281,13 +375,22 @@ fn model_check_system(
                     .map_err(|e| e.to_string())?
                 {
                     if next_v >= prev_v {
+                        let mut next_trace =
+                            reconstruct_trace(curr_id, &state_display, &parent, &sys.transitions);
+                        next_trace.push(format!(
+                            "Step {} [Guard #{} {}] -> {{ {} }}",
+                            depth + 1,
+                            br_idx + 1,
+                            format_expr_concise(&tr.guard),
+                            next_disp
+                        ));
                         violations.push(ModelViolation {
                             kind: ViolationKind::VariantNonDecreasing {
                                 prev: prev_v,
                                 next: next_v,
                                 branch: br_idx,
                             },
-                            state_str: format!("{{ {} }}", next_key),
+                            state_str: format!("{{ {} }}", next_disp),
                             trace: next_trace,
                         });
                         return Ok(ModelCheckReport {
@@ -296,6 +399,8 @@ fn model_check_system(
                             transitions_fired,
                             max_depth,
                             max_branching_factor,
+                            complete,
+                            truncated_at,
                             temporal_results: Vec::new(),
                             violations,
                         });
@@ -303,10 +408,25 @@ fn model_check_system(
                 }
             }
 
-            if visited.len() < max_states && visited.insert(next_key.clone()) {
-                state_map.insert(next_key.clone(), next_state.clone());
-                trace_map.insert(next_key.clone(), next_trace.clone());
-                queue.push_back((next_state, next_trace, depth + 1));
+            let next_id_key = collision_free_state_key(&next_state);
+            if let Some(&existing_id) = state_to_id.get(&next_id_key) {
+                adj[curr_id].push((br_idx, existing_id));
+            } else if states.len() < max_states {
+                let new_id = states.len();
+                states.push(next_state);
+                state_display.push(next_disp);
+                state_to_id.insert(next_id_key, new_id);
+                parent.push(Some((curr_id, br_idx, depth + 1)));
+                adj.push(Vec::new());
+                enabled_map.push(BTreeSet::new());
+                adj[curr_id].push((br_idx, new_id));
+                queue.push_back((new_id, depth + 1));
+            } else {
+                complete = false;
+                if truncated_at.is_none() {
+                    truncated_at = Some(max_states);
+                }
+                truncated_frontier.insert(curr_id);
             }
         }
     }
@@ -318,11 +438,11 @@ fn model_check_system(
             TemporalFormula::Always(p) => {
                 let fdesc = format!("□({})", format_expr_concise(p));
                 let mut failed = None;
-                for (skey, st_env) in &state_map {
+                for (sid, st_env) in states.iter().enumerate() {
                     let holds = interp.eval_expr(p, st_env).map_err(|e| e.to_string())?;
                     if holds != Value::Bool(true) {
-                        let tr = trace_map.get(skey).cloned().unwrap_or_default();
-                        failed = Some((skey.clone(), tr));
+                        let tr = reconstruct_trace(sid, &state_display, &parent, &sys.transitions);
+                        failed = Some((state_display[sid].clone(), tr));
                         break;
                     }
                 }
@@ -353,13 +473,15 @@ fn model_check_system(
             TemporalFormula::Eventually(q) => {
                 let fdesc = format!("◇({})", format_expr_concise(q));
                 let ce = check_eventually_from(
-                    &init_key,
+                    0,
                     q,
-                    sys.transitions.len(),
-                    &state_map,
-                    &trace_map,
+                    &sys.transitions,
+                    &states,
+                    &state_display,
+                    &parent,
                     &adj,
                     &enabled_map,
+                    &truncated_frontier,
                     &mut interp,
                 )?;
                 if let Some((skey, tr)) = ce {
@@ -389,17 +511,19 @@ fn model_check_system(
             TemporalFormula::LeadsTo(p, q) => {
                 let fdesc = format!("{} ~> {}", format_expr_concise(p), format_expr_concise(q));
                 let mut failed = None;
-                for (skey, st_env) in &state_map {
+                for (sid, st_env) in states.iter().enumerate() {
                     let p_holds = interp.eval_expr(p, st_env).map_err(|e| e.to_string())?;
                     if p_holds == Value::Bool(true) {
                         if let Some(ce) = check_eventually_from(
-                            skey,
+                            sid,
                             q,
-                            sys.transitions.len(),
-                            &state_map,
-                            &trace_map,
+                            &sys.transitions,
+                            &states,
+                            &state_display,
+                            &parent,
                             &adj,
                             &enabled_map,
+                            &truncated_frontier,
                             &mut interp,
                         )? {
                             failed = Some(ce);
@@ -440,111 +564,124 @@ fn model_check_system(
         transitions_fired,
         max_depth,
         max_branching_factor,
+        complete,
+        truncated_at,
         temporal_results,
         violations,
     })
 }
 
-/// Checks whether `q` holds eventually on all weakly fair paths starting from `start_key`.
-/// Returns `Ok(Some((violating_state, counterexample_trace)))` if a terminal ¬Q state or
-/// weakly fair ¬Q cycle is reachable from `start_key` without visiting any Q-state.
+/// Checks whether `q` holds eventually on all weakly fair paths starting from `start_id`.
+/// Returns `Ok(Some((violating_state, counterexample_trace)))` if a genuine terminal ¬Q state or
+/// weakly fair ¬Q cycle is reachable from `start_id` without visiting any Q-state.
 #[allow(clippy::too_many_arguments)]
 fn check_eventually_from(
-    start_key: &str,
+    start_id: usize,
     q: &Expr,
-    num_transitions: usize,
-    state_map: &BTreeMap<String, BTreeMap<String, Value>>,
-    trace_map: &BTreeMap<String, Vec<String>>,
-    adj: &BTreeMap<String, Vec<(usize, String)>>,
-    enabled_map: &BTreeMap<String, BTreeSet<usize>>,
+    transitions: &[GuardedTransition],
+    states: &[BTreeMap<String, Value>],
+    state_display: &[String],
+    parent: &[Option<(usize, usize, usize)>],
+    adj: &[Vec<(usize, usize)>],
+    enabled_map: &[BTreeSet<usize>],
+    truncated_frontier: &BTreeSet<usize>,
     interp: &mut Interpreter,
 ) -> Result<Option<(String, Vec<String>)>, String> {
-    let mut q_holds_map: BTreeMap<String, bool> = BTreeMap::new();
-    for (k, st) in state_map {
+    let mut q_holds = Vec::with_capacity(states.len());
+    for st in states {
         let v = interp.eval_expr(q, st).map_err(|e| e.to_string())?;
-        q_holds_map.insert(k.clone(), v == Value::Bool(true));
+        q_holds.push(v == Value::Bool(true));
     }
 
-    if q_holds_map.get(start_key).copied().unwrap_or(false) {
+    if q_holds.get(start_id).copied().unwrap_or(false) {
         return Ok(None);
     }
 
-    // Collect subgraph V_not_q reachable from `start_key` via ¬Q paths
+    // Collect subgraph V_not_q reachable from `start_id` via ¬Q paths
     let mut not_q_nodes = BTreeSet::new();
     let mut bfs = VecDeque::new();
-    not_q_nodes.insert(start_key.to_string());
-    bfs.push_back(start_key.to_string());
+    not_q_nodes.insert(start_id);
+    bfs.push_back(start_id);
 
     while let Some(u) = bfs.pop_front() {
-        let outs = adj.get(&u).cloned().unwrap_or_default();
+        let outs = &adj[u];
         if outs.is_empty() {
-            // Terminal ¬Q state reached before Q ever held!
-            let mut tr = trace_map.get(&u).cloned().unwrap_or_default();
-            tr.push(format!("Halted in ¬Q terminal state: {{ {} }}", u));
-            return Ok(Some((u, tr)));
+            // Only report a terminal ¬Q violation if `u` is a genuine terminal state,
+            // NOT a frontier state whose outgoing transitions were truncated by `max_states`.
+            if !truncated_frontier.contains(&u) {
+                let mut tr = reconstruct_trace(u, state_display, parent, transitions);
+                tr.push(format!(
+                    "Halted in ¬Q terminal state: {{ {} }}",
+                    state_display[u]
+                ));
+                return Ok(Some((state_display[u].clone(), tr)));
+            }
+            continue;
         }
-        for (_, v) in outs {
-            if !q_holds_map.get(&v).copied().unwrap_or(false) && not_q_nodes.insert(v.clone()) {
+        for &(_, v) in outs {
+            if !q_holds[v] && not_q_nodes.insert(v) {
                 bfs.push_back(v);
             }
         }
     }
 
+    let num_transitions = transitions.len();
     // Decompose V_not_q into Strongly Connected Components (Tarjan's algorithm)
     let sccs = tarjan_sccs(&not_q_nodes, adj);
     for scc in sccs {
-        let scc_set: BTreeSet<String> = scc.iter().cloned().collect();
+        let scc_set: BTreeSet<usize> = scc.iter().copied().collect();
         // Check if this SCC contains at least one internal transition edge
-        let mut internal_edges = Vec::new();
-        for u in &scc {
-            if let Some(outs) = adj.get(u) {
-                for (br, v) in outs {
-                    if scc_set.contains(v) {
-                        internal_edges.push((u.clone(), *br, v.clone()));
-                    }
+        let mut has_internal_edge = false;
+        for &u in &scc {
+            for &(_, v) in &adj[u] {
+                if scc_set.contains(&v) {
+                    has_internal_edge = true;
+                    break;
                 }
             }
+            if has_internal_edge {
+                break;
+            }
         }
-        if internal_edges.is_empty() {
+        if !has_internal_edge {
             continue;
         }
 
-        // Check Weak Fairness (Justice):
-        // A cycle C is unfair iff there exists a transition `t` that is enabled in EVERY state of C,
-        // yet `t` is never taken inside C (all edges for `t` exit C).
-        // Also check whether removing such unfair transitions still leaves a fair sub-cycle inside C.
-        if let Some(cycle_node) = find_fair_cycle_in_subgraph(&scc_set, num_transitions, adj, enabled_map) {
-            let mut tr = trace_map.get(&cycle_node).cloned().unwrap_or_default();
-            let cycle_desc: Vec<String> = scc.iter().map(|s| format!("{{ {} }}", s)).collect();
+        // Check Weak Fairness (Justice)
+        if let Some(cycle_node) =
+            find_fair_cycle_in_subgraph(&scc_set, num_transitions, adj, enabled_map)
+        {
+            let mut tr = reconstruct_trace(cycle_node, state_display, parent, transitions);
+            let cycle_desc: Vec<String> = scc
+                .iter()
+                .map(|&s| format!("{{ {} }}", state_display[s]))
+                .collect();
             tr.push(format!(
                 "Weakly Fair ¬Q Cycle (Lasso): {}",
                 cycle_desc.join(" -> ")
             ));
-            return Ok(Some((cycle_node, tr)));
+            return Ok(Some((state_display[cycle_node].clone(), tr)));
         }
     }
 
     Ok(None)
 }
 
-/// Iteratively prunes transitions that are continuously enabled across an SCC but always exit it,
-/// checking if a weakly fair cycle remains.
+/// Checks if a weakly fair cycle exists within `nodes`.
 fn find_fair_cycle_in_subgraph(
-    nodes: &BTreeSet<String>,
+    nodes: &BTreeSet<usize>,
     num_transitions: usize,
-    adj: &BTreeMap<String, Vec<(usize, String)>>,
-    enabled_map: &BTreeMap<String, BTreeSet<usize>>,
-) -> Option<String> {
+    adj: &[Vec<(usize, usize)>],
+    enabled_map: &[BTreeSet<usize>],
+) -> Option<usize> {
     let sccs = tarjan_sccs(nodes, adj);
     for scc in sccs {
-        let scc_set: BTreeSet<String> = scc.iter().cloned().collect();
+        let scc_set: BTreeSet<usize> = scc.iter().copied().collect();
         let mut internal_transitions = BTreeSet::new();
-        for u in &scc {
-            if let Some(outs) = adj.get(u) {
-                for (br, v) in outs {
-                    if scc_set.contains(v) {
-                        internal_transitions.insert(*br);
-                    }
+        for &u in &scc {
+            for &(br, v) in &adj[u] {
+                if scc_set.contains(&v) {
+                    internal_transitions.insert(br);
                 }
             }
         }
@@ -556,72 +693,62 @@ fn find_fair_cycle_in_subgraph(
         // but is NOT in `internal_transitions` (meaning firing it always exits `scc_set`).
         let mut unfair_exiting_transitions = Vec::new();
         for t_idx in 0..num_transitions {
-            let continuously_enabled = scc_set.iter().all(|s| {
-                enabled_map
-                    .get(s)
-                    .map(|ens| ens.contains(&t_idx))
-                    .unwrap_or(false)
-            });
+            let continuously_enabled = scc_set
+                .iter()
+                .all(|&s| enabled_map[s].contains(&t_idx));
             if continuously_enabled && !internal_transitions.contains(&t_idx) {
                 unfair_exiting_transitions.push(t_idx);
             }
         }
 
         if unfair_exiting_transitions.is_empty() {
-            // Every continuously-enabled transition can be taken within `scc_set`,
-            // so `scc_set` forms a valid weakly fair cycle!
             return scc.into_iter().next();
         }
     }
     None
 }
 
-fn tarjan_sccs(
-    nodes: &BTreeSet<String>,
-    adj: &BTreeMap<String, Vec<(usize, String)>>,
-) -> Vec<Vec<String>> {
+fn tarjan_sccs(nodes: &BTreeSet<usize>, adj: &[Vec<(usize, usize)>]) -> Vec<Vec<usize>> {
     struct TarjanState<'a> {
         index: usize,
-        indices: BTreeMap<String, usize>,
-        lowlink: BTreeMap<String, usize>,
-        stack: Vec<String>,
-        on_stack: BTreeSet<String>,
-        sccs: Vec<Vec<String>>,
-        nodes: &'a BTreeSet<String>,
-        adj: &'a BTreeMap<String, Vec<(usize, String)>>,
+        indices: BTreeMap<usize, usize>,
+        lowlink: BTreeMap<usize, usize>,
+        stack: Vec<usize>,
+        on_stack: BTreeSet<usize>,
+        sccs: Vec<Vec<usize>>,
+        nodes: &'a BTreeSet<usize>,
+        adj: &'a [Vec<(usize, usize)>],
     }
 
-    fn strongconnect(v: &str, st: &mut TarjanState<'_>) {
+    fn strongconnect(v: usize, st: &mut TarjanState<'_>) {
         let idx = st.index;
         st.index += 1;
-        st.indices.insert(v.to_string(), idx);
-        st.lowlink.insert(v.to_string(), idx);
-        st.stack.push(v.to_string());
-        st.on_stack.insert(v.to_string());
+        st.indices.insert(v, idx);
+        st.lowlink.insert(v, idx);
+        st.stack.push(v);
+        st.on_stack.insert(v);
 
-        if let Some(outs) = st.adj.get(v) {
-            for (_, w) in outs {
-                if !st.nodes.contains(w) {
-                    continue;
+        for &(_, w) in &st.adj[v] {
+            if !st.nodes.contains(&w) {
+                continue;
+            }
+            if !st.indices.contains_key(&w) {
+                strongconnect(w, st);
+                let lw = st.lowlink[&w];
+                let lv = st.lowlink[&v];
+                if lw < lv {
+                    st.lowlink.insert(v, lw);
                 }
-                if !st.indices.contains_key(w) {
-                    strongconnect(w, st);
-                    let lw = st.lowlink[w];
-                    let lv = st.lowlink[v];
-                    if lw < lv {
-                        st.lowlink.insert(v.to_string(), lw);
-                    }
-                } else if st.on_stack.contains(w) {
-                    let iw = st.indices[w];
-                    let lv = st.lowlink[v];
-                    if iw < lv {
-                        st.lowlink.insert(v.to_string(), iw);
-                    }
+            } else if st.on_stack.contains(&w) {
+                let iw = st.indices[&w];
+                let lv = st.lowlink[&v];
+                if iw < lv {
+                    st.lowlink.insert(v, iw);
                 }
             }
         }
 
-        if st.lowlink[v] == st.indices[v] {
+        if st.lowlink[&v] == st.indices[&v] {
             let mut scc = Vec::new();
             while let Some(w) = st.stack.pop() {
                 st.on_stack.remove(&w);
@@ -646,8 +773,8 @@ fn tarjan_sccs(
         adj,
     };
 
-    for n in nodes {
-        if !st.indices.contains_key(n) {
+    for &n in nodes {
+        if !st.indices.contains_key(&n) {
             strongconnect(n, &mut st);
         }
     }

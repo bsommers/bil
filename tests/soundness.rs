@@ -1,4 +1,4 @@
-use bil::{ smt::Verdict, verify_source };
+use bil::{ model_check_source, smt::Verdict, verify_source };
 
 #[test]
 fn test_p0_1_false_lemma_not_proved_and_not_assumed() {
@@ -323,6 +323,64 @@ fn test_p0_4_capture_avoiding_complete_subst_and_eval_error_refutes() {
     assert!(!let_totality.verified);
 }
 
+#[test]
+fn test_p0_5_model_checker_truncation_completeness_and_linear_scaling() {
+    // 1. Truncated state space (max_states = 5 on a 21-state chain) must report
+    //    complete == false, truncated_at == Some(5), and must NOT report a bogus
+    //    "Halted in ¬Q terminal state" violation on the unexpanded frontier state.
+    let chain_src = r#"
+        system LongChain {
+          state c: Int = 0
+          invariant bounded: c <= 20
+          temporal reaches_goal: eventually(c == 20)
+          terminal: c == 20
 
+          transition:
+            c < 20 -> c := c + 1
+        }
+    "#;
+    let truncated_reports = model_check_source(chain_src, 5).expect("model_check truncated");
+    assert_eq!(truncated_reports.len(), 1);
+    let tr_rep = &truncated_reports[0];
+    assert_eq!(tr_rep.states_explored, 5);
+    assert!(
+        !tr_rep.complete,
+        "State space truncated at max_states=5 must set complete = false"
+    );
+    assert_eq!(tr_rep.truncated_at, Some(5));
+    assert!(
+        tr_rep.violations.is_empty(),
+        "Truncated frontier must not fabricate a false terminal ¬Q LTL violation, got: {:?}",
+        tr_rep.violations
+    );
 
+    // Full exploration with max_states = 50 must complete and verify
+    let full_reports = model_check_source(chain_src, 50).expect("model_check full");
+    let full_rep = &full_reports[0];
+    assert_eq!(full_rep.states_explored, 21);
+    assert!(full_rep.complete);
+    assert_eq!(full_rep.truncated_at, None);
+    assert!(full_rep.violations.is_empty());
 
+    // 2. Collision resistance: two distinct states whose naive "k=v; k=v" strings
+    //    are identical ("a=x; b=1; b=2") must NOT collide in visited state table.
+    let collision_src = r#"
+        system KeyCollision {
+          state a: String = "x"
+          state b: String = "1; b=2"
+
+          invariant no_shifted_delim: a != "x; b=1"
+          terminal: a == "x; b=1"
+
+          transition:
+            a == "x" -> a := "x; b=1", b := "2"
+        }
+    "#;
+    let col_reports = model_check_source(collision_src, 50).expect("model_check collision");
+    let col_rep = &col_reports[0];
+    assert!(
+        !col_rep.violations.is_empty(),
+        "State (a=\"x; b=1\", b=\"2\") must not collide with (a=\"x\", b=\"1; b=2\") and must trigger invariant violation"
+    );
+    assert_eq!(col_rep.violations[0].trace.len(), 2);
+}
