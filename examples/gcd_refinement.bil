@@ -28,6 +28,7 @@ fn gcd(a: Int, b: Int) -> Int
   refines  gcd_spec
   requires a > 0 && b > 0
   ensures  result > 0 && (a % result == 0) && (b % result == 0)
+           && (forall d in 1..=min(a, b) : (a % d == 0 && b % d == 0) => d <= result)
 =
   do x = a, y = b
     invariant x > 0 && y > 0 && gcd_val(x, y) == gcd_val(a, b)

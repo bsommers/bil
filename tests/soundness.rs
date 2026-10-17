@@ -64,3 +64,57 @@ fn test_p0_1_false_lemma_not_proved_and_not_assumed() {
         "inconsistent axioms must not vacuously prove false postcondition"
     );
 }
+
+#[test]
+fn test_p0_2_concrete_counterexample_beats_smt_and_honest_status() {
+    use bil::smt::{ProverResult, Verdict};
+    use bil::wp::{decide_status, Status};
+
+    // 1. Concrete counterexample from bounded search ALWAYS wins over any SMT verdict
+    let fake_unsat = ProverResult {
+        prover: "z3".into(),
+        verdict: Verdict::Inconsistent,
+        stdout: "unsat".into(),
+        stderr: String::new(),
+        elapsed_ms: 1,
+        detail: "unsat".into(),
+    };
+    let st = decide_status(Some("{ x = 1 }".into()), 8, Some(&fake_unsat));
+    assert_eq!(
+        st,
+        Status::Refuted {
+            counterexample: "{ x = 1 }".into()
+        }
+    );
+
+    // 2. Function contract that passes the 8-sample bounded check (x == 7 is not in sample set)
+    //    but is refuted by SMT (sat on negation) MUST be Refuted (verified == false)
+    let missed_by_bounded_src = r#"
+        fn sneaky(x: Int) -> Int
+          requires x == 7
+          ensures  result == 0
+        =
+          x
+    "#;
+    let obs = verify_source(missed_by_bounded_src).expect("typecheck sneaky");
+    let ob = obs.iter().find(|o| o.fn_name == "sneaky").unwrap();
+    if ob.smt_verdict == Some(Verdict::Consistent) {
+        assert!(
+            !ob.verified,
+            "FunctionContract refuted by SMT (x == 7) must not be marked verified: {:?}",
+            ob
+        );
+        assert!(matches!(ob.status, Status::Refuted { .. }));
+        assert!(ob.counterexample.is_some());
+    }
+
+    // 3. Obligation that cannot be lowered to SMT (uses ADT with payload) is BoundedOnly, not Proved
+    let grid_src = std::fs::read_to_string("examples/smart_grid.bil").unwrap();
+    let grid_obs = verify_source(&grid_src).expect("verify smart_grid");
+    let classify_br = grid_obs
+        .iter()
+        .find(|o| o.fn_name == "classify_pipeline" && o.smt2_script.is_none())
+        .expect("classify_pipeline obligation with non-SMT ADT payload");
+    assert!(matches!(classify_br.status, Status::BoundedOnly { .. }));
+}
+

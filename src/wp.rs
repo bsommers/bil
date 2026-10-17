@@ -2,10 +2,59 @@ use crate::ast::*;
 use crate::eval::{Interpreter, Value};
 use crate::ontology::OntologyRegistry;
 use crate::smt::{
-    emit_vc_smt2, evaluate_vc_agreement, run_smt_prover, AgreementOutcome, Prover, Verdict,
+    emit_vc_smt2, evaluate_vc_agreement, run_smt_prover, AgreementOutcome, Prover, ProverResult,
+    Verdict,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    Proved { by: String },
+    Refuted { counterexample: String },
+    BoundedOnly { samples: usize },
+    Unknown { reason: String },
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Status::Proved { by } => write!(f, "PROVED (by {})", by),
+            Status::Refuted { .. } => write!(f, "REFUTED"),
+            Status::BoundedOnly { samples } => write!(f, "BOUNDED ({} samples)", samples),
+            Status::Unknown { reason } => write!(f, "UNKNOWN ({})", reason),
+        }
+    }
+}
+
+pub fn decide_status(
+    bounded_ce: Option<String>,
+    samples: usize,
+    smt: Option<&ProverResult>,
+) -> Status {
+    if let Some(ce) = bounded_ce {
+        return Status::Refuted { counterexample: ce };
+    }
+    match smt.map(|r| (&r.verdict, r.prover.as_str(), r.stdout.as_str(), r.detail.as_str())) {
+        Some((Verdict::Inconsistent, prover, _, _)) => Status::Proved {
+            by: prover.to_string(),
+        },
+        Some((Verdict::Consistent, _, stdout, _)) => Status::Refuted {
+            counterexample: format!("SMT model: {}", stdout.trim()),
+        },
+        Some((Verdict::Skipped, _, _, _)) | Some((Verdict::Unknown, _, _, _)) | None
+            if samples > 0 =>
+        {
+            Status::BoundedOnly { samples }
+        }
+        Some((_, _, _, detail)) => Status::Unknown {
+            reason: detail.to_string(),
+        },
+        None => Status::Unknown {
+            reason: "no solver and no samples".into(),
+        },
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObligationKind {
@@ -65,6 +114,7 @@ pub struct ProofObligation {
     pub fn_name: String,
     pub kind: ObligationKind,
     pub formula_desc: String,
+    pub status: Status,
     pub verified: bool,
     pub counterexample: Option<String>,
     pub smt_prover: Option<String>,
@@ -330,7 +380,8 @@ fn build_vc_obligation(
     include_axioms: bool,
     proved_lemmas: &[ProofDecl],
 ) -> ProofObligation {
-    let (bounded_ok, ce) = check_vc_bounded(program, ontology, fn_params, state_params, vc);
+    let (bounded_ok, ce, samples) =
+        check_vc_bounded(program, ontology, fn_params, state_params, vc);
 
     let mut all_params = Vec::new();
     let mut seen = BTreeSet::new();
@@ -348,26 +399,30 @@ fn build_vc_obligation(
         include_axioms,
         proved_lemmas,
     );
-    let (smt_prover, smt_verdict, agreement) = if let Some(ref script) = smt2_script {
-        let res = run_smt_prover(Prover::Auto, script);
+    let smt_res = smt2_script
+        .as_ref()
+        .map(|script| run_smt_prover(Prover::Auto, script));
+    let (smt_prover, smt_verdict, agreement) = if let Some(ref res) = smt_res {
         let agr = evaluate_vc_agreement(bounded_ok, res.verdict);
-        (Some(res.prover), Some(res.verdict), Some(agr))
+        (Some(res.prover.clone()), Some(res.verdict), Some(agr))
     } else {
         (None, None, None)
     };
 
-    let verified = match smt_verdict {
-        Some(Verdict::Inconsistent) => bounded_ok,
-        Some(Verdict::Consistent) => false,
-        _ => bounded_ok,
+    let status = decide_status(ce.clone(), samples, smt_res.as_ref());
+    let verified = matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
+    let counterexample = match &status {
+        Status::Refuted { counterexample } => Some(counterexample.clone()),
+        _ => ce,
     };
 
     ProofObligation {
         fn_name: fn_name.to_string(),
         kind,
         formula_desc: format_expr_concise(vc),
+        status,
         verified,
-        counterexample: ce,
+        counterexample,
         smt_prover,
         smt_verdict,
         agreement,
@@ -413,7 +468,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                     axioms_consistent,
                     &proved_lemmas,
                 );
-                if ob.verified && ob.smt_verdict == Some(Verdict::Inconsistent) {
+                if matches!(ob.status, Status::Proved { .. }) {
                     proved_lemmas.push(pr.clone());
                 }
                 obligations.push(ob);
@@ -455,7 +510,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                         ));
 
                         // (Pre_spec && Post_impl) => Post_spec (checked over actual execution of f + SMT on contract)
-                        let (ok_post, ce_post) =
+                        let (ok_post, ce_post, samples_post) =
                             check_refinement_execution(program, ontology, f, &spec_ens);
                         let mut post_params = f.params.clone();
                         post_params.push(Param {
@@ -471,14 +526,23 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             false,
                             &proved_lemmas,
                         );
+                        let smt_res = smt2_script
+                            .as_ref()
+                            .map(|script| run_smt_prover(Prover::Auto, script));
                         let (smt_prover, smt_verdict, agreement) =
-                            if let Some(ref script) = smt2_script {
-                                let res = run_smt_prover(Prover::Auto, script);
+                            if let Some(ref res) = smt_res {
                                 let agr = evaluate_vc_agreement(ok_post, res.verdict);
-                                (Some(res.prover), Some(res.verdict), Some(agr))
+                                (Some(res.prover.clone()), Some(res.verdict), Some(agr))
                             } else {
                                 (None, None, None)
                             };
+                        let status = decide_status(ce_post.clone(), samples_post, smt_res.as_ref());
+                        let verified =
+                            matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
+                        let counterexample = match &status {
+                            Status::Refuted { counterexample } => Some(counterexample.clone()),
+                            _ => ce_post,
+                        };
                         obligations.push(ProofObligation {
                             fn_name: f.name.clone(),
                             kind: ObligationKind::RefinementPostcondition(spec_name.clone()),
@@ -488,8 +552,9 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                 format_expr_concise(&post),
                                 format_expr_concise(&spec_ens)
                             ),
-                            verified: ok_post,
-                            counterexample: ce_post,
+                            status,
+                            verified,
+                            counterexample,
                             smt_prover,
                             smt_verdict,
                             agreement,
@@ -663,7 +728,8 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                     }
                     _ => {
                         if f.requires.is_some() || f.ensures.is_some() {
-                            let (ok, ce) = check_refinement_execution(program, ontology, f, &post);
+                            let (ok, ce, samples) =
+                                check_refinement_execution(program, ontology, f, &post);
                             let mut map = BTreeMap::new();
                             map.insert("result".to_string(), f.body.clone());
                             let vc_direct = implies(pre.clone(), subst_expr(&post, &map));
@@ -675,14 +741,25 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                 axioms_consistent,
                                 &proved_lemmas,
                             );
+                            let smt_res = smt2_script
+                                .as_ref()
+                                .map(|script| run_smt_prover(Prover::Auto, script));
                             let (smt_prover, smt_verdict, agreement) =
-                                if let Some(ref script) = smt2_script {
-                                    let res = run_smt_prover(Prover::Auto, script);
+                                if let Some(ref res) = smt_res {
                                     let agr = evaluate_vc_agreement(ok, res.verdict);
-                                    (Some(res.prover), Some(res.verdict), Some(agr))
+                                    (Some(res.prover.clone()), Some(res.verdict), Some(agr))
                                 } else {
                                     (None, None, None)
                                 };
+                            let status = decide_status(ce.clone(), samples, smt_res.as_ref());
+                            let verified = matches!(
+                                status,
+                                Status::Proved { .. } | Status::BoundedOnly { .. }
+                            );
+                            let counterexample = match &status {
+                                Status::Refuted { counterexample } => Some(counterexample.clone()),
+                                _ => ce,
+                            };
                             obligations.push(ProofObligation {
                                 fn_name: f.name.clone(),
                                 kind: ObligationKind::FunctionContract,
@@ -691,8 +768,9 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                     format_expr_concise(&pre),
                                     format_expr_concise(&post)
                                 ),
-                                verified: ok,
-                                counterexample: ce,
+                                status,
+                                verified,
+                                counterexample,
                                 smt_prover,
                                 smt_verdict,
                                 agreement,
@@ -716,7 +794,7 @@ fn check_vc_bounded(
     fn_params: &[Param],
     state_params: &[Param],
     vc: &Expr,
-) -> (bool, Option<String>) {
+) -> (bool, Option<String>, usize) {
     let mut all_params = Vec::new();
     let mut seen = BTreeSet::new();
     for p in fn_params.iter().chain(state_params.iter()) {
@@ -729,6 +807,10 @@ fn check_vc_bounded(
         .iter()
         .map(|p| (p.name.clone(), sample_domain_for_type(&p.ty, ontology)))
         .collect();
+    let samples = domains
+        .iter()
+        .map(|(_, vals)| vals.len().max(1))
+        .product::<usize>();
 
     let mut interp = Interpreter::new(ontology.clone(), 42, false);
     let _ = interp.run_program(&Program {
@@ -741,7 +823,8 @@ fn check_vc_bounded(
     });
 
     let mut env = BTreeMap::new();
-    search_counterexample(&mut interp, &domains, 0, &mut env, vc)
+    let (ok, ce) = search_counterexample(&mut interp, &domains, 0, &mut env, vc);
+    (ok, ce, samples)
 }
 
 fn check_refinement_execution(
@@ -749,12 +832,16 @@ fn check_refinement_execution(
     ontology: &OntologyRegistry,
     f: &FnDecl,
     post: &Expr,
-) -> (bool, Option<String>) {
+) -> (bool, Option<String>, usize) {
     let domains: Vec<(String, Vec<Value>)> = f
         .params
         .iter()
         .map(|p| (p.name.clone(), sample_domain_for_type(&p.ty, ontology)))
         .collect();
+    let samples = domains
+        .iter()
+        .map(|(_, vals)| vals.len().max(1))
+        .product::<usize>();
 
     let mut interp = Interpreter::new(ontology.clone(), 42, false);
     let _ = interp.run_program(&Program {
@@ -768,7 +855,8 @@ fn check_refinement_execution(
 
     let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
     let mut env = BTreeMap::new();
-    search_fn_post(&mut interp, &domains, 0, &mut env, f, &pre, post)
+    let (ok, ce) = search_fn_post(&mut interp, &domains, 0, &mut env, f, &pre, post);
+    (ok, ce, samples)
 }
 
 fn search_fn_post(

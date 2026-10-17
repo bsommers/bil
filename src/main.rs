@@ -306,7 +306,9 @@ fn main() {
                         );
                         let mut all_ok = true;
                         for ob in &obligations {
-                            let status = if ob.verified { "PROVED" } else { "FAILED" };
+                            if !ob.verified {
+                                all_ok = false;
+                            }
                             let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
                                 (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
                                     format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
@@ -316,10 +318,9 @@ fn main() {
                                 }
                                 _ => String::new(),
                             };
-                            println!("  [{}] fn `{}` — {}{}", status, ob.fn_name, ob.kind, smt_badge);
+                            println!("  [{}] fn `{}` — {}{}", ob.status, ob.fn_name, ob.kind, smt_badge);
                             println!("           VC: {}", ob.formula_desc);
                             if let Some(ce) = &ob.counterexample {
-                                all_ok = false;
                                 println!("           Counterexample: {}", ce);
                             }
                         }
