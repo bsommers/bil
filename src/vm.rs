@@ -440,18 +440,13 @@ impl BytecodeVm {
                 }
                 BytecodeOp::Unary(uop) => {
                     let v = stack.pop().ok_or("VM stack underflow on Unary")?;
-                    let res = match (uop, v) {
-                        (UnaryOp::Not, Value::Bool(b)) => Value::Bool(!b),
-                        (UnaryOp::Neg, Value::Int(i)) => Value::Int(crate::semantics::int_neg(i)?),
-                        (UnaryOp::Neg, Value::Float(f)) => Value::Float(-f),
-                        _ => return Err("VM invalid unary operand".into()),
-                    };
+                    let res = crate::semantics::eval_unary_value(*uop, v)?;
                     stack.push(res);
                 }
                 BytecodeOp::Binary(bop) => {
                     let r = stack.pop().ok_or("VM stack underflow on Binary rhs")?;
                     let l = stack.pop().ok_or("VM stack underflow on Binary lhs")?;
-                    let res = eval_vm_binop(*bop, l, r)?;
+                    let res = crate::semantics::eval_binary_value(*bop, l, r)?;
                     stack.push(res);
                 }
                 BytecodeOp::MakeList(n) => {
@@ -869,112 +864,13 @@ impl BytecodeVm {
     }
 }
 
-fn eval_vm_binop(op: BinOp, l: Value, r: Value) -> Result<Value, String> {
-    match op {
-        BinOp::Implies => match (l, r) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(!a || b)),
-            _ => Err("=> expects Bool".into()),
-        },
-        BinOp::Iff => match (l, r) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
-            _ => Err("<=> expects Bool".into()),
-        },
-        BinOp::And => match (l, r) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
-            _ => Err("&& expects Bool".into()),
-        },
-        BinOp::Or => match (l, r) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
-            _ => Err("|| expects Bool".into()),
-        },
-        BinOp::Eq => Ok(Value::Bool(l == r)),
-        BinOp::Neq => Ok(Value::Bool(l != r)),
-        BinOp::Lt => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            _ => Err("< expects numeric".into()),
-        },
-        BinOp::Le => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            _ => Err("<= expects numeric".into()),
-        },
-        BinOp::Gt => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            _ => Err("> expects numeric".into()),
-        },
-        BinOp::Ge => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-            _ => Err(">= expects numeric".into()),
-        },
-        BinOp::In => match (l, r) {
-            (elem, Value::List(list)) => Ok(Value::Bool(list.contains(&elem))),
-            _ => Err("in expects List".into()),
-        },
-        BinOp::Range => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => {
-                Ok(Value::List(Rc::new((a..b).map(Value::Int).collect())))
-            }
-            _ => Err(".. expects Int".into()),
-        },
-        BinOp::RangeInc => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => {
-                Ok(Value::List(Rc::new((a..=b).map(Value::Int).collect())))
-            }
-            _ => Err("..= expects Int".into()),
-        },
-        BinOp::Add => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_add(a, b)?)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
-            _ => Err("+ expects matching numeric or String".into()),
-        },
-        BinOp::Sub => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_sub(a, b)?)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-            _ => Err("- expects numeric".into()),
-        },
-        BinOp::Mul => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_mul(a, b)?)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            _ => Err("* expects numeric".into()),
-        },
-        BinOp::Div => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_div(a, b)?)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-            _ => Err("/ expects numeric".into()),
-        },
-        BinOp::Mod => match (l, r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(crate::semantics::int_mod(a, b)?)),
-            _ => Err("% expects Int".into()),
-        },
-        BinOp::Pipe => Err("Raw Pipe in VM binary op".into()),
-    }
-}
-
 fn match_pattern(pat: &Pattern, val: &Value, env: &mut BTreeMap<String, Value>) -> bool {
-    match (pat, val) {
-        (Pattern::Wildcard, _) => true,
-        (Pattern::Var(v), _) => {
-            env.insert(v.clone(), val.clone());
-            true
+    if let Some(bindings) = crate::semantics::match_pattern_bindings(pat, val) {
+        for (k, v) in bindings {
+            env.insert(k, v);
         }
-        (Pattern::Int(a), Value::Int(b)) => a == b,
-        (Pattern::Bool(a), Value::Bool(b)) => a == b,
-        (Pattern::Str(a), Value::Str(b)) => a == b,
-        (Pattern::Variant(vname, bindings), Value::AdtVariant { variant, fields }) => {
-            if vname != variant || bindings.len() != fields.len() {
-                return false;
-            }
-            for (b, fval) in bindings.iter().zip(fields.iter()) {
-                if b != "_" {
-                    env.insert(b.clone(), fval.clone());
-                }
-            }
-            true
-        }
-        _ => false,
+        true
+    } else {
+        false
     }
 }

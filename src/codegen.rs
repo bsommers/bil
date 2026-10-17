@@ -54,50 +54,9 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
         }
     }
 
-    // 2. Emit standalone Ghost-Erased LIR runtime value & evaluator for full OntoLogic + Pipeline + GCL execution
-    let _ = writeln!(
-        out,
-        r#"#[derive(Debug, Clone, PartialEq)]
-pub enum BilVal {{
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Str(String),
-    Unit,
-    List(Rc<Vec<BilVal>>),
-    Concept {{ name: String, fields: BTreeMap<String, BilVal> }},
-    Adt {{ variant: String, fields: Vec<BilVal> }},
-}}
-
-impl fmt::Display for BilVal {{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {{
-        match self {{
-            BilVal::Int(v) => write!(f, "{{}}", v),
-            BilVal::Float(v) => write!(f, "{{}}", v),
-            BilVal::Bool(v) => write!(f, "{{}}", v),
-            BilVal::Str(v) => write!(f, "\"{{}}\"", v),
-            BilVal::Unit => write!(f, "()"),
-            BilVal::List(items) => {{
-                let s: Vec<String> = items.iter().map(|i| i.to_string()).collect();
-                write!(f, "[{{}}]", s.join(", "))
-            }}
-            BilVal::Concept {{ name, fields }} => {{
-                let s: Vec<String> = fields.iter().map(|(k, v)| format!("{{}}: {{}}", k, v)).collect();
-                write!(f, "{{}} {{{{ {{}} }}}}", name, s.join(", "))
-            }}
-            BilVal::Adt {{ variant, fields }} => {{
-                if fields.is_empty() {{
-                    write!(f, "{{}}", variant)
-                }} else {{
-                    let s: Vec<String> = fields.iter().map(|v| v.to_string()).collect();
-                    write!(f, "{{}}({{}})", variant, s.join(", "))
-                }}
-            }}
-        }}
-    }}
-}}
-"#
-    );
+    // 2. Emit standalone Ghost-Erased LIR runtime value & evaluator from syntax-checked `runtime_prelude.rs`
+    out.push_str(include_str!("runtime_prelude.rs"));
+    out.push('\n');
 
     // Emit each LirFn as a callable `bil_fn_<name>(env: &mut BTreeMap<String, BilVal>, args: Vec<BilVal>) -> BilVal`
     for func in &lir.functions {
@@ -167,35 +126,6 @@ impl fmt::Display for BilVal {{
     );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "}}\n");
-
-    // Emit binary operator helper
-    let _ = writeln!(
-        out,
-        r#"fn eval_binop(op: &str, l: BilVal, r: BilVal) -> BilVal {{
-    match op {{
-        "=>" => match (l, r) {{ (BilVal::Bool(a), BilVal::Bool(b)) => BilVal::Bool(!a || b), _ => panic!("=>") }},
-        "<=>" => match (l, r) {{ (BilVal::Bool(a), BilVal::Bool(b)) => BilVal::Bool(a == b), _ => panic!("<=>") }},
-        "&&" => match (l, r) {{ (BilVal::Bool(a), BilVal::Bool(b)) => BilVal::Bool(a && b), _ => panic!("&&") }},
-        "||" => match (l, r) {{ (BilVal::Bool(a), BilVal::Bool(b)) => BilVal::Bool(a || b), _ => panic!("||") }},
-        "==" => BilVal::Bool(l == r),
-        "!=" => BilVal::Bool(l != r),
-        "<" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Bool(a < b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Bool(a < b), _ => panic!("<") }},
-        "<=" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Bool(a <= b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Bool(a <= b), _ => panic!("<=") }},
-        ">" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Bool(a > b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Bool(a > b), _ => panic!(">") }},
-        ">=" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Bool(a >= b), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Bool(a >= b), _ => panic!(">=") }},
-        "in" => match (l, r) {{ (elem, BilVal::List(list)) => BilVal::Bool(list.contains(&elem)), _ => panic!("in") }},
-        ".." => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::List(Rc::new((a..b).map(BilVal::Int).collect())), _ => panic!("..") }},
-        "..=" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::List(Rc::new((a..=b).map(BilVal::Int).collect())), _ => panic!("..=") }},
-        "+" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_add(b).expect("Integer addition overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a + b), (BilVal::Str(a), BilVal::Str(b)) => BilVal::Str(format!("{{}}{{}}", a, b)), _ => panic!("+") }},
-        "-" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_sub(b).expect("Integer subtraction overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a - b), _ => panic!("-") }},
-        "*" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_mul(b).expect("Integer multiplication overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a * b), _ => panic!("*") }},
-        "/" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_div_euclid(b).expect("Division by zero or overflow")), (BilVal::Float(a), BilVal::Float(b)) => BilVal::Float(a / b), _ => panic!("/") }},
-        "%" => match (l, r) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(a.checked_rem_euclid(b).expect("Modulo by zero or overflow")), _ => panic!("%") }},
-        _ => panic!("unknown op {{}}", op),
-    }}
-}}
-"#
-    );
 
     // Emit main() executing all Ghost-Erased globals and printing outputs
     let _ = writeln!(out, "fn main() {{");
@@ -750,3 +680,27 @@ pub fn compile_native_binary(
         elapsed_ms: start.elapsed().as_millis(),
     })
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod aot_prelude_check {
+    use std::collections::BTreeMap;
+    use std::fmt;
+    use std::rc::Rc;
+
+    include!("runtime_prelude.rs");
+
+    #[test]
+    fn test_runtime_prelude_euclidean_and_display() {
+        assert_eq!(
+            eval_binop("/", BilVal::Int(-7), BilVal::Int(2)),
+            BilVal::Int(-4)
+        );
+        assert_eq!(
+            eval_binop("%", BilVal::Int(-7), BilVal::Int(2)),
+            BilVal::Int(1)
+        );
+        assert_eq!(BilVal::Int(42).to_string(), "42");
+    }
+}
+

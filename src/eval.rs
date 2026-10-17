@@ -251,16 +251,8 @@ impl Interpreter {
             }
             Expr::Unary { op, expr: inner } => {
                 let v = self.eval_expr(inner, env)?;
-                match (op, v) {
-                    (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-                    (UnaryOp::Neg, Value::Int(i)) => crate::semantics::int_neg(i)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
-                    (_, other) => Err(RuntimeError {
-                        message: format!("Invalid unary operation on {}", other),
-                    }),
-                }
+                crate::semantics::eval_unary_value(*op, v)
+                    .map_err(|message| RuntimeError { message })
             }
             Expr::Binary { op, left, right } => {
                 if *op == BinOp::Pipe {
@@ -292,52 +284,8 @@ impl Interpreter {
 
                 let lv = self.eval_expr(left, env)?;
                 let rv = self.eval_expr(right, env)?;
-
-                match (op, lv, rv) {
-                    (BinOp::Iff, Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
-                    (BinOp::Eq, a, b) => Ok(Value::Bool(a == b)),
-                    (BinOp::Neq, a, b) => Ok(Value::Bool(a != b)),
-                    (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
-                    (BinOp::Le, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
-                    (BinOp::Gt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
-                    (BinOp::Ge, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
-                    (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-                    (BinOp::Le, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-                    (BinOp::Gt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-                    (BinOp::Ge, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-                    (BinOp::In, elem, Value::List(list)) => Ok(Value::Bool(list.contains(&elem))),
-                    (BinOp::Range, Value::Int(a), Value::Int(b)) => {
-                        let items: Vec<Value> = (a..b).map(Value::Int).collect();
-                        Ok(Value::List(Rc::new(items)))
-                    }
-                    (BinOp::RangeInc, Value::Int(a), Value::Int(b)) => {
-                        let items: Vec<Value> = (a..=b).map(Value::Int).collect();
-                        Ok(Value::List(Rc::new(items)))
-                    }
-                    (BinOp::Add, Value::Int(a), Value::Int(b)) => crate::semantics::int_add(a, b)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (BinOp::Sub, Value::Int(a), Value::Int(b)) => crate::semantics::int_sub(a, b)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (BinOp::Mul, Value::Int(a), Value::Int(b)) => crate::semantics::int_mul(a, b)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (BinOp::Div, Value::Int(a), Value::Int(b)) => crate::semantics::int_div(a, b)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (BinOp::Mod, Value::Int(a), Value::Int(b)) => crate::semantics::int_mod(a, b)
-                        .map(Value::Int)
-                        .map_err(|message| RuntimeError { message }),
-                    (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                    (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-                    (BinOp::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-                    (BinOp::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-                    (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
-                    (op, l, r) => Err(RuntimeError {
-                        message: format!("Unsupported binary op {} on {} and {}", op, l, r),
-                    }),
-                }
+                crate::semantics::eval_binary_value(*op, lv, rv)
+                    .map_err(|message| RuntimeError { message })
             }
             Expr::Quantifier {
                 kind,
@@ -996,26 +944,5 @@ fn fill_partial(args: &[Option<Value>], replacement: Value) -> Vec<Value> {
 }
 
 fn match_pattern(pat: &Pattern, val: &Value) -> Option<Vec<(String, Value)>> {
-    match (pat, val) {
-        (Pattern::Wildcard, _) => Some(vec![]),
-        (Pattern::Var(v), other) => Some(vec![(v.clone(), other.clone())]),
-        (Pattern::Int(a), Value::Int(b)) if a == b => Some(vec![]),
-        (Pattern::Bool(a), Value::Bool(b)) if a == b => Some(vec![]),
-        (Pattern::Str(a), Value::Str(b)) if a == b => Some(vec![]),
-        (
-            Pattern::Variant(vname, bindings),
-            Value::AdtVariant {
-                variant, fields, ..
-            },
-        ) if vname == variant && bindings.len() == fields.len() => {
-            let mut out = Vec::new();
-            for (b, fval) in bindings.iter().zip(fields.iter()) {
-                if b != "_" {
-                    out.push((b.clone(), fval.clone()));
-                }
-            }
-            Some(out)
-        }
-        _ => None,
-    }
+    crate::semantics::match_pattern_bindings(pat, val)
 }
