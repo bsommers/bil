@@ -216,21 +216,26 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
             let mut verdict = Verdict::Unknown;
             let mut detail = format!("{} inconclusive", bin_name);
 
-            for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                if line == "sat" || line.starts_with("sat") {
-                    verdict = Verdict::Consistent;
-                    detail = format!("{} found satisfying model (sat)", bin_name);
-                    break;
-                }
-                if line == "unsat" || line.starts_with("unsat") {
-                    verdict = Verdict::Inconsistent;
-                    detail = format!("{} proved unsatisfiable (unsat)", bin_name);
-                    break;
-                }
-                if line == "unknown" || line.to_ascii_lowercase().contains("timeout") {
-                    verdict = Verdict::Unknown;
-                    detail = format!("{} returned unknown/timeout", bin_name);
-                    break;
+            if stdout.contains("(error") || stderr.contains("(error") {
+                verdict = Verdict::Unknown;
+                detail = format!("{} reported SMT-LIB error", bin_name);
+            } else {
+                for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    if line == "sat" || line.starts_with("sat") {
+                        verdict = Verdict::Consistent;
+                        detail = format!("{} found satisfying model (sat)", bin_name);
+                        break;
+                    }
+                    if line == "unsat" || line.starts_with("unsat") {
+                        verdict = Verdict::Inconsistent;
+                        detail = format!("{} proved unsatisfiable (unsat)", bin_name);
+                        break;
+                    }
+                    if line == "unknown" || line.to_ascii_lowercase().contains("timeout") {
+                        verdict = Verdict::Unknown;
+                        detail = format!("{} returned unknown/timeout", bin_name);
+                        break;
+                    }
                 }
             }
 
@@ -420,6 +425,7 @@ pub fn emit_vc_smt2(
     params: &[Param],
     vc: &Expr,
     include_axioms: bool,
+    proved_lemmas: &[ProofDecl],
 ) -> Option<String> {
     let vc_smt = expr_to_smt(vc, ontology, None)?;
     let mut lines = Vec::new();
@@ -453,6 +459,18 @@ pub fn emit_vc_smt2(
     }
 
     let mut seen = BTreeSet::new();
+    for item in &program.items {
+        if let Item::TypeDecl(adt) = item {
+            if adt.variants.iter().all(|v| v.payload.is_empty()) {
+                for (idx, v) in adt.variants.iter().enumerate() {
+                    let vname = sanitize_smt_ident(&v.name);
+                    if seen.insert(vname.clone()) {
+                        lines.push(format!("(define-const {} Int {})", vname, idx));
+                    }
+                }
+            }
+        }
+    }
     for p in params {
         let vname = sanitize_smt_ident(&p.name);
         if seen.insert(vname.clone()) {
@@ -470,14 +488,20 @@ pub fn emit_vc_smt2(
         }
     }
 
-    // Also include already-verified `proof` lemmas as assumptions when discharging obligations
-    for item in &program.items {
-        if let Item::Proof(pr) = item {
-            if pr.params.is_empty() {
-                if let Some(lemma_smt) = expr_to_smt(&pr.ensures, ontology, None) {
-                    lines.push(format!(";; lemma {}", pr.name));
-                    lines.push(format!("(assert {})", lemma_smt));
-                }
+    // Only include previously SMT-proved parameterless `proof` lemmas as assumptions
+    for pr in proved_lemmas {
+        if pr.params.is_empty() {
+            let lemma_formula = match &pr.requires {
+                Some(req) => Expr::Binary {
+                    op: BinOp::Implies,
+                    left: Box::new(req.clone()),
+                    right: Box::new(pr.ensures.clone()),
+                },
+                None => pr.ensures.clone(),
+            };
+            if let Some(lemma_smt) = expr_to_smt(&lemma_formula, ontology, None) {
+                lines.push(format!(";; proved lemma {}", pr.name));
+                lines.push(format!("(assert {})", lemma_smt));
             }
         }
     }

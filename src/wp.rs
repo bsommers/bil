@@ -318,6 +318,7 @@ pub fn format_expr_concise(expr: &Expr) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_vc_obligation(
     program: &Program,
     ontology: &OntologyRegistry,
@@ -327,6 +328,7 @@ fn build_vc_obligation(
     state_params: &[Param],
     vc: &Expr,
     include_axioms: bool,
+    proved_lemmas: &[ProofDecl],
 ) -> ProofObligation {
     let (bounded_ok, ce) = check_vc_bounded(program, ontology, fn_params, state_params, vc);
 
@@ -338,7 +340,14 @@ fn build_vc_obligation(
         }
     }
 
-    let smt2_script = emit_vc_smt2(program, ontology, &all_params, vc, include_axioms);
+    let smt2_script = emit_vc_smt2(
+        program,
+        ontology,
+        &all_params,
+        vc,
+        include_axioms,
+        proved_lemmas,
+    );
     let (smt_prover, smt_verdict, agreement) = if let Some(ref script) = smt2_script {
         let res = run_smt_prover(Prover::Auto, script);
         let agr = evaluate_vc_agreement(bounded_ok, res.verdict);
@@ -347,9 +356,9 @@ fn build_vc_obligation(
         (None, None, None)
     };
 
-    // An obligation is verified if bounded search succeeded AND (if SMT was decisive on a pure formula without uninterpreted calls) SMT did not refute it
     let verified = match smt_verdict {
-        Some(Verdict::Inconsistent) => true,
+        Some(Verdict::Inconsistent) => bounded_ok,
+        Some(Verdict::Consistent) => false,
         _ => bounded_ok,
     };
 
@@ -377,6 +386,15 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
         }
     }
 
+    let has_axioms = program.items.iter().any(|i| matches!(i, Item::Axiom(_)));
+    let axioms_consistent = if has_axioms {
+        let consistency = crate::smt::check_ontology_consistency(program, ontology, Prover::Auto);
+        consistency.verdict != Verdict::Inconsistent
+    } else {
+        true
+    };
+    let mut proved_lemmas: Vec<ProofDecl> = Vec::new();
+
     for item in &program.items {
         match item {
             Item::Proof(pr) => {
@@ -384,7 +402,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                 let body = pr.body.clone().unwrap_or(Expr::Bool(true));
                 let ens = pr.ensures.clone();
                 let vc = implies(conj(req, body), ens);
-                obligations.push(build_vc_obligation(
+                let ob = build_vc_obligation(
                     program,
                     ontology,
                     &pr.name,
@@ -392,8 +410,13 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                     &pr.params,
                     &[],
                     &vc,
-                    true,
-                ));
+                    axioms_consistent,
+                    &proved_lemmas,
+                );
+                if ob.verified && ob.smt_verdict == Some(Verdict::Inconsistent) {
+                    proved_lemmas.push(pr.clone());
+                }
+                obligations.push(ob);
             }
             Item::FnDecl(f) => {
                 let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
@@ -428,6 +451,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             &[],
                             &vc_pre,
                             false,
+                            &proved_lemmas,
                         ));
 
                         // (Pre_spec && Post_impl) => Post_spec (checked over actual execution of f + SMT on contract)
@@ -439,8 +463,14 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             ty: f.ret_ty.clone(),
                         });
                         let vc_post_formula = implies(conj(pre.clone(), post.clone()), spec_ens.clone());
-                        let smt2_script =
-                            emit_vc_smt2(program, ontology, &post_params, &vc_post_formula, false);
+                        let smt2_script = emit_vc_smt2(
+                            program,
+                            ontology,
+                            &post_params,
+                            &vc_post_formula,
+                            false,
+                            &proved_lemmas,
+                        );
                         let (smt_prover, smt_verdict, agreement) =
                             if let Some(ref script) = smt2_script {
                                 let res = run_smt_prover(Prover::Auto, script);
@@ -486,6 +516,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             &[],
                             &vc_totality,
                             false,
+                            &proved_lemmas,
                         ));
 
                         // Obligation B: Each branch satisfies Post: (Pre ∧ Gi) => wp(Si, Post)
@@ -501,6 +532,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                 &[],
                                 &vc_br,
                                 false,
+                                &proved_lemmas,
                             ));
                         }
                     }
@@ -544,6 +576,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             &[],
                             &vc_init,
                             false,
+                            &proved_lemmas,
                         ));
 
                         let default_state_var = inits.first().map(|(n, _)| n.as_str());
@@ -562,6 +595,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                 &state_params,
                                 &vc_pres,
                                 false,
+                                &proved_lemmas,
                             ));
 
                             if let Some(var_expr) = variant {
@@ -581,6 +615,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                     &state_params,
                                     &vc_nn,
                                     false,
+                                    &proved_lemmas,
                                 ));
 
                                 // Strict decrease: (Pre ∧ I ∧ Gi) => wp(Si, V) < V
@@ -600,6 +635,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                                     &state_params,
                                     &vc_dec,
                                     false,
+                                    &proved_lemmas,
                                 ));
                             }
                         }
@@ -622,6 +658,7 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             &state_params,
                             &vc_exit,
                             false,
+                            &proved_lemmas,
                         ));
                     }
                     _ => {
@@ -630,8 +667,14 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
                             let mut map = BTreeMap::new();
                             map.insert("result".to_string(), f.body.clone());
                             let vc_direct = implies(pre.clone(), subst_expr(&post, &map));
-                            let smt2_script =
-                                emit_vc_smt2(program, ontology, &f.params, &vc_direct, true);
+                            let smt2_script = emit_vc_smt2(
+                                program,
+                                ontology,
+                                &f.params,
+                                &vc_direct,
+                                axioms_consistent,
+                                &proved_lemmas,
+                            );
                             let (smt_prover, smt_verdict, agreement) =
                                 if let Some(ref script) = smt2_script {
                                     let res = run_smt_prover(Prover::Auto, script);
