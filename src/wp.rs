@@ -5,10 +5,11 @@ use crate::smt::{
     emit_vc_smt2, evaluate_vc_agreement, run_smt_prover, AgreementOutcome, Prover, ProverResult,
     Verdict,
 };
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Status {
     Proved { by: String },
     Refuted { counterexample: String },
@@ -56,7 +57,7 @@ pub fn decide_status(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ObligationKind {
     IfFiGuardTotality,
     IfFiBranchPostcondition(usize),
@@ -109,7 +110,7 @@ impl fmt::Display for ObligationKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProofObligation {
     pub fn_name: String,
     pub kind: ObligationKind,

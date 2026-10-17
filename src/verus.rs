@@ -149,7 +149,7 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
             if let Some(spec_name) = &f.refines {
                 let mut call_args: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
                 call_args.push("result".into());
-                ensures_clauses.push(format!("{}({})", format!("{}_contract", spec_name), call_args.join(", ")));
+                ensures_clauses.push(format!("{}_contract({})", spec_name, call_args.join(", ")));
             }
             if !ensures_clauses.is_empty() {
                 out.push_str("    ensures\n");
@@ -346,6 +346,7 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn verus_expr(expr: &Expr, in_spec: bool) -> String {
     match expr {
         Expr::Int(v) => v.to_string(),

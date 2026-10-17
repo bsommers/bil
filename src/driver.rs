@@ -76,11 +76,13 @@ pub fn check_source_typed(
     Ok((program, ontology, tenv))
 }
 
+pub type RunOutput = (Vec<(String, Value)>, Vec<String>);
+
 pub fn run_source_typed(
     src: &str,
     seed: u64,
     trace: bool,
-) -> Result<(Vec<(String, Value)>, Vec<String>), crate::error::BilError> {
+) -> Result<RunOutput, crate::error::BilError> {
     let (program, ontology, _) = check_source_typed(src)?;
     let mut interp = Interpreter::new(ontology, seed, trace);
     let outputs = interp.run_program(&program)?;
@@ -112,6 +114,6 @@ pub fn run_source(
     src: &str,
     seed: u64,
     trace: bool,
-) -> Result<(Vec<(String, Value)>, Vec<String>), String> {
+) -> Result<RunOutput, String> {
     run_source_typed(src, seed, trace).map_err(|e| e.to_string())
 }

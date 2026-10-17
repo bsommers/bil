@@ -555,7 +555,7 @@ pub fn check_formula_contradictions(expr: &Expr) -> Vec<String> {
                 expr: inner,
             } = p
             {
-                if conjuncts.iter().any(|q| *q == &**inner) {
+                if conjuncts.contains(&(&**inner)) {
                     warnings.push(format!(
                         "Axiom contradiction: {:?} and its negation both hold in conjunction",
                         inner

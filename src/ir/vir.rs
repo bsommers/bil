@@ -38,6 +38,7 @@ pub struct VirProgram {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum VirSpecItem {
     DomainAxiom {
         name: String,

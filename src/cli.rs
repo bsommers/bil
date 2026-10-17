@@ -11,15 +11,18 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 pub fn print_usage() {
-    eprintln!("bil v0.2.0 — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + 3-Level IR + Verus + Native AOT)");
+    eprintln!(
+        "bil v{} — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + 3-Level IR + Verus + Native AOT)",
+        env!("CARGO_PKG_VERSION")
+    );
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
     eprintln!("  bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
-    eprintln!("  bil verify <file.bil>                  Generate & prove Dijkstra WP, Refinement & Proof obligations");
-    eprintln!("  bil model-check <file.bil> [--max-states N] Exhaustively verify safety invariants & LTL temporal liveness");
+    eprintln!("  bil verify <file.bil> [--format json]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
+    eprintln!("  bil model-check <file.bil> [--max-states N] [--format json] Exhaustively verify safety & LTL temporal liveness");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
-    eprintln!("  bil vm <file.bil> [--dump-bytecode]    Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
+    eprintln!("  bil vm <file.bil> [--seed N] [--dump-bytecode] Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
     eprintln!("  bil build <file.bil> [-o <out_bin>]    Compile Ghost-Erased LIR to a standalone native ELF binary");
     eprintln!("  bil all <file.bil> [--seed N] [--trace] Run check + verify + model-check + run");
     eprintln!("  bil dump-ir <file.bil> [--level hir|vir|lir|all] Inspect 3-Level IR (HIR -> VIR -> LIR)");
@@ -50,15 +53,28 @@ pub fn run_cli(args: &[String]) -> i32 {
         }
         "vm" => {
             if args.len() < 3 {
-                eprintln!("Usage: bil vm <file.bil> [--dump-bytecode]");
+                eprintln!("Usage: bil vm <file.bil> [--seed N] [--dump-bytecode]");
                 return 1;
             }
             let path = &args[2];
-            let dump_bc = args.iter().any(|a| a == "--dump-bytecode");
+            let mut dump_bc = false;
+            let mut seed = 42u64;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--dump-bytecode" => dump_bc = true,
+                    "--seed" if i + 1 < args.len() => {
+                        seed = args[i + 1].parse().unwrap_or(42);
+                        i += 1;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
             let Ok(src) = read_source_file(path) else {
                 return 1;
             };
-            match run_vm_source(&src, 42) {
+            match run_vm_source(&src, seed) {
                 Ok((outputs, bc)) => {
                     if dump_bc {
                         print!("{}", bc);
@@ -280,6 +296,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             let mut seed = 42u64;
             let mut trace = false;
             let mut max_states = 50_000usize;
+            let mut json_output = false;
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
@@ -290,6 +307,12 @@ pub fn run_cli(args: &[String]) -> i32 {
                     }
                     "--max-states" if i + 1 < args.len() => {
                         max_states = args[i + 1].parse().unwrap_or(50_000);
+                        i += 1;
+                    }
+                    "--format" if i + 1 < args.len() => {
+                        if args[i + 1] == "json" {
+                            json_output = true;
+                        }
                         i += 1;
                     }
                     _ => {}
@@ -321,31 +344,34 @@ pub fn run_cli(args: &[String]) -> i32 {
             if cmd == "verify" || cmd == "all" {
                 match verify_source(&src) {
                     Ok(obligations) => {
-                        println!(
-                            "=== Formal Verification (Dijkstra WP, Refinement & SMT Solver): {} obligations ===",
-                            obligations.len()
-                        );
-                        let mut all_ok = true;
-                        for ob in &obligations {
-                            if !ob.verified {
-                                all_ok = false;
+                        let all_ok = obligations.iter().all(|ob| ob.verified);
+                        if json_output && cmd == "verify" {
+                            if let Ok(js) = serde_json::to_string_pretty(&obligations) {
+                                println!("{}", js);
                             }
-                            let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
-                                (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
-                                    format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
-                                }
-                                (Some(p), Some(v), Some(agr)) => {
-                                    format!(" [SMT {}: {} | Agreement: {}]", p, v, agr)
-                                }
-                                _ => String::new(),
-                            };
+                        } else {
                             println!(
-                                "  [{}] fn `{}` — {}{}",
-                                ob.status, ob.fn_name, ob.kind, smt_badge
+                                "=== Formal Verification (Dijkstra WP, Refinement & SMT Solver): {} obligations ===",
+                                obligations.len()
                             );
-                            println!("           VC: {}", ob.formula_desc);
-                            if let Some(ce) = &ob.counterexample {
-                                println!("           Counterexample: {}", ce);
+                            for ob in &obligations {
+                                let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
+                                    (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
+                                        format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
+                                    }
+                                    (Some(p), Some(v), Some(agr)) => {
+                                        format!(" [SMT {}: {} | Agreement: {}]", p, v, agr)
+                                    }
+                                    _ => String::new(),
+                                };
+                                println!(
+                                    "  [{}] fn `{}` — {}{}",
+                                    ob.status, ob.fn_name, ob.kind, smt_badge
+                                );
+                                println!("           VC: {}", ob.formula_desc);
+                                if let Some(ce) = &ob.counterexample {
+                                    println!("           Counterexample: {}", ce);
+                                }
                             }
                         }
                         if !all_ok {
@@ -362,43 +388,53 @@ pub fn run_cli(args: &[String]) -> i32 {
             if cmd == "model-check" || cmd == "all" {
                 match model_check_source(&src, max_states) {
                     Ok(reports) => {
-                        for rep in reports {
-                            println!(
-                                "=== Explicit-State & LTL Model Checker: system `{}` ===",
-                                rep.system_name
-                            );
-                            println!(
-                                "  States explored: {} | Transitions fired: {} | Max depth: {} | Max nondeterministic branching: {}",
-                                rep.states_explored,
-                                rep.transitions_fired,
-                                rep.max_depth,
-                                rep.max_branching_factor
-                            );
-                            for tr in &rep.temporal_results {
-                                let badge = if tr.verified { "PROVED" } else { "FAILED" };
-                                println!(
-                                    "  [LTL {}] temporal `{}`: {}",
-                                    badge, tr.name, tr.formula_desc
-                                );
+                        let any_violation = reports.iter().any(|r| !r.violations.is_empty());
+                        if json_output && cmd == "model-check" {
+                            if let Ok(js) = serde_json::to_string_pretty(&reports) {
+                                println!("{}", js);
                             }
-                            if rep.violations.is_empty() {
-                                if rep.complete {
-                                    println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
-                                } else {
+                            if any_violation {
+                                return 1;
+                            }
+                        } else {
+                            for rep in reports {
+                                println!(
+                                    "=== Explicit-State & LTL Model Checker: system `{}` ===",
+                                    rep.system_name
+                                );
+                                println!(
+                                    "  States explored: {} | Transitions fired: {} | Max depth: {} | Max nondeterministic branching: {}",
+                                    rep.states_explored,
+                                    rep.transitions_fired,
+                                    rep.max_depth,
+                                    rep.max_branching_factor
+                                );
+                                for tr in &rep.temporal_results {
+                                    let badge = if tr.verified { "PROVED" } else { "FAILED" };
                                     println!(
-                                        "  [BOUNDED / INCOMPLETE (truncated at {} states)] No violations found within state bound.",
-                                        rep.truncated_at.unwrap_or(rep.states_explored)
+                                        "  [LTL {}] temporal `{}`: {}",
+                                        badge, tr.name, tr.formula_desc
                                     );
                                 }
-                            } else {
-                                for v in &rep.violations {
-                                    println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);
-                                    println!("  Counterexample Trace ({} steps):", v.trace.len());
-                                    for line in &v.trace {
-                                        println!("    {}", line);
+                                if rep.violations.is_empty() {
+                                    if rep.complete {
+                                        println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
+                                    } else {
+                                        println!(
+                                            "  [BOUNDED / INCOMPLETE (truncated at {} states)] No violations found within state bound.",
+                                            rep.truncated_at.unwrap_or(rep.states_explored)
+                                        );
                                     }
+                                } else {
+                                    for v in &rep.violations {
+                                        println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);
+                                        println!("  Counterexample Trace ({} steps):", v.trace.len());
+                                        for line in &v.trace {
+                                            println!("    {}", line);
+                                        }
+                                    }
+                                    return 1;
                                 }
-                                return 1;
                             }
                         }
                     }
@@ -438,7 +474,10 @@ pub fn run_cli(args: &[String]) -> i32 {
 }
 
 pub fn run_repl() {
-    println!("bil v0.2.0 REPL — Enter declarations or expressions (:q to quit)");
+    println!(
+        "bil v{} REPL — Enter declarations or expressions (:q to quit)",
+        env!("CARGO_PKG_VERSION")
+    );
     let mut accumulated = String::new();
     let stdin = io::stdin();
     loop {

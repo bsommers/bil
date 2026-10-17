@@ -2,10 +2,11 @@ use crate::ast::*;
 use crate::eval::{Interpreter, Value};
 use crate::ontology::OntologyRegistry;
 use crate::wp::format_expr_concise;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TemporalCheckResult {
     pub name: String,
     pub formula_desc: String,
@@ -13,7 +14,7 @@ pub struct TemporalCheckResult {
     pub counterexample: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelCheckReport {
     pub system_name: String,
     pub states_explored: usize,
@@ -26,7 +27,7 @@ pub struct ModelCheckReport {
     pub violations: Vec<ModelViolation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum ViolationKind {
     InvariantViolation(String),
     Deadlock,
@@ -61,7 +62,7 @@ impl fmt::Display for ViolationKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelViolation {
     pub kind: ViolationKind,
     pub state_str: String,
@@ -472,17 +473,20 @@ fn model_check_system(
             }
             TemporalFormula::Eventually(q) => {
                 let fdesc = format!("◇({})", format_expr_concise(q));
+                let mut q_holds = Vec::with_capacity(states.len());
+                for st in &states {
+                    let v = interp.eval_expr(q, st).map_err(|e| e.to_string())?;
+                    q_holds.push(v == Value::Bool(true));
+                }
                 let ce = check_eventually_from(
                     0,
-                    q,
+                    &q_holds,
                     &sys.transitions,
-                    &states,
                     &state_display,
                     &parent,
                     &adj,
                     &enabled_map,
                     &truncated_frontier,
-                    &mut interp,
                 )?;
                 if let Some((skey, tr)) = ce {
                     temporal_results.push(TemporalCheckResult {
@@ -510,21 +514,24 @@ fn model_check_system(
             }
             TemporalFormula::LeadsTo(p, q) => {
                 let fdesc = format!("{} ~> {}", format_expr_concise(p), format_expr_concise(q));
+                let mut q_holds = Vec::with_capacity(states.len());
+                for st in &states {
+                    let v = interp.eval_expr(q, st).map_err(|e| e.to_string())?;
+                    q_holds.push(v == Value::Bool(true));
+                }
                 let mut failed = None;
                 for (sid, st_env) in states.iter().enumerate() {
                     let p_holds = interp.eval_expr(p, st_env).map_err(|e| e.to_string())?;
                     if p_holds == Value::Bool(true) {
                         if let Some(ce) = check_eventually_from(
                             sid,
-                            q,
+                            &q_holds,
                             &sys.transitions,
-                            &states,
                             &state_display,
                             &parent,
                             &adj,
                             &enabled_map,
                             &truncated_frontier,
-                            &mut interp,
                         )? {
                             failed = Some(ce);
                             break;
@@ -577,22 +584,14 @@ fn model_check_system(
 #[allow(clippy::too_many_arguments)]
 fn check_eventually_from(
     start_id: usize,
-    q: &Expr,
+    q_holds: &[bool],
     transitions: &[GuardedTransition],
-    states: &[BTreeMap<String, Value>],
     state_display: &[String],
     parent: &[Option<(usize, usize, usize)>],
     adj: &[Vec<(usize, usize)>],
     enabled_map: &[BTreeSet<usize>],
     truncated_frontier: &BTreeSet<usize>,
-    interp: &mut Interpreter,
 ) -> Result<Option<(String, Vec<String>)>, String> {
-    let mut q_holds = Vec::with_capacity(states.len());
-    for st in states {
-        let v = interp.eval_expr(q, st).map_err(|e| e.to_string())?;
-        q_holds.push(v == Value::Bool(true));
-    }
-
     if q_holds.get(start_id).copied().unwrap_or(false) {
         return Ok(None);
     }
@@ -626,55 +625,8 @@ fn check_eventually_from(
     }
 
     let num_transitions = transitions.len();
-    // Decompose V_not_q into Strongly Connected Components (Tarjan's algorithm)
+    // Decompose V_not_q into Strongly Connected Components (single Tarjan pass)
     let sccs = tarjan_sccs(&not_q_nodes, adj);
-    for scc in sccs {
-        let scc_set: BTreeSet<usize> = scc.iter().copied().collect();
-        // Check if this SCC contains at least one internal transition edge
-        let mut has_internal_edge = false;
-        for &u in &scc {
-            for &(_, v) in &adj[u] {
-                if scc_set.contains(&v) {
-                    has_internal_edge = true;
-                    break;
-                }
-            }
-            if has_internal_edge {
-                break;
-            }
-        }
-        if !has_internal_edge {
-            continue;
-        }
-
-        // Check Weak Fairness (Justice)
-        if let Some(cycle_node) =
-            find_fair_cycle_in_subgraph(&scc_set, num_transitions, adj, enabled_map)
-        {
-            let mut tr = reconstruct_trace(cycle_node, state_display, parent, transitions);
-            let cycle_desc: Vec<String> = scc
-                .iter()
-                .map(|&s| format!("{{ {} }}", state_display[s]))
-                .collect();
-            tr.push(format!(
-                "Weakly Fair ¬Q Cycle (Lasso): {}",
-                cycle_desc.join(" -> ")
-            ));
-            return Ok(Some((state_display[cycle_node].clone(), tr)));
-        }
-    }
-
-    Ok(None)
-}
-
-/// Checks if a weakly fair cycle exists within `nodes`.
-fn find_fair_cycle_in_subgraph(
-    nodes: &BTreeSet<usize>,
-    num_transitions: usize,
-    adj: &[Vec<(usize, usize)>],
-    enabled_map: &[BTreeSet<usize>],
-) -> Option<usize> {
-    let sccs = tarjan_sccs(nodes, adj);
     for scc in sccs {
         let scc_set: BTreeSet<usize> = scc.iter().copied().collect();
         let mut internal_transitions = BTreeSet::new();
@@ -689,23 +641,30 @@ fn find_fair_cycle_in_subgraph(
             continue;
         }
 
-        // Check if any transition is continuously enabled across all states in `scc_set`
-        // but is NOT in `internal_transitions` (meaning firing it always exits `scc_set`).
-        let mut unfair_exiting_transitions = Vec::new();
-        for t_idx in 0..num_transitions {
-            let continuously_enabled = scc_set
-                .iter()
-                .all(|&s| enabled_map[s].contains(&t_idx));
-            if continuously_enabled && !internal_transitions.contains(&t_idx) {
-                unfair_exiting_transitions.push(t_idx);
+        // Check Weak Fairness (Justice): whether any transition is continuously enabled across
+        // all states in `scc_set` without appearing in `internal_transitions`.
+        let has_unfair_exit = (0..num_transitions).any(|t_idx| {
+            !internal_transitions.contains(&t_idx)
+                && scc_set.iter().all(|&s| enabled_map[s].contains(&t_idx))
+        });
+
+        if !has_unfair_exit {
+            if let Some(&cycle_node) = scc.first() {
+                let mut tr = reconstruct_trace(cycle_node, state_display, parent, transitions);
+                let cycle_desc: Vec<String> = scc
+                    .iter()
+                    .map(|&s| format!("{{ {} }}", state_display[s]))
+                    .collect();
+                tr.push(format!(
+                    "Weakly Fair ¬Q Cycle (Lasso): {}",
+                    cycle_desc.join(" -> ")
+                ));
+                return Ok(Some((state_display[cycle_node].clone(), tr)));
             }
         }
-
-        if unfair_exiting_transitions.is_empty() {
-            return scc.into_iter().next();
-        }
     }
-    None
+
+    Ok(None)
 }
 
 fn tarjan_sccs(nodes: &BTreeSet<usize>, adj: &[Vec<(usize, usize)>]) -> Vec<Vec<usize>> {

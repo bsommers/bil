@@ -750,11 +750,10 @@ impl Parser {
         if self.peek() != &Token::LBrace {
             return false;
         }
-        match (self.peek_at(1), self.peek_at(2)) {
-            (Token::RBrace, _) => true,
-            (Token::Ident(_), Token::Colon) => true,
-            _ => false,
-        }
+        matches!(
+            (self.peek_at(1), self.peek_at(2)),
+            (Token::RBrace, _) | (Token::Ident(_), Token::Colon)
+        )
     }
 
     fn parse_if_fi(&mut self) -> Result<Expr, ParseError> {
