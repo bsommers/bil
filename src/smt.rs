@@ -183,6 +183,9 @@ pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
 }
 
 fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverResult {
+    use std::io::Read as _;
+    use std::time::Duration;
+
     let Some(bin_path) = find_solver_binary(bin_name) else {
         return ProverResult {
             prover: bin_name.to_string(),
@@ -193,6 +196,12 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
             detail: format!("{} binary not found", bin_name),
         };
     };
+
+    let timeout_ms: u64 = env::var("BIL_SOLVER_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(6000);
+    let timeout = Duration::from_millis(timeout_ms);
 
     let start = Instant::now();
     let mut child = match Command::new(&bin_path)
@@ -219,55 +228,101 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
         let _ = stdin.write_all(smt2_input.as_bytes());
     }
 
-    match child.wait_with_output() {
-        Ok(out) => {
-            let elapsed_ms = start.elapsed().as_millis();
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let stdout_handle = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
 
-            let mut verdict = Verdict::Unknown;
-            let mut detail = format!("{} inconclusive", bin_name);
-
-            if stdout.contains("(error") || stderr.contains("(error") {
-                verdict = Verdict::Unknown;
-                detail = format!("{} reported SMT-LIB error", bin_name);
-            } else {
-                for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                    if line == "sat" || line.starts_with("sat") {
-                        verdict = Verdict::Consistent;
-                        detail = format!("{} found satisfying model (sat)", bin_name);
-                        break;
-                    }
-                    if line == "unsat" || line.starts_with("unsat") {
-                        verdict = Verdict::Inconsistent;
-                        detail = format!("{} proved unsatisfiable (unsat)", bin_name);
-                        break;
-                    }
-                    if line == "unknown" || line.to_ascii_lowercase().contains("timeout") {
-                        verdict = Verdict::Unknown;
-                        detail = format!("{} returned unknown/timeout", bin_name);
-                        break;
-                    }
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => break,
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let elapsed_ms = start.elapsed().as_millis();
+                    drop(stdout_handle);
+                    drop(stderr_handle);
+                    return ProverResult {
+                        prover: bin_name.to_string(),
+                        verdict: Verdict::Unknown,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        elapsed_ms,
+                        detail: format!(
+                            "{} killed after wall-clock timeout ({} ms)",
+                            bin_name, timeout_ms
+                        ),
+                    };
                 }
+                std::thread::sleep(Duration::from_millis(5));
             }
-
-            ProverResult {
-                prover: bin_name.to_string(),
-                verdict,
-                stdout,
-                stderr,
-                elapsed_ms,
-                detail,
+            Err(e) => {
+                return ProverResult {
+                    prover: bin_name.to_string(),
+                    verdict: Verdict::Unknown,
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                    elapsed_ms: start.elapsed().as_millis(),
+                    detail: format!("Wait failed: {}", e),
+                };
             }
         }
-        Err(e) => ProverResult {
-            prover: bin_name.to_string(),
-            verdict: Verdict::Unknown,
-            stdout: String::new(),
-            stderr: e.to_string(),
-            elapsed_ms: start.elapsed().as_millis(),
-            detail: format!("Wait failed: {}", e),
-        },
+    }
+
+    let elapsed_ms = start.elapsed().as_millis();
+    let stdout = stdout_handle
+        .and_then(|h| h.join().ok())
+        .map(|b| String::from_utf8_lossy(&b).to_string())
+        .unwrap_or_default();
+    let stderr = stderr_handle
+        .and_then(|h| h.join().ok())
+        .map(|b| String::from_utf8_lossy(&b).to_string())
+        .unwrap_or_default();
+
+    let mut verdict = Verdict::Unknown;
+    let mut detail = format!("{} inconclusive", bin_name);
+
+    if stdout.contains("(error") || stderr.contains("(error") {
+        verdict = Verdict::Unknown;
+        detail = format!("{} reported SMT-LIB error", bin_name);
+    } else {
+        for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if line == "sat" || line.starts_with("sat") {
+                verdict = Verdict::Consistent;
+                detail = format!("{} found satisfying model (sat)", bin_name);
+                break;
+            }
+            if line == "unsat" || line.starts_with("unsat") {
+                verdict = Verdict::Inconsistent;
+                detail = format!("{} proved unsatisfiable (unsat)", bin_name);
+                break;
+            }
+            if line == "unknown" || line.to_ascii_lowercase().contains("timeout") {
+                verdict = Verdict::Unknown;
+                detail = format!("{} returned unknown/timeout", bin_name);
+                break;
+            }
+        }
+    }
+
+    ProverResult {
+        prover: bin_name.to_string(),
+        verdict,
+        stdout,
+        stderr,
+        elapsed_ms,
+        detail,
     }
 }
 

@@ -69,6 +69,8 @@ impl fmt::Display for RuntimeError {
     }
 }
 
+pub const MAX_CALL_DEPTH: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct Interpreter {
     pub ontology: OntologyRegistry,
@@ -81,6 +83,7 @@ pub struct Interpreter {
     pub rng_state: u64,
     pub trace_enabled: bool,
     pub trace_log: Vec<String>,
+    pub call_depth: usize,
 }
 
 impl Interpreter {
@@ -96,6 +99,7 @@ impl Interpreter {
             rng_state: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
             trace_enabled,
             trace_log: Vec::new(),
+            call_depth: 0,
         }
     }
 
@@ -630,6 +634,25 @@ impl Interpreter {
     }
 
     pub fn invoke_function(
+        &mut self,
+        func: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(RuntimeError {
+                message: format!(
+                    "Call stack depth exceeded maximum ({}) calling '{}'",
+                    MAX_CALL_DEPTH, func
+                ),
+            });
+        }
+        self.call_depth += 1;
+        let res = self.invoke_function_inner(func, args);
+        self.call_depth -= 1;
+        res
+    }
+
+    fn invoke_function_inner(
         &mut self,
         func: &str,
         args: Vec<Value>,

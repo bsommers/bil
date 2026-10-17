@@ -312,12 +312,15 @@ fn parse_sexprs(src: &str) -> Result<Vec<SExpr>, String> {
     let mut pos = 0;
     let mut out = Vec::new();
     while pos < tokens.len() {
-        out.push(parse_one_sexpr(&tokens, &mut pos)?);
+        out.push(parse_one_sexpr(&tokens, &mut pos, 0)?);
     }
     Ok(out)
 }
 
-fn parse_one_sexpr(tokens: &[String], pos: &mut usize) -> Result<SExpr, String> {
+fn parse_one_sexpr(tokens: &[String], pos: &mut usize, depth: usize) -> Result<SExpr, String> {
+    if depth > 128 {
+        return Err("S-expression nesting depth exceeded maximum (128)".into());
+    }
     if *pos >= tokens.len() {
         return Err("Unexpected EOF in S-expression".into());
     }
@@ -326,7 +329,7 @@ fn parse_one_sexpr(tokens: &[String], pos: &mut usize) -> Result<SExpr, String> 
     if tok == "(" {
         let mut list = Vec::new();
         while *pos < tokens.len() && tokens[*pos] != ")" {
-            list.push(parse_one_sexpr(tokens, pos)?);
+            list.push(parse_one_sexpr(tokens, pos, depth + 1)?);
         }
         if *pos >= tokens.len() {
             return Err("Unclosed '(' in S-expression".into());

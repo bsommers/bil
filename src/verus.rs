@@ -351,7 +351,7 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
         Expr::Int(v) => v.to_string(),
         Expr::Float(v) => v.to_string(),
         Expr::Bool(v) => v.to_string(),
-        Expr::Str(s) => format!("\"{}\".to_string()", s),
+        Expr::Str(s) => format!("{:?}.to_string()", s),
         Expr::Var(v) => v.clone(),
         Expr::Placeholder => "_".into(),
         Expr::Unary { op, expr: inner } => match op {

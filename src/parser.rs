@@ -14,10 +14,13 @@ impl fmt::Display for ParseError {
     }
 }
 
+pub const MAX_PARSE_DEPTH: usize = 128;
+
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
     in_let_value: bool,
+    depth: usize,
 }
 
 impl Parser {
@@ -26,6 +29,7 @@ impl Parser {
             tokens,
             pos: 0,
             in_let_value: false,
+            depth: 0,
         }
     }
 
@@ -500,8 +504,24 @@ impl Parser {
         }
     }
 
-    // Pratt parser for expressions
+    // Pratt parser for expressions with bounded recursion depth
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(ParseError {
+                message: format!(
+                    "Expression nesting depth exceeded maximum ({})",
+                    MAX_PARSE_DEPTH
+                ),
+                span: self.span(),
+            });
+        }
+        self.depth += 1;
+        let res = self.parse_expr_inner(min_bp);
+        self.depth -= 1;
+        res
+    }
+
+    fn parse_expr_inner(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_prefix()?;
 
         loop {

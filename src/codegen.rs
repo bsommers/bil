@@ -17,6 +17,35 @@ pub struct NativeBuildReport {
     pub elapsed_ms: u128,
 }
 
+/// Sanitizes a BIL identifier so it is always a valid, non-keyword Rust identifier fragment.
+pub fn sanitize_rust_ident(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() || out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    const RUST_KEYWORDS: &[&str] = &[
+        "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
+        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
+        "use", "where", "while", "async", "await", "dyn", "abstract", "become", "box", "do",
+        "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+    ];
+    if RUST_KEYWORDS.contains(&out.as_str()) {
+        format!("r_{}", out)
+    } else {
+        out
+    }
+}
+
 /// Emits a standalone, zero-dependency Rust AOT program from Ghost-Erased [`LirProgram`].
 /// All ghost items (`axiom`, `spec`, `proof`, `requires`, `ensures`, `invariant`, `variant`)
 /// have been erased during the VIR -> LIR pass.
@@ -60,10 +89,11 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
 
     // Emit each LirFn as a callable `bil_fn_<name>(env: &mut BTreeMap<String, BilVal>, args: Vec<BilVal>) -> BilVal`
     for func in &lir.functions {
+        let fn_id = sanitize_rust_ident(&func.name);
         let _ = writeln!(
             out,
             "fn bil_fn_{}(args: Vec<BilVal>, globals: &BTreeMap<String, BilVal>) -> BilVal {{",
-            func.name
+            fn_id
         );
         let _ = writeln!(out, "    let mut env = globals.clone();");
         for (idx, (pname, _)) in func.params.iter().enumerate() {
@@ -105,10 +135,11 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
         "        \"sum\" => match &args[0] {{ BilVal::List(l) => BilVal::Int(l.iter().filter_map(|x| if let BilVal::Int(v) = x {{ Some(*v) }} else {{ None }}).fold(0i64, |acc, v| acc.checked_add(v).expect(\"Integer addition overflow\"))), _ => panic!(\"sum\") }},"
     );
     for func in &lir.functions {
+        let fn_id = sanitize_rust_ident(&func.name);
         let _ = writeln!(
             out,
             "        {:?} => bil_fn_{}(args, globals),",
-            func.name, func.name
+            func.name, fn_id
         );
     }
     for adt in &hir.adts {
@@ -145,16 +176,17 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
         }
     }
     for (gname, _, gexpr) in &lir.globals {
-        let _ = writeln!(out, "    let val_{} = {{", gname);
+        let gid = sanitize_rust_ident(gname);
+        let _ = writeln!(out, "    let val_{} = {{", gid);
         let _ = writeln!(out, "        let mut env = globals.clone();");
         let expr_code = emit_lir_val_expr(gexpr, 2);
         let _ = writeln!(out, "        {}", expr_code);
         let _ = writeln!(out, "    }};");
-        let _ = writeln!(out, "    println!(\"{} = {{}}\", val_{});", gname, gname);
+        let _ = writeln!(out, "    println!(\"{{}} = {{}}\", {:?}, val_{});", gname, gid);
         let _ = writeln!(
             out,
             "    globals.insert({:?}.to_string(), val_{});",
-            gname, gname
+            gname, gid
         );
     }
     let _ = writeln!(out, "}}");
@@ -177,13 +209,14 @@ fn try_emit_direct_native_fn(func: &LirFn) -> Option<String> {
             Type::Bool => "bool",
             _ => return None,
         };
-        params_s.push(format!("{}: {}", pname, ts));
+        params_s.push(format!("{}: {}", sanitize_rust_ident(pname), ts));
     }
     let body_s = try_emit_direct_expr(&func.body)?;
+    let fn_id = sanitize_rust_ident(&func.name);
     Some(format!(
         "/// Direct Ghost-Erased Native Function `{}`\npub fn native_{}({}) -> {} {{\n    {}\n}}\n",
         func.name,
-        func.name,
+        fn_id,
         params_s.join(", "),
         ret_s,
         body_s
@@ -194,7 +227,7 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
     match expr {
         LirExpr::Int(v) => Some(format!("{}i64", v)),
         LirExpr::Bool(b) => Some(format!("{}", b)),
-        LirExpr::Var(v) => Some(v.clone()),
+        LirExpr::Var(v) => Some(sanitize_rust_ident(v)),
         LirExpr::Unary(UnaryOp::Not, inner) => Some(format!("!({})", try_emit_direct_expr(inner)?)),
         LirExpr::Unary(UnaryOp::Neg, inner) => Some(format!(
             "({}).checked_neg().expect(\"Integer negation overflow\")",
@@ -248,7 +281,7 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
             let mut s = String::from("{\n");
             for (v, ie) in inits {
                 let is = try_emit_direct_expr(ie)?;
-                let _ = writeln!(s, "        let mut {} = {};", v, is);
+                let _ = writeln!(s, "        let mut {} = {};", sanitize_rust_ident(v), is);
             }
             let _ = writeln!(s, "        loop {{");
             for (idx, (g, act)) in branches.iter().enumerate() {
@@ -257,17 +290,27 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
                 let _ = writeln!(s, "            {} {} {{", prefix, gs);
                 match act {
                     LirAction::AssignState(ups) => {
-                        for ( idx_u, (_, ue)) in ups.iter().enumerate() {
+                        for (idx_u, (_, ue)) in ups.iter().enumerate() {
                             let us = try_emit_direct_expr(ue)?;
                             let _ = writeln!(s, "                let _tmp_{} = {};", idx_u, us);
                         }
                         for (idx_u, (v, _)) in ups.iter().enumerate() {
-                            let _ = writeln!(s, "                {} = _tmp_{};", v, idx_u);
+                            let _ = writeln!(
+                                s,
+                                "                {} = _tmp_{};",
+                                sanitize_rust_ident(v),
+                                idx_u
+                            );
                         }
                     }
                     LirAction::ReturnExpr(e) => {
                         let es = try_emit_direct_expr(e)?;
-                        let _ = writeln!(s, "                {} = {};", inits[0].0, es);
+                        let _ = writeln!(
+                            s,
+                            "                {} = {};",
+                            sanitize_rust_ident(&inits[0].0),
+                            es
+                        );
                     }
                     _ => return None,
                 }
@@ -647,11 +690,45 @@ pub fn compile_native_binary(
     hir: &HirProgram,
     output_bin: &Path,
 ) -> Result<NativeBuildReport, String> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let start = Instant::now();
     let rust_src = emit_native_rust_aot(lir, hir);
-    let tmp_rs = output_bin.with_extension("bil_aot.rs");
-    fs::write(&tmp_rs, &rust_src)
-        .map_err(|e| format!("Failed to write intermediate AOT source {}: {}", tmp_rs.display(), e))?;
+    let seq = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_rs = std::env::temp_dir().join(format!(
+        "bil_aot_{}_{}_{}.rs",
+        std::process::id(),
+        seq,
+        nanos
+    ));
+    {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_rs)
+            .map_err(|e| {
+                format!(
+                    "Failed to create exclusive intermediate AOT source {}: {}",
+                    tmp_rs.display(),
+                    e
+                )
+            })?;
+        f.write_all(rust_src.as_bytes()).map_err(|e| {
+            let _ = fs::remove_file(&tmp_rs);
+            format!(
+                "Failed to write intermediate AOT source {}: {}",
+                tmp_rs.display(),
+                e
+            )
+        })?;
+    }
 
     let rustc_bin = std::env::var("BIL_RUSTC_PATH")
         .or_else(|_| std::env::var("RUSTC"))
@@ -665,10 +742,16 @@ pub fn compile_native_binary(
         .arg(&tmp_rs)
         .arg("-o")
         .arg(output_bin)
-        .output()
-        .map_err(|e| format!("Failed to invoke `{}` for native AOT compilation: {}", rustc_bin, e))?;
+        .output();
 
     let _ = fs::remove_file(&tmp_rs);
+
+    let status = status.map_err(|e| {
+        format!(
+            "Failed to invoke `{}` for native AOT compilation: {}",
+            rustc_bin, e
+        )
+    })?;
 
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);

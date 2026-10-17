@@ -308,6 +308,9 @@ impl fmt::Display for BytecodeProgram {
     }
 }
 
+pub const MAX_VM_CALL_DEPTH: usize = 64;
+pub const DEFAULT_VM_MAX_STEPS: usize = 1_000_000;
+
 /// Stack/Register Virtual Machine executing Ghost-Erased `BytecodeProgram`
 pub struct BytecodeVm {
     pub ontology: OntologyRegistry,
@@ -315,6 +318,9 @@ pub struct BytecodeVm {
     pub globals: BTreeMap<String, Value>,
     pub concept_store: BTreeMap<String, Vec<Value>>,
     pub rng_state: u64,
+    pub call_depth: usize,
+    pub steps: usize,
+    pub max_steps: usize,
 }
 
 impl BytecodeVm {
@@ -337,6 +343,9 @@ impl BytecodeVm {
             globals,
             concept_store: BTreeMap::new(),
             rng_state: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
+            call_depth: 0,
+            steps: 0,
+            max_steps: DEFAULT_VM_MAX_STEPS,
         }
     }
 
@@ -392,6 +401,13 @@ impl BytecodeVm {
         let mut saved_vars: Vec<(String, Option<Value>)> = Vec::new();
 
         for op in code {
+            self.steps += 1;
+            if self.steps > self.max_steps {
+                return Err(format!(
+                    "VM instruction fuel exhausted (exceeded {} steps)",
+                    self.max_steps
+                ));
+            }
             match op {
                 BytecodeOp::PushInt(v) => stack.push(Value::Int(*v)),
                 BytecodeOp::PushFloat(v) => stack.push(Value::Float(*v)),
@@ -667,6 +683,12 @@ impl BytecodeVm {
     }
 
     fn exec_call(&mut self, func: &str, args: Vec<Value>) -> Result<Value, String> {
+        if self.call_depth >= MAX_VM_CALL_DEPTH {
+            return Err(format!(
+                "VM call stack depth exceeded maximum ({}) calling '{}'",
+                MAX_VM_CALL_DEPTH, func
+            ));
+        }
         if let Some(builtin) = crate::builtins::BuiltinFn::from_name(func) {
             return builtin.eval(&args, &self.ontology);
         }
@@ -688,7 +710,10 @@ impl BytecodeVm {
         for (p, val) in cfn.params.iter().zip(args.into_iter()) {
             fn_env.insert(p.clone(), val);
         }
-        self.exec_code(&cfn.code, &mut fn_env)
+        self.call_depth += 1;
+        let res = self.exec_code(&cfn.code, &mut fn_env);
+        self.call_depth -= 1;
+        res
     }
 
     fn exec_pipe_stage(
