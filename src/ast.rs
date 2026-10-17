@@ -12,10 +12,21 @@ pub enum Item {
     TypeDecl(AdtDecl),
     Axiom(AxiomDecl),
     Spec(SpecDecl),
+    Proof(ProofDecl),
     FnDecl(FnDecl),
     System(SystemDecl),
     Let(LetDecl),
     Assert(AssertDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProofDecl {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub requires: Option<Expr>,
+    pub ensures: Expr,
+    pub body: Option<Expr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +105,22 @@ pub struct NamedInvariant {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TemporalFormula {
+    /// □P — safety / invariance across all reachable states
+    Always(Expr),
+    /// ◇P — liveness under weak fairness: P holds eventually on all fair paths from init
+    Eventually(Expr),
+    /// □(P => ◇Q) — response / progress under weak fairness: whenever P holds, Q eventually holds
+    LeadsTo(Expr, Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedTemporal {
+    pub name: String,
+    pub formula: TemporalFormula,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuardedTransition {
     pub guard: Expr,
     pub updates: Vec<(String, Expr)>,
@@ -104,6 +131,7 @@ pub struct SystemDecl {
     pub name: String,
     pub states: Vec<StateVarDecl>,
     pub invariants: Vec<NamedInvariant>,
+    pub temporals: Vec<NamedTemporal>,
     pub variant: Option<Expr>,
     pub terminal: Option<Expr>,
     pub transitions: Vec<GuardedTransition>,

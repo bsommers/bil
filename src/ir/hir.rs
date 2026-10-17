@@ -14,6 +14,7 @@ pub struct HirProgram {
     pub adts: Vec<HirAdt>,
     pub axioms: Vec<HirAxiom>,
     pub specs: Vec<HirSpec>,
+    pub proofs: Vec<HirProof>,
     pub functions: Vec<HirFn>,
     pub systems: Vec<HirSystem>,
     pub bindings: Vec<HirLet>,
@@ -49,6 +50,15 @@ pub struct HirSpec {
 }
 
 #[derive(Debug, Clone)]
+pub struct HirProof {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub requires: Option<HirExpr>,
+    pub ensures: Option<HirExpr>,
+    pub body: HirExpr,
+}
+
+#[derive(Debug, Clone)]
 pub struct HirFn {
     pub name: String,
     pub params: Vec<(String, Type)>,
@@ -60,10 +70,18 @@ pub struct HirFn {
 }
 
 #[derive(Debug, Clone)]
+pub enum HirTemporalFormula {
+    Always(HirExpr),
+    Eventually(HirExpr),
+    LeadsTo(HirExpr, HirExpr),
+}
+
+#[derive(Debug, Clone)]
 pub struct HirSystem {
     pub name: String,
     pub states: Vec<(String, Type, HirExpr)>,
     pub invariants: Vec<(String, HirExpr)>,
+    pub temporals: Vec<(String, HirTemporalFormula)>,
     pub variant: Option<HirExpr>,
     pub terminal: Option<HirExpr>,
     pub transitions: Vec<(HirExpr, Vec<(String, HirExpr)>)>,
@@ -191,6 +209,7 @@ impl HirProgram {
 
         let mut axioms = Vec::new();
         let mut specs = Vec::new();
+        let mut proofs = Vec::new();
         let mut functions = Vec::new();
         let mut systems = Vec::new();
         let mut bindings = Vec::new();
@@ -233,6 +252,32 @@ impl HirProgram {
                         ret_ty,
                         requires,
                         ensures,
+                    });
+                }
+                Item::Proof(pr) => {
+                    let mut local = tenv.bindings.clone();
+                    let mut params = Vec::new();
+                    for p in &pr.params {
+                        let pt = tenv.resolve_type_expr(&p.ty, pr.span).unwrap_or(Type::Unit);
+                        local.insert(p.name.clone(), pt.clone());
+                        params.push((p.name.clone(), pt));
+                    }
+                    let requires = pr
+                        .requires
+                        .as_ref()
+                        .map(|r| lower_expr(r, tenv, &mut local));
+                    let ensures = Some(lower_expr(&pr.ensures, tenv, &mut local));
+                    let body = pr
+                        .body
+                        .as_ref()
+                        .map(|b| lower_expr(b, tenv, &mut local))
+                        .unwrap_or_else(|| lower_expr(&Expr::Bool(true), tenv, &mut local));
+                    proofs.push(HirProof {
+                        name: pr.name.clone(),
+                        params,
+                        requires,
+                        ensures,
+                        body,
                     });
                 }
                 Item::FnDecl(f) => {
@@ -282,6 +327,25 @@ impl HirProgram {
                         .iter()
                         .map(|inv| (inv.name.clone(), lower_expr(&inv.formula, tenv, &mut local)))
                         .collect();
+                    let temporals = sys
+                        .temporals
+                        .iter()
+                        .map(|t| {
+                            let tf = match &t.formula {
+                                TemporalFormula::Always(e) => {
+                                    HirTemporalFormula::Always(lower_expr(e, tenv, &mut local))
+                                }
+                                TemporalFormula::Eventually(e) => {
+                                    HirTemporalFormula::Eventually(lower_expr(e, tenv, &mut local))
+                                }
+                                TemporalFormula::LeadsTo(p, q) => HirTemporalFormula::LeadsTo(
+                                    lower_expr(p, tenv, &mut local),
+                                    lower_expr(q, tenv, &mut local),
+                                ),
+                            };
+                            (t.name.clone(), tf)
+                        })
+                        .collect();
                     let variant = sys
                         .variant
                         .as_ref()
@@ -307,6 +371,7 @@ impl HirProgram {
                         name: sys.name.clone(),
                         states,
                         invariants,
+                        temporals,
                         variant,
                         terminal,
                         transitions,
@@ -333,6 +398,7 @@ impl HirProgram {
             adts,
             axioms,
             specs,
+            proofs,
             functions,
             systems,
             bindings,
@@ -557,6 +623,14 @@ impl fmt::Display for HirProgram {
                 .map(|(n, t)| format!("{}: {}", n, t))
                 .collect();
             writeln!(f, "  spec {}({}) -> {}", sp.name, ps.join(", "), sp.ret_ty)?;
+        }
+        for pr in &self.proofs {
+            let ps: Vec<String> = pr
+                .params
+                .iter()
+                .map(|(n, t)| format!("{}: {}", n, t))
+                .collect();
+            writeln!(f, "  proof {}({}) [ghost lemma]", pr.name, ps.join(", "))?;
         }
         for func in &self.functions {
             let ps: Vec<String> = func

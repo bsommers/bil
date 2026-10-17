@@ -361,6 +361,24 @@ impl TypeEnv {
                 }
                 Ok(())
             }
+            Item::Proof(pr) => {
+                let mut local = self.bindings.clone();
+                for p in &pr.params {
+                    let pt = self.resolve_type_expr(&p.ty, pr.span)?;
+                    local.insert(p.name.clone(), pt);
+                }
+                if let Some(req) = &pr.requires {
+                    let rt = self.infer_expr(req, &mut local, pr.span)?;
+                    self.unify(&rt, &Type::Bool, pr.span)?;
+                }
+                let et = self.infer_expr(&pr.ensures, &mut local, pr.span)?;
+                self.unify(&et, &Type::Bool, pr.span)?;
+                if let Some(b) = &pr.body {
+                    let bt = self.infer_expr(b, &mut local, pr.span)?;
+                    self.unify(&bt, &Type::Bool, pr.span)?;
+                }
+                Ok(())
+            }
             Item::FnDecl(f) => {
                 let mut local = self.bindings.clone();
                 let mut param_types = Vec::new();
@@ -421,6 +439,20 @@ impl TypeEnv {
                 for inv in &sys.invariants {
                     let it = self.infer_expr(&inv.formula, &mut local, sys.span)?;
                     self.unify(&it, &Type::Bool, sys.span)?;
+                }
+                for temp in &sys.temporals {
+                    match &temp.formula {
+                        TemporalFormula::Always(e) | TemporalFormula::Eventually(e) => {
+                            let tt = self.infer_expr(e, &mut local, sys.span)?;
+                            self.unify(&tt, &Type::Bool, sys.span)?;
+                        }
+                        TemporalFormula::LeadsTo(p, q) => {
+                            let pt = self.infer_expr(p, &mut local, sys.span)?;
+                            self.unify(&pt, &Type::Bool, sys.span)?;
+                            let qt = self.infer_expr(q, &mut local, sys.span)?;
+                            self.unify(&qt, &Type::Bool, sys.span)?;
+                        }
+                    }
                 }
                 if let Some(v) = &sys.variant {
                     let vt = self.infer_expr(v, &mut local, sys.span)?;

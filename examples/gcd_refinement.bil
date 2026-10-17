@@ -15,6 +15,14 @@ fn gcd_val(u: Int, v: Int) -> Int =
   [] u > 0 && v > 0  -> gcd_val(v, u % v)
   fi
 
+// 1b. Verus-style Deductive Ghost Lemma (`proof`) — verified via SMT & erased at runtime (LIR)
+proof gcd_variant_step(x: Int, y: Int)
+  requires x > 0 && y > 0 && x > y
+  ensures  (x - y) > 0 && (x - y) + y < x + y
+{
+  (x - y) + y == x
+}
+
 // 2. Concrete Correct-by-Construction GCL Implementation refining `gcd_spec`
 fn gcd(a: Int, b: Int) -> Int
   refines  gcd_spec

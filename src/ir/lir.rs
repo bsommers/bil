@@ -91,7 +91,7 @@ pub enum LirAction {
 
 impl LirProgram {
     pub fn lower_with_ghost_erasure(hir: &HirProgram) -> Self {
-        let mut erased_ghost_count = hir.axioms.len() + hir.specs.len();
+        let mut erased_ghost_count = hir.axioms.len() + hir.specs.len() + hir.proofs.len();
 
         let mut functions = Vec::new();
         for f in &hir.functions {

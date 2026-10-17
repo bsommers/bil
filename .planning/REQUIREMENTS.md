@@ -16,12 +16,12 @@
 - [x] **REQ-103 (`LIR`)**: Low-Level SSA / Control & Dataflow IR — perform Ghost Erasure (stripping `spec`, `axiom`, `invariant`, `variant` after verification) and lower GCL `if..fi` / `do..od` into deterministic basic-block control flow.
 
 ### Phase 2: Unbounded SMT-LIB2 / Z3 & Enhanced Verus Verification
-- [ ] **REQ-201**: Emit standard SMT-LIB2 queries from `VIR` Verification Conditions and optionally invoke `z3` / `cvc5` for unbounded mathematical proof discharge alongside the built-in finite-domain solver.
-- [ ] **REQ-202**: Support explicit Verus-inspired `spec fn`, `proof { ... }` lemma blocks, and lock/resource invariants in `.bil` syntax and `bil emit-verus`.
+- [x] **REQ-201**: Emit standard SMT-LIB2 queries from `VIR` Verification Conditions and optionally invoke `z3` / `cvc5` for unbounded mathematical proof discharge alongside the built-in finite-domain solver.
+- [x] **REQ-202**: Support explicit Verus-inspired `spec fn`, `proof { ... }` lemma blocks, and lock/resource invariants in `.bil` syntax and `bil emit-verus`.
 
 ### Phase 3: LTL Temporal Model Checking & Fairness
-- [ ] **REQ-301**: Add Linear Temporal Logic operators (`always` / `□`, `eventually` / `◇`, `leads_to` / `~>`) and weak/strong fairness constraints to `system` blocks in `model_check.rs`.
+- [x] **REQ-301**: Add Linear Temporal Logic operators (`always` / `□`, `eventually` / `◇`, `leads_to` / `~>`) and weak/strong fairness constraints to `system` blocks in `model_check.rs`.
 
 ### Phase 4: Compiler Backend (Native Rust/LLVM & Bytecode VM)
-- [ ] **REQ-401**: Compile Ghost-Erased `LIR` to standalone native executables via `rustc` (leveraging `rustc`'s LLVM backend with zero `unsafe` C++ FFI dependencies) via `bil build <file.bil> -o <bin>`.
-- [ ] **REQ-402**: Compile `LIR` to a fast register-based bytecode VM for high-throughput tabular/JSON pipeline execution.
+- [x] **REQ-401**: Compile Ghost-Erased `LIR` to standalone native executables via `rustc` (leveraging `rustc`'s LLVM backend with zero `unsafe` C++ FFI dependencies) via `bil build <file.bil> -o <bin>`.
+- [x] **REQ-402**: Compile `LIR` to a fast register-based bytecode VM for high-throughput tabular/JSON pipeline execution.

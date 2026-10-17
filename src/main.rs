@@ -1,20 +1,26 @@
 use bil::{
-    check_source, emit_verus_source, lower_ir_source, model_check_source,
-    ontology::transpile_ontologic_sexpr, run_source, verify_source,
+    build_native_source, check_source, emit_verus_source, lower_ir_source, model_check_source,
+    ontology::transpile_ontologic_sexpr, prove_subsumption_source, run_source, run_vm_source,
+    smt::{Prover, SubsumptionResult, Verdict},
+    solve_ontology_source, verify_source,
 };
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process;
 
 fn print_usage() {
-    eprintln!("bil v0.2.0 — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + 3-Level IR + Verus Backend)");
+    eprintln!("bil v0.2.0 — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + 3-Level IR + Verus + Native AOT)");
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
-    eprintln!("  bil verify <file.bil>                  Generate & prove Dijkstra WP & Refinement obligations");
-    eprintln!("  bil model-check <file.bil>             Exhaustively verify nondeterministic system state spaces");
+    eprintln!("  bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
+    eprintln!("  bil verify <file.bil>                  Generate & prove Dijkstra WP, Refinement & Proof obligations");
+    eprintln!("  bil model-check <file.bil>             Exhaustively verify safety invariants & LTL temporal liveness");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
+    eprintln!("  bil vm <file.bil> [--dump-bytecode]    Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
+    eprintln!("  bil build <file.bil> [-o <out_bin>]    Compile Ghost-Erased LIR to a standalone native ELF binary");
     eprintln!("  bil all <file.bil> [--seed N] [--trace] Run check + verify + model-check + run");
     eprintln!("  bil dump-ir <file.bil> [--level hir|vir|lir|all] Inspect 3-Level IR (HIR -> VIR -> LIR)");
     eprintln!("  bil emit-verus <file.bil>              Emit provably correct Verus Rust code (verus! {{ ... }})");
@@ -32,6 +38,155 @@ fn main() {
     let cmd = args[1].as_str();
     match cmd {
         "repl" => run_repl(),
+        "vm" => {
+            if args.len() < 3 {
+                eprintln!("Usage: bil vm <file.bil> [--dump-bytecode]");
+                process::exit(1);
+            }
+            let path = &args[2];
+            let dump_bc = args.iter().any(|a| a == "--dump-bytecode");
+            let src = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path, e);
+                process::exit(1);
+            });
+            match run_vm_source(&src, 42) {
+                Ok((outputs, bc)) => {
+                    if dump_bc {
+                        print!("{}", bc);
+                    }
+                    for (name, val) in outputs {
+                        println!("{} = {}", name, val);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "build" => {
+            if args.len() < 3 {
+                eprintln!("Usage: bil build <file.bil> [-o <output_bin>]");
+                process::exit(1);
+            }
+            let path = &args[2];
+            let mut out_bin = PathBuf::from(path).with_extension("");
+            if out_bin == PathBuf::from(path) {
+                out_bin = PathBuf::from(format!("{}.out", path));
+            }
+            let mut i = 3;
+            while i < args.len() {
+                if (args[i] == "-o" || args[i] == "--output") && i + 1 < args.len() {
+                    out_bin = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            let src = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path, e);
+                process::exit(1);
+            });
+            match build_native_source(&src, &out_bin) {
+                Ok(rep) => {
+                    println!(
+                        "✅ Native AOT Binary compiled: {} ({} functions, {} globals, {} ghost items erased, {} ms)",
+                        rep.output_path.display(),
+                        rep.functions_compiled,
+                        rep.globals_compiled,
+                        rep.erased_ghost_count,
+                        rep.elapsed_ms
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "solve" => {
+            if args.len() < 3 {
+                eprintln!("Usage: bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
+                process::exit(1);
+            }
+            let path = &args[2];
+            let mut prover = Prover::Auto;
+            let mut subsumes: Option<(String, String)> = None;
+            let mut emit_smt2 = false;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--prover" | "-p" if i + 1 < args.len() => {
+                        prover = Prover::parse(&args[i + 1]);
+                        i += 1;
+                    }
+                    "--subsumes" if i + 2 < args.len() => {
+                        subsumes = Some((args[i + 1].clone(), args[i + 2].clone()));
+                        i += 2;
+                    }
+                    "--emit-smt2" => emit_smt2 = true,
+                    _ => {}
+                }
+                i += 1;
+            }
+            let src = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path, e);
+                process::exit(1);
+            });
+            if let Some((child, parent)) = subsumes {
+                match prove_subsumption_source(&src, &child, &parent, prover) {
+                    Ok(SubsumptionResult::Subsumed { prover: p }) => {
+                        println!(
+                            "✅ Subsumption PROVED by {}: {} <: {} (refutation unsat)",
+                            p, child, parent
+                        );
+                    }
+                    Ok(SubsumptionResult::NotSubsumed { prover: p, .. }) => {
+                        println!(
+                            "❌ Subsumption REFUTED by {}: {} is NOT subsumed by {}",
+                            p, child, parent
+                        );
+                        process::exit(1);
+                    }
+                    Ok(SubsumptionResult::Unknown { detail }) => {
+                        println!("⚠️  Subsumption Unknown: {}", detail);
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                match solve_ontology_source(&src, prover) {
+                    Ok((res, smt2)) => {
+                        if emit_smt2 {
+                            println!("{}", smt2);
+                        }
+                        match res.verdict {
+                            Verdict::Consistent => {
+                                println!(
+                                    "✅ SMT Satisfiable (SAT) via {} ({} ms) — Ontology & axioms are logically consistent.",
+                                    res.prover, res.elapsed_ms
+                                );
+                            }
+                            Verdict::Inconsistent => {
+                                println!(
+                                    "❌ SMT Unsatisfiable (UNSAT) via {} ({} ms) — Logical contradiction detected!",
+                                    res.prover, res.elapsed_ms
+                                );
+                                process::exit(1);
+                            }
+                            Verdict::Unknown | Verdict::Skipped => {
+                                println!("⚠️  SMT Solver Result ({}): {}", res.prover, res.detail);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        process::exit(1);
+                    }
+                }
+            }
+        }
         "dump-ir" => {
             if args.len() < 3 {
                 eprintln!("Usage: bil dump-ir <file.bil> [--level hir|vir|lir|all]");
@@ -146,13 +301,22 @@ fn main() {
                 match verify_source(&src) {
                     Ok(obligations) => {
                         println!(
-                            "=== Formal Verification (Dijkstra WP & Refinement Calculus): {} obligations ===",
+                            "=== Formal Verification (Dijkstra WP, Refinement & SMT Solver): {} obligations ===",
                             obligations.len()
                         );
                         let mut all_ok = true;
                         for ob in &obligations {
                             let status = if ob.verified { "PROVED" } else { "FAILED" };
-                            println!("  [{}] fn `{}` — {}", status, ob.fn_name, ob.kind);
+                            let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
+                                (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
+                                    format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
+                                }
+                                (Some(p), Some(v), Some(agr)) => {
+                                    format!(" [SMT {}: {} | Agreement: {}]", p, v, agr)
+                                }
+                                _ => String::new(),
+                            };
+                            println!("  [{}] fn `{}` — {}{}", status, ob.fn_name, ob.kind, smt_badge);
                             println!("           VC: {}", ob.formula_desc);
                             if let Some(ce) = &ob.counterexample {
                                 all_ok = false;
@@ -175,7 +339,7 @@ fn main() {
                     Ok(reports) => {
                         for rep in reports {
                             println!(
-                                "=== Explicit-State Model Checker: system `{}` ===",
+                                "=== Explicit-State & LTL Model Checker: system `{}` ===",
                                 rep.system_name
                             );
                             println!(
@@ -185,8 +349,15 @@ fn main() {
                                 rep.max_depth,
                                 rep.max_branching_factor
                             );
+                            for tr in &rep.temporal_results {
+                                let badge = if tr.verified { "PROVED" } else { "FAILED" };
+                                println!(
+                                    "  [LTL {}] temporal `{}`: {}",
+                                    badge, tr.name, tr.formula_desc
+                                );
+                            }
                             if rep.violations.is_empty() {
-                                println!("  [VERIFIED] All safety invariants, deadlock-freedom (BB), and variant bounds hold across all reachable states.");
+                                println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
                             } else {
                                 for v in &rep.violations {
                                     println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);

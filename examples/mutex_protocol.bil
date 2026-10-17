@@ -19,6 +19,16 @@ system PetersonMutex {
   invariant ValidTurn:
     turn == 0 || turn == 1
 
+  // LTL Liveness Property 1 (Starvation Freedom for P0):
+  // Whenever P0 enters Trying, it eventually enters Critical (□(p0 == Trying => ◇(p0 == Critical)))
+  temporal StarvationFreeP0:
+    (p0 == Trying) ~> (p0 == Critical)
+
+  // LTL Liveness Property 2 (Starvation Freedom for P1):
+  // Whenever P1 enters Trying, it eventually enters Critical (□(p1 == Trying => ◇(p1 == Critical)))
+  temporal StarvationFreeP1:
+    (p1 == Trying) ~> (p1 == Critical)
+
   // Nondeterministic Interleaved Guarded Transitions (SPIN / Promela style)
   transition
     p0 == Idle                               -> p0 := Trying, turn := 1

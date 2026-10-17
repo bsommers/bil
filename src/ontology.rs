@@ -88,6 +88,18 @@ impl OntologyRegistry {
             }
         }
 
+        // Check axioms for static propositional & pairwise numeric range contradictions (OntoLogic/Linter.hs)
+        for item in &program.items {
+            if let Item::Axiom(ax) = item {
+                for msg in check_formula_contradictions(&ax.formula) {
+                    errors.push(OntologyError {
+                        message: format!("Axiom '{}': {}", ax.name, msg),
+                        span: ax.span,
+                    });
+                }
+            }
+        }
+
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -523,3 +535,116 @@ fn render_fol_sexpr(
         }
     }
 }
+
+/// Static propositional (`P && !P`) and pairwise numeric bound contradiction linter
+/// ported from `OntoLogic/src/Linter.hs` (`checkAxiomContradiction`, `evalPairContradiction`).
+pub fn check_formula_contradictions(expr: &Expr) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for sub in collect_subformulas(expr) {
+        let conjuncts = flatten_conjuncts(sub);
+        if conjuncts.len() < 2 {
+            continue;
+        }
+        // 1. Propositional contradiction: P and !P in same conjunction
+        for p in &conjuncts {
+            if let Expr::Unary {
+                op: UnaryOp::Not,
+                expr: inner,
+            } = p
+            {
+                if conjuncts.iter().any(|q| *q == &**inner) {
+                    warnings.push(format!(
+                        "Axiom contradiction: {:?} and its negation both hold in conjunction",
+                        inner
+                    ));
+                }
+            }
+        }
+
+        // 2. Pairwise numeric bound contradiction on same term (`x > 10 && x < 5`, `x == 3 && x == 4`)
+        let mut bounds: BTreeMap<String, Vec<(BinOp, f64)>> = BTreeMap::new();
+        for c in &conjuncts {
+            if let Expr::Binary { op, left, right } = c {
+                if let Some(val) = extract_numeric_const(right) {
+                    let key = crate::wp::format_expr_concise(left);
+                    bounds.entry(key).or_default().push((*op, val));
+                }
+            }
+        }
+        for (term, cs) in bounds {
+            for i in 0..cs.len() {
+                for j in (i + 1)..cs.len() {
+                    let (op1, v1) = cs[i];
+                    let (op2, v2) = cs[j];
+                    if eval_pair_contradiction(op1, v1, op2, v2)
+                        || eval_pair_contradiction(op2, v2, op1, v1)
+                    {
+                        warnings.push(format!(
+                            "Property contradiction on {}: {} {} and {} {}",
+                            term, op1, v1, op2, v2
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    warnings
+}
+
+fn collect_subformulas(expr: &Expr) -> Vec<&Expr> {
+    let mut out = vec![expr];
+    match expr {
+        Expr::Unary { expr: inner, .. } => out.extend(collect_subformulas(inner)),
+        Expr::Binary { left, right, .. } => {
+            out.extend(collect_subformulas(left));
+            out.extend(collect_subformulas(right));
+        }
+        Expr::Quantifier { body, .. } => out.extend(collect_subformulas(body)),
+        _ => {}
+    }
+    out
+}
+
+fn flatten_conjuncts(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+        } => {
+            let mut v = flatten_conjuncts(left);
+            v.extend(flatten_conjuncts(right));
+            v
+        }
+        other => vec![other],
+    }
+}
+
+fn extract_numeric_const(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Int(n) => Some(*n as f64),
+        Expr::Float(f) => Some(*f),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => extract_numeric_const(inner).map(|v| -v),
+        _ => None,
+    }
+}
+
+fn eval_pair_contradiction(op1: BinOp, v1: f64, op2: BinOp, v2: f64) -> bool {
+    match (op1, op2) {
+        (BinOp::Eq, BinOp::Eq) => (v1 - v2).abs() > f64::EPSILON,
+        (BinOp::Eq, BinOp::Neq) => (v1 - v2).abs() <= f64::EPSILON,
+        (BinOp::Eq, BinOp::Lt) => v1 >= v2,
+        (BinOp::Eq, BinOp::Le) => v1 > v2,
+        (BinOp::Eq, BinOp::Gt) => v1 <= v2,
+        (BinOp::Eq, BinOp::Ge) => v1 < v2,
+        (BinOp::Gt, BinOp::Lt) => v1 >= v2,
+        (BinOp::Ge, BinOp::Lt) => v1 >= v2,
+        (BinOp::Gt, BinOp::Le) => v1 >= v2,
+        (BinOp::Ge, BinOp::Le) => v1 > v2,
+        _ => false,
+    }
+}
+

@@ -22,13 +22,17 @@
 ## CLI Usage
 
 ```bash
-cargo run -- check <file.bil>                    # OntoLogic DAG linter + Hindley-Milner typechecker
-cargo run -- verify <file.bil>                   # Dijkstra WP & Refinement Calculus verifier
-cargo run -- model-check <file.bil>              # Explicit-state model checker for `system` blocks
+cargo run -- check <file.bil>                    # OntoLogic DAG + contradiction linter + HM typechecker
+cargo run -- solve <file.bil> [--subsumes C P]   # Z3/CVC5 SMT-LIB2 ontology consistency & subsumption prover
+cargo run -- verify <file.bil>                   # Dijkstra WP, Refinement & Verus proof verifier (Bounded + Z3)
+cargo run -- model-check <file.bil>              # Explicit-state + LTL temporal (`~>`, `eventually`) model checker
 cargo run -- run <file.bil> [--seed N] [--trace] # Tree-walk interpreter with nondeterministic trace
-cargo run -- all <file.bil> [--seed N] [--trace] # Run check + verify + model-check + run
+cargo run -- vm <file.bil> [--dump-bytecode]     # Execute Ghost-Erased LIR on the Register/Stack Bytecode VM
+cargo run -- build <file.bil> [-o <out_bin>]     # Compile Ghost-Erased LIR to a standalone native ELF binary
+cargo run -- dump-ir <file.bil> [--level all]    # Inspect 3-Level IR (HIR -> VIR -> LIR)
 cargo run -- emit-verus <file.bil>               # Emit Verus Rust verification code (`verus! { ... }`)
 cargo run -- import-ontologic <file.logic>       # Transpile OntoLogic .logic files into .bil
+cargo run -- all <file.bil> [--seed N] [--trace] # Run check + verify + model-check + run
 cargo run -- repl                                # Interactive REPL
 ```
 

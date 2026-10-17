@@ -24,6 +24,13 @@ system DualBusArbiter {
   // Valid terminal state when all arbitration cycles complete
   terminal cycles_left == 0 && grant == NoGrant
 
+  // LTL Temporal Liveness Properties
+  temporal BusReleaseAfterGrant:
+    (grant == GrantA || grant == GrantB) ~> (grant == NoGrant)
+
+  temporal ArbitrationCompletes:
+    eventually(cycles_left == 0 && grant == NoGrant)
+
   // When both req_a and req_b are true and grant == NoGrant,
   // BOTH Guard #1 and Guard #2 are enabled simultaneously!
   // The model checker explores both nondeterministic hardware arbitration paths.

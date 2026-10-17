@@ -38,6 +38,7 @@ pub enum Token {
     Type,
     Axiom,
     Spec,
+    Proof,
     Fn,
     Refines,
     Requires,
@@ -48,6 +49,7 @@ pub enum Token {
     Variant,
     Transition,
     Terminal,
+    Temporal,
     Let,
     Assert,
     In,
@@ -74,6 +76,7 @@ pub enum Token {
     Assign,     // :=
     Implies,    // => or ⇒
     Iff,        // <=> or ⇔
+    LeadsTo,    // ~> or ↝
     And,        // && or ∧ or and
     Or,         // || or ∨ or or
     Not,        // ! or ¬ or not
@@ -276,6 +279,7 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                 "type" => Token::Type,
                 "axiom" => Token::Axiom,
                 "spec" => Token::Spec,
+                "proof" => Token::Proof,
                 "fn" => Token::Fn,
                 "refines" => Token::Refines,
                 "requires" => Token::Requires,
@@ -286,6 +290,7 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                 "variant" => Token::Variant,
                 "transition" => Token::Transition,
                 "terminal" => Token::Terminal,
+                "temporal" => Token::Temporal,
                 "let" => Token::Let,
                 "assert" => Token::Assert,
                 "in" => Token::In,
@@ -306,6 +311,7 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
                 "not" => Token::Not,
                 "implies" => Token::Implies,
                 "iff" => Token::Iff,
+                "leads_to" => Token::LeadsTo,
                 _ => Token::Ident(ident),
             };
             tokens.push(SpannedToken { token, span });
@@ -314,6 +320,15 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
 
         // Unicode mathematical & logical operators
         match ch {
+            '↝' => {
+                chars.next();
+                col += 1;
+                tokens.push(SpannedToken {
+                    token: Token::LeadsTo,
+                    span,
+                });
+                continue;
+            }
             '∀' => {
                 chars.next();
                 col += 1;
@@ -458,6 +473,11 @@ pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
         let next_ch = chars.peek().copied();
 
         let token = match (ch, next_ch) {
+            ('~', Some('>')) => {
+                chars.next();
+                col += 1;
+                Token::LeadsTo
+            }
             ('[', Some(']')) => {
                 chars.next();
                 col += 1;

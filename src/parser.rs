@@ -83,6 +83,7 @@ impl Parser {
             Token::Type => Ok(Item::TypeDecl(self.parse_type_decl()?)),
             Token::Axiom => Ok(Item::Axiom(self.parse_axiom()?)),
             Token::Spec => Ok(Item::Spec(self.parse_spec()?)),
+            Token::Proof => Ok(Item::Proof(self.parse_proof()?)),
             Token::Fn => Ok(Item::FnDecl(self.parse_fn()?)),
             Token::System => Ok(Item::System(self.parse_system()?)),
             Token::Let => Ok(Item::Let(self.parse_let()?)),
@@ -92,6 +93,43 @@ impl Parser {
                 span: self.span(),
             }),
         }
+    }
+
+    fn parse_proof(&mut self) -> Result<ProofDecl, ParseError> {
+        let span = self.expect(&Token::Proof)?;
+        let name = self.expect_ident()?;
+        let params = if self.peek() == &Token::LParen {
+            self.parse_params()?
+        } else {
+            Vec::new()
+        };
+        let requires = if self.peek() == &Token::Requires {
+            self.advance();
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
+        self.expect(&Token::Ensures)?;
+        let ensures = self.parse_expr(0)?;
+        let body = if self.peek() == &Token::LBrace {
+            self.advance();
+            let b = self.parse_expr(0)?;
+            self.expect(&Token::RBrace)?;
+            Some(b)
+        } else if self.peek() == &Token::Eq {
+            self.advance();
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
+        Ok(ProofDecl {
+            name,
+            params,
+            requires,
+            ensures,
+            body,
+            span,
+        })
     }
 
     fn parse_concept(&mut self) -> Result<ConceptDecl, ParseError> {
@@ -264,6 +302,7 @@ impl Parser {
 
         let mut states = Vec::new();
         let mut invariants = Vec::new();
+        let mut temporals = Vec::new();
         let mut variant = None;
         let mut terminal = None;
         let mut transitions = Vec::new();
@@ -290,6 +329,16 @@ impl Parser {
                     let formula = self.parse_expr(0)?;
                     invariants.push(NamedInvariant {
                         name: iname,
+                        formula,
+                    });
+                }
+                Token::Temporal => {
+                    self.advance();
+                    let tname = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let formula = self.parse_temporal_formula()?;
+                    temporals.push(NamedTemporal {
+                        name: tname,
                         formula,
                     });
                 }
@@ -341,11 +390,49 @@ impl Parser {
             name,
             states,
             invariants,
+            temporals,
             variant,
             terminal,
             transitions,
             span,
         })
+    }
+
+    fn parse_temporal_formula(&mut self) -> Result<TemporalFormula, ParseError> {
+        if let Token::Ident(kw) = self.peek().clone() {
+            if kw == "always" && self.peek_at(1) == &Token::LParen {
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let e = self.parse_expr(0)?;
+                self.expect(&Token::RParen)?;
+                return Ok(TemporalFormula::Always(e));
+            }
+            if kw == "eventually" && self.peek_at(1) == &Token::LParen {
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let e = self.parse_expr(0)?;
+                self.expect(&Token::RParen)?;
+                return Ok(TemporalFormula::Eventually(e));
+            }
+        }
+        if self.peek() == &Token::LeadsTo && self.peek_at(1) == &Token::LParen {
+            self.advance();
+            self.expect(&Token::LParen)?;
+            let p = self.parse_expr(0)?;
+            self.expect(&Token::Comma)?;
+            let q = self.parse_expr(0)?;
+            self.expect(&Token::RParen)?;
+            return Ok(TemporalFormula::LeadsTo(p, q));
+        }
+
+        let lhs = self.parse_expr(0)?;
+        if self.peek() == &Token::LeadsTo {
+            self.advance();
+            let rhs = self.parse_expr(0)?;
+            Ok(TemporalFormula::LeadsTo(lhs, rhs))
+        } else {
+            Ok(TemporalFormula::Always(lhs))
+        }
     }
 
     fn parse_updates(&mut self) -> Result<Vec<(String, Expr)>, ParseError> {

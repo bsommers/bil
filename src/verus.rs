@@ -101,6 +101,30 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
         }
     }
 
+    // 4b. Emit Verus Ghost Proof Lemmas (`proof`) as `pub proof fn`
+    for item in &program.items {
+        if let Item::Proof(pr) = item {
+            let params: Vec<String> = pr
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, verus_type(&p.ty)))
+                .collect();
+            out.push_str(&format!("pub proof fn {}({})\n", pr.name, params.join(", ")));
+            if let Some(req) = &pr.requires {
+                out.push_str(&format!("    requires\n        {},\n", verus_expr(req, true)));
+            }
+            out.push_str(&format!(
+                "    ensures\n        {},\n",
+                verus_expr(&pr.ensures, true)
+            ));
+            if let Some(body) = &pr.body {
+                out.push_str(&format!("{{\n    assert({});\n}}\n\n", verus_expr(body, true)));
+            } else {
+                out.push_str("{\n}\n\n");
+            }
+        }
+    }
+
     // 5. Emit Verified Functions (`fn`) with `requires`, `ensures`, `refines`, and GCL bodies
     for item in &program.items {
         if let Item::FnDecl(f) = item {

@@ -1,6 +1,9 @@
 use crate::ast::*;
 use crate::eval::{Interpreter, Value};
 use crate::ontology::OntologyRegistry;
+use crate::smt::{
+    emit_vc_smt2, evaluate_vc_agreement, run_smt_prover, AgreementOutcome, Prover, Verdict,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -16,6 +19,7 @@ pub enum ObligationKind {
     FunctionContract,
     RefinementPrecondition(String),
     RefinementPostcondition(String),
+    ProofLemma,
 }
 
 impl fmt::Display for ObligationKind {
@@ -49,6 +53,9 @@ impl fmt::Display for ObligationKind {
             ObligationKind::RefinementPostcondition(spec) => {
                 write!(f, "Refinement Strengthened Postcondition (Post_impl => Post_{})", spec)
             }
+            ObligationKind::ProofLemma => {
+                write!(f, "Verus Ghost Proof Lemma ((Requires ∧ Body) => Ensures)")
+            }
         }
     }
 }
@@ -60,6 +67,10 @@ pub struct ProofObligation {
     pub formula_desc: String,
     pub verified: bool,
     pub counterexample: Option<String>,
+    pub smt_prover: Option<String>,
+    pub smt_verdict: Option<Verdict>,
+    pub agreement: Option<AgreementOutcome>,
+    pub smt2_script: Option<String>,
 }
 
 /// Symbolic simultaneous substitution `expr[var := replacement]` (Dijkstra's textual substitution)
@@ -307,7 +318,56 @@ pub fn format_expr_concise(expr: &Expr) -> String {
     }
 }
 
-/// Generates and verifies all Dijkstra Weakest Precondition (`wp`) and Refinement (`refines`) proof obligations
+fn build_vc_obligation(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    fn_name: &str,
+    kind: ObligationKind,
+    fn_params: &[Param],
+    state_params: &[Param],
+    vc: &Expr,
+    include_axioms: bool,
+) -> ProofObligation {
+    let (bounded_ok, ce) = check_vc_bounded(program, ontology, fn_params, state_params, vc);
+
+    let mut all_params = Vec::new();
+    let mut seen = BTreeSet::new();
+    for p in fn_params.iter().chain(state_params.iter()) {
+        if seen.insert(p.name.clone()) {
+            all_params.push(p.clone());
+        }
+    }
+
+    let smt2_script = emit_vc_smt2(program, ontology, &all_params, vc, include_axioms);
+    let (smt_prover, smt_verdict, agreement) = if let Some(ref script) = smt2_script {
+        let res = run_smt_prover(Prover::Auto, script);
+        let agr = evaluate_vc_agreement(bounded_ok, res.verdict);
+        (Some(res.prover), Some(res.verdict), Some(agr))
+    } else {
+        (None, None, None)
+    };
+
+    // An obligation is verified if bounded search succeeded AND (if SMT was decisive on a pure formula without uninterpreted calls) SMT did not refute it
+    let verified = match smt_verdict {
+        Some(Verdict::Inconsistent) => true,
+        _ => bounded_ok,
+    };
+
+    ProofObligation {
+        fn_name: fn_name.to_string(),
+        kind,
+        formula_desc: format_expr_concise(vc),
+        verified,
+        counterexample: ce,
+        smt_prover,
+        smt_verdict,
+        agreement,
+        smt2_script,
+    }
+}
+
+/// Generates and verifies all Dijkstra Weakest Precondition (`wp`), Refinement (`refines`),
+/// and Verus Ghost Proof (`proof`) obligations using both bounded domain search and unbounded SMT-LIB2.
 pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<ProofObligation> {
     let mut obligations = Vec::new();
     let mut specs = BTreeMap::new();
@@ -318,247 +378,288 @@ pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<Pro
     }
 
     for item in &program.items {
-        if let Item::FnDecl(f) = item {
-            let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
-            let post = f.ensures.clone().unwrap_or(Expr::Bool(true));
-
-            // 1. Refinement Calculus Obligations (`fn` refines `spec`)
-            if let Some(spec_name) = &f.refines {
-                if let Some(spec) = specs.get(spec_name) {
-                    // Rename spec params to match fn params if needed
-                    let mut param_map = BTreeMap::new();
-                    for (sp_p, fn_p) in spec.params.iter().zip(f.params.iter()) {
-                        param_map.insert(sp_p.name.clone(), Expr::Var(fn_p.name.clone()));
-                    }
-                    let spec_pre = spec
-                        .requires
-                        .as_ref()
-                        .map(|r| subst_expr(r, &param_map))
-                        .unwrap_or(Expr::Bool(true));
-                    let spec_ens = spec
-                        .ensures
-                        .as_ref()
-                        .map(|e| subst_expr(e, &param_map))
-                        .unwrap_or(Expr::Bool(true));
-
-                    // Pre_spec => Pre_impl
-                    let vc_pre = implies(spec_pre, pre.clone());
-                    let (ok_pre, ce_pre) =
-                        check_vc_bounded(program, ontology, &f.params, &[], &vc_pre);
-                    obligations.push(ProofObligation {
-                        fn_name: f.name.clone(),
-                        kind: ObligationKind::RefinementPrecondition(spec_name.clone()),
-                        formula_desc: format_expr_concise(&vc_pre),
-                        verified: ok_pre,
-                        counterexample: ce_pre,
-                    });
-
-                    // (Pre_spec && Post_impl) => Post_spec (checked over actual execution of f)
-                    let (ok_post, ce_post) =
-                        check_refinement_execution(program, ontology, f, &spec_ens);
-                    obligations.push(ProofObligation {
-                        fn_name: f.name.clone(),
-                        kind: ObligationKind::RefinementPostcondition(spec_name.clone()),
-                        formula_desc: format!(
-                            "({} && {}) => {}",
-                            format_expr_concise(&pre),
-                            format_expr_concise(&post),
-                            format_expr_concise(&spec_ens)
-                        ),
-                        verified: ok_post,
-                        counterexample: ce_post,
-                    });
-                }
+        match item {
+            Item::Proof(pr) => {
+                let req = pr.requires.clone().unwrap_or(Expr::Bool(true));
+                let body = pr.body.clone().unwrap_or(Expr::Bool(true));
+                let ens = pr.ensures.clone();
+                let vc = implies(conj(req, body), ens);
+                obligations.push(build_vc_obligation(
+                    program,
+                    ontology,
+                    &pr.name,
+                    ObligationKind::ProofLemma,
+                    &pr.params,
+                    &[],
+                    &vc,
+                    true,
+                ));
             }
+            Item::FnDecl(f) => {
+                let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
+                let post = f.ensures.clone().unwrap_or(Expr::Bool(true));
 
-            // 2. Structural GCL obligations inside function body
-            match &f.body {
-                Expr::IfFi { branches } => {
-                    // Obligation A: Guard Totality: Pre => (G1 ∨ G2 ∨ ... ∨ Gn)
-                    let bb = branches
-                        .iter()
-                        .map(|b| b.guard.clone())
-                        .fold(Expr::Bool(false), disj);
-                    let vc_totality = implies(pre.clone(), bb);
-                    let (ok_tot, ce_tot) =
-                        check_vc_bounded(program, ontology, &f.params, &[], &vc_totality);
-                    obligations.push(ProofObligation {
-                        fn_name: f.name.clone(),
-                        kind: ObligationKind::IfFiGuardTotality,
-                        formula_desc: format_expr_concise(&vc_totality),
-                        verified: ok_tot,
-                        counterexample: ce_tot,
-                    });
+                // 1. Refinement Calculus Obligations (`fn` refines `spec`)
+                if let Some(spec_name) = &f.refines {
+                    if let Some(spec) = specs.get(spec_name) {
+                        let mut param_map = BTreeMap::new();
+                        for (sp_p, fn_p) in spec.params.iter().zip(f.params.iter()) {
+                            param_map.insert(sp_p.name.clone(), Expr::Var(fn_p.name.clone()));
+                        }
+                        let spec_pre = spec
+                            .requires
+                            .as_ref()
+                            .map(|r| subst_expr(r, &param_map))
+                            .unwrap_or(Expr::Bool(true));
+                        let spec_ens = spec
+                            .ensures
+                            .as_ref()
+                            .map(|e| subst_expr(e, &param_map))
+                            .unwrap_or(Expr::Bool(true));
 
-                    // Obligation B: Each branch satisfies Post: (Pre ∧ Gi) => wp(Si, Post)
-                    for (idx, br) in branches.iter().enumerate() {
-                        let wp_s = wp_branch_body(&br.body, &post, None);
-                        let vc_br = implies(conj(pre.clone(), br.guard.clone()), wp_s);
-                        let (ok_br, ce_br) =
-                            check_vc_bounded(program, ontology, &f.params, &[], &vc_br);
-                        obligations.push(ProofObligation {
-                            fn_name: f.name.clone(),
-                            kind: ObligationKind::IfFiBranchPostcondition(idx),
-                            formula_desc: format_expr_concise(&vc_br),
-                            verified: ok_br,
-                            counterexample: ce_br,
-                        });
-                    }
-                }
-                Expr::DoOd {
-                    inits,
-                    invariant,
-                    variant,
-                    branches,
-                    then_expr,
-                } => {
-                    let inv = invariant
-                        .as_ref()
-                        .map(|b| (**b).clone())
-                        .unwrap_or(Expr::Bool(true));
-
-                    // Build init substitution map `state_var := init_expr`
-                    let mut init_map = BTreeMap::new();
-                    let mut state_params = Vec::new();
-                    for (vname, iexpr) in inits {
-                        init_map.insert(vname.clone(), iexpr.clone());
-                        // Infer state param type from init_expr or f.params
-                        let sty = f
-                            .params
-                            .iter()
-                            .find(|p| Expr::Var(p.name.clone()) == *iexpr)
-                            .map(|p| p.ty.clone())
-                            .unwrap_or(TypeExpr::Named("Int".into()));
-                        state_params.push(Param {
-                            name: vname.clone(),
-                            ty: sty,
-                        });
-                    }
-
-                    // 1. Initialization: Pre => I[state := init]
-                    let inv_init = subst_expr(&inv, &init_map);
-                    let vc_init = implies(pre.clone(), inv_init);
-                    let (ok_init, ce_init) =
-                        check_vc_bounded(program, ontology, &f.params, &[], &vc_init);
-                    obligations.push(ProofObligation {
-                        fn_name: f.name.clone(),
-                        kind: ObligationKind::DoOdInitialization,
-                        formula_desc: format_expr_concise(&vc_init),
-                        verified: ok_init,
-                        counterexample: ce_init,
-                    });
-
-                    let default_state_var = inits.first().map(|(n, _)| n.as_str());
-
-                    // 2. Preservation & 3/4. Variant obligations per branch
-                    for (idx, br) in branches.iter().enumerate() {
-                        let pre_inv_g = conj(pre.clone(), conj(inv.clone(), br.guard.clone()));
-                        let wp_inv = wp_branch_body(&br.body, &inv, default_state_var);
-                        let vc_pres = implies(pre_inv_g.clone(), wp_inv);
-                        let (ok_p, ce_p) = check_vc_bounded(
+                        // Pre_spec => Pre_impl
+                        let vc_pre = implies(spec_pre, pre.clone());
+                        obligations.push(build_vc_obligation(
                             program,
                             ontology,
+                            &f.name,
+                            ObligationKind::RefinementPrecondition(spec_name.clone()),
                             &f.params,
-                            &state_params,
-                            &vc_pres,
-                        );
+                            &[],
+                            &vc_pre,
+                            false,
+                        ));
+
+                        // (Pre_spec && Post_impl) => Post_spec (checked over actual execution of f + SMT on contract)
+                        let (ok_post, ce_post) =
+                            check_refinement_execution(program, ontology, f, &spec_ens);
+                        let mut post_params = f.params.clone();
+                        post_params.push(Param {
+                            name: "result".into(),
+                            ty: f.ret_ty.clone(),
+                        });
+                        let vc_post_formula = implies(conj(pre.clone(), post.clone()), spec_ens.clone());
+                        let smt2_script =
+                            emit_vc_smt2(program, ontology, &post_params, &vc_post_formula, false);
+                        let (smt_prover, smt_verdict, agreement) =
+                            if let Some(ref script) = smt2_script {
+                                let res = run_smt_prover(Prover::Auto, script);
+                                let agr = evaluate_vc_agreement(ok_post, res.verdict);
+                                (Some(res.prover), Some(res.verdict), Some(agr))
+                            } else {
+                                (None, None, None)
+                            };
                         obligations.push(ProofObligation {
                             fn_name: f.name.clone(),
-                            kind: ObligationKind::DoOdPreservation(idx),
-                            formula_desc: format_expr_concise(&vc_pres),
-                            verified: ok_p,
-                            counterexample: ce_p,
+                            kind: ObligationKind::RefinementPostcondition(spec_name.clone()),
+                            formula_desc: format!(
+                                "({} && {}) => {}",
+                                format_expr_concise(&pre),
+                                format_expr_concise(&post),
+                                format_expr_concise(&spec_ens)
+                            ),
+                            verified: ok_post,
+                            counterexample: ce_post,
+                            smt_prover,
+                            smt_verdict,
+                            agreement,
+                            smt2_script,
                         });
+                    }
+                }
 
-                        if let Some(var_expr) = variant {
-                            // Non-negativity: (Pre ∧ I ∧ Gi) => V >= 0
-                            let v_non_neg = Expr::Binary {
-                                op: BinOp::Ge,
-                                left: var_expr.clone(),
-                                right: Box::new(Expr::Int(0)),
-                            };
-                            let vc_nn = implies(pre_inv_g.clone(), v_non_neg);
-                            let (ok_nn, ce_nn) = check_vc_bounded(
+                // 2. Structural GCL obligations inside function body
+                match &f.body {
+                    Expr::IfFi { branches } => {
+                        // Obligation A: Guard Totality: Pre => (G1 ∨ G2 ∨ ... ∨ Gn)
+                        let bb = branches
+                            .iter()
+                            .map(|b| b.guard.clone())
+                            .fold(Expr::Bool(false), disj);
+                        let vc_totality = implies(pre.clone(), bb);
+                        obligations.push(build_vc_obligation(
+                            program,
+                            ontology,
+                            &f.name,
+                            ObligationKind::IfFiGuardTotality,
+                            &f.params,
+                            &[],
+                            &vc_totality,
+                            false,
+                        ));
+
+                        // Obligation B: Each branch satisfies Post: (Pre ∧ Gi) => wp(Si, Post)
+                        for (idx, br) in branches.iter().enumerate() {
+                            let wp_s = wp_branch_body(&br.body, &post, None);
+                            let vc_br = implies(conj(pre.clone(), br.guard.clone()), wp_s);
+                            obligations.push(build_vc_obligation(
                                 program,
                                 ontology,
+                                &f.name,
+                                ObligationKind::IfFiBranchPostcondition(idx),
                                 &f.params,
-                                &state_params,
-                                &vc_nn,
-                            );
-                            obligations.push(ProofObligation {
-                                fn_name: f.name.clone(),
-                                kind: ObligationKind::DoOdVariantNonNegative(idx),
-                                formula_desc: format_expr_concise(&vc_nn),
-                                verified: ok_nn,
-                                counterexample: ce_nn,
+                                &[],
+                                &vc_br,
+                                false,
+                            ));
+                        }
+                    }
+                    Expr::DoOd {
+                        inits,
+                        invariant,
+                        variant,
+                        branches,
+                        then_expr,
+                    } => {
+                        let inv = invariant
+                            .as_ref()
+                            .map(|b| (**b).clone())
+                            .unwrap_or(Expr::Bool(true));
+
+                        let mut init_map = BTreeMap::new();
+                        let mut state_params = Vec::new();
+                        for (vname, iexpr) in inits {
+                            init_map.insert(vname.clone(), iexpr.clone());
+                            let sty = f
+                                .params
+                                .iter()
+                                .find(|p| Expr::Var(p.name.clone()) == *iexpr)
+                                .map(|p| p.ty.clone())
+                                .unwrap_or(TypeExpr::Named("Int".into()));
+                            state_params.push(Param {
+                                name: vname.clone(),
+                                ty: sty,
                             });
+                        }
 
-                            // Strict decrease: (Pre ∧ I ∧ Gi) => wp(Si, V) < V
-                            let wp_v = wp_branch_body(&br.body, var_expr, default_state_var);
-                            let v_dec = Expr::Binary {
-                                op: BinOp::Lt,
-                                left: Box::new(wp_v),
-                                right: var_expr.clone(),
-                            };
-                            let vc_dec = implies(pre_inv_g, v_dec);
-                            let (ok_d, ce_d) = check_vc_bounded(
+                        // 1. Initialization: Pre => I[state := init]
+                        let inv_init = subst_expr(&inv, &init_map);
+                        let vc_init = implies(pre.clone(), inv_init);
+                        obligations.push(build_vc_obligation(
+                            program,
+                            ontology,
+                            &f.name,
+                            ObligationKind::DoOdInitialization,
+                            &f.params,
+                            &[],
+                            &vc_init,
+                            false,
+                        ));
+
+                        let default_state_var = inits.first().map(|(n, _)| n.as_str());
+
+                        // 2. Preservation & 3/4. Variant obligations per branch
+                        for (idx, br) in branches.iter().enumerate() {
+                            let pre_inv_g = conj(pre.clone(), conj(inv.clone(), br.guard.clone()));
+                            let wp_inv = wp_branch_body(&br.body, &inv, default_state_var);
+                            let vc_pres = implies(pre_inv_g.clone(), wp_inv);
+                            obligations.push(build_vc_obligation(
                                 program,
                                 ontology,
+                                &f.name,
+                                ObligationKind::DoOdPreservation(idx),
                                 &f.params,
                                 &state_params,
-                                &vc_dec,
-                            );
+                                &vc_pres,
+                                false,
+                            ));
+
+                            if let Some(var_expr) = variant {
+                                // Non-negativity: (Pre ∧ I ∧ Gi) => V >= 0
+                                let v_non_neg = Expr::Binary {
+                                    op: BinOp::Ge,
+                                    left: var_expr.clone(),
+                                    right: Box::new(Expr::Int(0)),
+                                };
+                                let vc_nn = implies(pre_inv_g.clone(), v_non_neg);
+                                obligations.push(build_vc_obligation(
+                                    program,
+                                    ontology,
+                                    &f.name,
+                                    ObligationKind::DoOdVariantNonNegative(idx),
+                                    &f.params,
+                                    &state_params,
+                                    &vc_nn,
+                                    false,
+                                ));
+
+                                // Strict decrease: (Pre ∧ I ∧ Gi) => wp(Si, V) < V
+                                let wp_v = wp_branch_body(&br.body, var_expr, default_state_var);
+                                let v_dec = Expr::Binary {
+                                    op: BinOp::Lt,
+                                    left: Box::new(wp_v),
+                                    right: var_expr.clone(),
+                                };
+                                let vc_dec = implies(pre_inv_g, v_dec);
+                                obligations.push(build_vc_obligation(
+                                    program,
+                                    ontology,
+                                    &f.name,
+                                    ObligationKind::DoOdVariantDecrease(idx),
+                                    &f.params,
+                                    &state_params,
+                                    &vc_dec,
+                                    false,
+                                ));
+                            }
+                        }
+
+                        // 5. Exit Postcondition: (Pre ∧ I ∧ ¬BB) => Post[result := then_expr]
+                        let bb = branches
+                            .iter()
+                            .map(|b| b.guard.clone())
+                            .fold(Expr::Bool(false), disj);
+                        let mut res_map = BTreeMap::new();
+                        res_map.insert("result".into(), (**then_expr).clone());
+                        let post_exit = subst_expr(&post, &res_map);
+                        let vc_exit = implies(conj(pre.clone(), conj(inv, not(bb))), post_exit);
+                        obligations.push(build_vc_obligation(
+                            program,
+                            ontology,
+                            &f.name,
+                            ObligationKind::DoOdExitPostcondition,
+                            &f.params,
+                            &state_params,
+                            &vc_exit,
+                            false,
+                        ));
+                    }
+                    _ => {
+                        if f.requires.is_some() || f.ensures.is_some() {
+                            let (ok, ce) = check_refinement_execution(program, ontology, f, &post);
+                            let mut map = BTreeMap::new();
+                            map.insert("result".to_string(), f.body.clone());
+                            let vc_direct = implies(pre.clone(), subst_expr(&post, &map));
+                            let smt2_script =
+                                emit_vc_smt2(program, ontology, &f.params, &vc_direct, true);
+                            let (smt_prover, smt_verdict, agreement) =
+                                if let Some(ref script) = smt2_script {
+                                    let res = run_smt_prover(Prover::Auto, script);
+                                    let agr = evaluate_vc_agreement(ok, res.verdict);
+                                    (Some(res.prover), Some(res.verdict), Some(agr))
+                                } else {
+                                    (None, None, None)
+                                };
                             obligations.push(ProofObligation {
                                 fn_name: f.name.clone(),
-                                kind: ObligationKind::DoOdVariantDecrease(idx),
-                                formula_desc: format_expr_concise(&vc_dec),
-                                verified: ok_d,
-                                counterexample: ce_d,
+                                kind: ObligationKind::FunctionContract,
+                                formula_desc: format!(
+                                    "{} => wp(body, {})",
+                                    format_expr_concise(&pre),
+                                    format_expr_concise(&post)
+                                ),
+                                verified: ok,
+                                counterexample: ce,
+                                smt_prover,
+                                smt_verdict,
+                                agreement,
+                                smt2_script,
                             });
                         }
                     }
-
-                    // 5. Exit Postcondition: (Pre ∧ I ∧ ¬BB) => Post[result := then_expr]
-                    let bb = branches
-                        .iter()
-                        .map(|b| b.guard.clone())
-                        .fold(Expr::Bool(false), disj);
-                    let mut res_map = BTreeMap::new();
-                    res_map.insert("result".into(), (**then_expr).clone());
-                    let post_exit = subst_expr(&post, &res_map);
-                    let vc_exit = implies(conj(pre.clone(), conj(inv, not(bb))), post_exit);
-                    let (ok_ex, ce_ex) = check_vc_bounded(
-                        program,
-                        ontology,
-                        &f.params,
-                        &state_params,
-                        &vc_exit,
-                    );
-                    obligations.push(ProofObligation {
-                        fn_name: f.name.clone(),
-                        kind: ObligationKind::DoOdExitPostcondition,
-                        formula_desc: format_expr_concise(&vc_exit),
-                        verified: ok_ex,
-                        counterexample: ce_ex,
-                    });
-                }
-                _ => {
-                    if f.requires.is_some() || f.ensures.is_some() {
-                        let (ok, ce) = check_refinement_execution(program, ontology, f, &post);
-                        obligations.push(ProofObligation {
-                            fn_name: f.name.clone(),
-                            kind: ObligationKind::FunctionContract,
-                            formula_desc: format!(
-                                "{} => wp(body, {})",
-                                format_expr_concise(&pre),
-                                format_expr_concise(&post)
-                            ),
-                            verified: ok,
-                            counterexample: ce,
-                        });
-                    }
                 }
             }
+            _ => {}
         }
     }
 
