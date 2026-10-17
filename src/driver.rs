@@ -60,28 +60,39 @@ pub fn prove_subsumption_source(
     Ok(smt::prove_subsumption(&program, &ontology, child, parent, prover))
 }
 
-pub fn parse_source(src: &str) -> Result<Program, String> {
-    let tokens = lexer::tokenize(src).map_err(|e| e.to_string())?;
+pub fn parse_source_typed(src: &str) -> Result<Program, crate::error::BilError> {
+    let tokens = lexer::tokenize(src)?;
     let mut parser = Parser::new(tokens);
-    parser.parse_program().map_err(|e| e.to_string())
+    Ok(parser.parse_program()?)
+}
+
+pub fn check_source_typed(
+    src: &str,
+) -> Result<(Program, OntologyRegistry, TypeEnv), crate::error::BilError> {
+    let program = parse_source_typed(src)?;
+    let ontology = OntologyRegistry::build(&program)?;
+    let mut tenv = TypeEnv::new(ontology.clone());
+    tenv.check_program(&program)?;
+    Ok((program, ontology, tenv))
+}
+
+pub fn run_source_typed(
+    src: &str,
+    seed: u64,
+    trace: bool,
+) -> Result<(Vec<(String, Value)>, Vec<String>), crate::error::BilError> {
+    let (program, ontology, _) = check_source_typed(src)?;
+    let mut interp = Interpreter::new(ontology, seed, trace);
+    let outputs = interp.run_program(&program)?;
+    Ok((outputs, interp.trace_log))
+}
+
+pub fn parse_source(src: &str) -> Result<Program, String> {
+    parse_source_typed(src).map_err(|e| e.to_string())
 }
 
 pub fn check_source(src: &str) -> Result<(Program, OntologyRegistry, TypeEnv), String> {
-    let program = parse_source(src)?;
-    let ontology = OntologyRegistry::build(&program).map_err(|errs| {
-        errs.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
-    let mut tenv = TypeEnv::new(ontology.clone());
-    tenv.check_program(&program).map_err(|errs| {
-        errs.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
-    Ok((program, ontology, tenv))
+    check_source_typed(src).map_err(|e| e.to_string())
 }
 
 pub fn verify_source(src: &str) -> Result<Vec<ProofObligation>, String> {
@@ -102,8 +113,5 @@ pub fn run_source(
     seed: u64,
     trace: bool,
 ) -> Result<(Vec<(String, Value)>, Vec<String>), String> {
-    let (program, ontology, _) = check_source(src)?;
-    let mut interp = Interpreter::new(ontology, seed, trace);
-    let outputs = interp.run_program(&program).map_err(|e| e.to_string())?;
-    Ok((outputs, interp.trace_log))
+    run_source_typed(src, seed, trace).map_err(|e| e.to_string())
 }
