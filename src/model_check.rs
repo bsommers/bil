@@ -740,3 +740,165 @@ fn tarjan_sccs(nodes: &BTreeSet<usize>, adj: &[Vec<(usize, usize)>]) -> Vec<Vec<
 
     st.sccs
 }
+
+/// Report from Symbolic Bounded Model Checking (`P3.2`) unrolling a `system` up to depth `k` in SMT-LIB2.
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolicBmcReport {
+    pub system_name: String,
+    pub depth_k: usize,
+    pub smt2_script: String,
+    pub verdict: crate::smt::Verdict,
+    pub prover: String,
+    pub safe_up_to_k: bool,
+}
+
+fn step_var_map(states: &[StateVarDecl], step: usize) -> BTreeMap<String, Expr> {
+    let mut map = BTreeMap::new();
+    for st in states {
+        map.insert(st.name.clone(), Expr::Var(format!("{}__{}", st.name, step)));
+    }
+    map
+}
+
+/// Emits an SMT-LIB2 Bounded Model Checking (BMC) refutation script unrolling `sys` for `k` transitions.
+/// Checks whether any safety invariant can be violated at any step $t \in 0..=k$.
+pub fn emit_symbolic_bmc_smt2(
+    sys: &SystemDecl,
+    ontology: &OntologyRegistry,
+    k: usize,
+) -> Option<String> {
+    if sys.invariants.is_empty() || sys.states.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![
+        format!(";; Symbolic Bounded Model Checking (BMC) for system `{}` (depth k = {})", sys.name, k),
+        "(set-logic ALL)".to_string(),
+    ];
+
+    // Declare state variables for steps 0..=k
+    for step in 0..=k {
+        for st in &sys.states {
+            let smt_sort = match &st.ty {
+                TypeExpr::Named(n) if n == "Int" || n == "Integer" => "Int",
+                TypeExpr::Named(n) if n == "Bool" || n == "Boolean" => "Bool",
+                _ => return None,
+            };
+            lines.push(format!("(declare-const {}__{} {})", st.name, step, smt_sort));
+        }
+    }
+
+    // Assert initial state at step 0
+    let map0 = step_var_map(&sys.states, 0);
+    for st in &sys.states {
+        let init_e = crate::wp::subst_expr(&st.init, &map0);
+        let init_smt = crate::smt::expr_to_smt(&init_e, ontology, None)?;
+        lines.push(format!("(assert (= {}__0 {}))", st.name, init_smt));
+    }
+
+    // Assert transition relation T(s_t, s_{t+1}) for each step t in 0..k
+    for step in 0..k {
+        let cur_map = step_var_map(&sys.states, step);
+        let mut disjuncts = Vec::new();
+        let mut guards_smt = Vec::new();
+
+        for tr in &sys.transitions {
+            let g_sub = crate::wp::subst_expr(&tr.guard, &cur_map);
+            let g_smt = crate::smt::expr_to_smt(&g_sub, ontology, None)?;
+            guards_smt.push(g_smt.clone());
+
+            let mut branch_conjuncts = vec![g_smt];
+            let mut updated_vars = BTreeSet::new();
+            for (vname, uexpr) in &tr.updates {
+                updated_vars.insert(vname.as_str());
+                let u_sub = crate::wp::subst_expr(uexpr, &cur_map);
+                let u_smt = crate::smt::expr_to_smt(&u_sub, ontology, None)?;
+                branch_conjuncts.push(format!("(= {}__{} {})", vname, step + 1, u_smt));
+            }
+            // Frame condition for unmodified state variables
+            for st in &sys.states {
+                if !updated_vars.contains(st.name.as_str()) {
+                    branch_conjuncts.push(format!(
+                        "(= {}__{} {}__{})",
+                        st.name,
+                        step + 1,
+                        st.name,
+                        step
+                    ));
+                }
+            }
+            disjuncts.push(format!("(and {})", branch_conjuncts.join(" ")));
+        }
+
+        // Stuttering step when no guard is enabled (terminal state)
+        if !guards_smt.is_empty() {
+            let not_bb = format!("(not (or {}))", guards_smt.join(" "));
+            let mut stutter = vec![not_bb];
+            for st in &sys.states {
+                stutter.push(format!("(= {}__{} {}__{})", st.name, step + 1, st.name, step));
+            }
+            disjuncts.push(format!("(and {})", stutter.join(" ")));
+        }
+
+        if !disjuncts.is_empty() {
+            lines.push(format!("(assert (or {}))", disjuncts.join(" ")));
+        }
+    }
+
+    // Assert negation of safety invariants across steps 0..=k
+    let mut all_step_invs = Vec::new();
+    for step in 0..=k {
+        let map_t = step_var_map(&sys.states, step);
+        for inv in &sys.invariants {
+            let inv_sub = crate::wp::subst_expr(&inv.formula, &map_t);
+            let inv_smt = crate::smt::expr_to_smt(&inv_sub, ontology, None)?;
+            all_step_invs.push(inv_smt);
+        }
+    }
+    lines.push(format!(
+        "(assert (not (and {})))",
+        all_step_invs.join(" ")
+    ));
+    lines.push("(check-sat)".to_string());
+
+    Some(lines.join("\n") + "\n")
+}
+
+/// Runs Symbolic Bounded Model Checking (`P3.2`) for a single `system` up to depth `k`.
+pub fn symbolic_bmc_system(
+    sys: &SystemDecl,
+    ontology: &OntologyRegistry,
+    k: usize,
+    prover: crate::smt::Prover,
+) -> Option<SymbolicBmcReport> {
+    let smt2_script = emit_symbolic_bmc_smt2(sys, ontology, k)?;
+    let res = crate::smt::run_smt_prover(prover, &smt2_script);
+    let safe_up_to_k = res.verdict == crate::smt::Verdict::Inconsistent;
+    Some(SymbolicBmcReport {
+        system_name: sys.name.clone(),
+        depth_k: k,
+        smt2_script,
+        verdict: res.verdict,
+        prover: res.prover,
+        safe_up_to_k,
+    })
+}
+
+/// Runs Symbolic Bounded Model Checking (`P3.2`) for all `system` declarations in `program` that use `Int`/`Bool` state sorts.
+pub fn symbolic_bmc_program(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    k: usize,
+    prover: crate::smt::Prover,
+) -> Vec<SymbolicBmcReport> {
+    let mut reports = Vec::new();
+    for item in &program.items {
+        if let Item::System(sys) = item {
+            if let Some(rep) = symbolic_bmc_system(sys, ontology, k, prover) {
+                reports.push(rep);
+            }
+        }
+    }
+    reports
+}
+

@@ -1,10 +1,10 @@
 //! Command-line interface dispatcher and interactive REPL for `bil`.
 
 use crate::{
-    build_native_source, check_source, emit_verus_source, lower_ir_source, model_check_source,
-    ontology::transpile_ontologic_sexpr, prove_subsumption_source, run_source, run_vm_source,
+    build_native_source, emit_verus_source, lower_ir_source, ontology::transpile_ontologic_sexpr,
+    prove_subsumption_source, run_source, run_vm_source,
     smt::{Prover, SubsumptionResult, Verdict},
-    solve_ontology_source, verify_source,
+    solve_ontology_source, CompilationSession,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -324,69 +324,62 @@ pub fn run_cli(args: &[String]) -> i32 {
                 return 1;
             };
 
-            if cmd == "check" || cmd == "all" {
-                match check_source(&src) {
-                    Ok((_, ontology, tenv)) => {
-                        println!(
-                            "[OK] OntoLogic DAG & HM Typecheck passed ({} concepts, {} ADTs, {} specs)",
-                            ontology.concepts.len(),
-                            tenv.adts.len(),
-                            tenv.specs.len()
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        return 1;
-                    }
+            let session = match CompilationSession::from_source(&src) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return 1;
                 }
+            };
+
+            if cmd == "check" || cmd == "all" {
+                println!(
+                    "[OK] OntoLogic DAG & HM Typecheck passed ({} concepts, {} ADTs, {} specs)",
+                    session.ontology.concepts.len(),
+                    session.tenv.adts.len(),
+                    session.tenv.specs.len()
+                );
             }
 
             if cmd == "verify" || cmd == "all" {
-                match verify_source(&src) {
-                    Ok(obligations) => {
-                        let all_ok = obligations.iter().all(|ob| ob.verified);
-                        if json_output && cmd == "verify" {
-                            if let Ok(js) = serde_json::to_string_pretty(&obligations) {
-                                println!("{}", js);
+                let obligations = session.verify();
+                let all_ok = obligations.iter().all(|ob| ob.verified);
+                if json_output && cmd == "verify" {
+                    if let Ok(js) = serde_json::to_string_pretty(&obligations) {
+                        println!("{}", js);
+                    }
+                } else {
+                    println!(
+                        "=== Formal Verification (Dijkstra WP, Refinement & SMT Solver): {} obligations ===",
+                        obligations.len()
+                    );
+                    for ob in &obligations {
+                        let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
+                            (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
+                                format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
                             }
-                        } else {
-                            println!(
-                                "=== Formal Verification (Dijkstra WP, Refinement & SMT Solver): {} obligations ===",
-                                obligations.len()
-                            );
-                            for ob in &obligations {
-                                let smt_badge = match (&ob.smt_prover, &ob.smt_verdict, &ob.agreement) {
-                                    (Some(p), Some(Verdict::Inconsistent), Some(agr)) => {
-                                        format!(" [SMT {}: refutation UNSAT | Agreement: {}]", p, agr)
-                                    }
-                                    (Some(p), Some(v), Some(agr)) => {
-                                        format!(" [SMT {}: {} | Agreement: {}]", p, v, agr)
-                                    }
-                                    _ => String::new(),
-                                };
-                                println!(
-                                    "  [{}] fn `{}` — {}{}",
-                                    ob.status, ob.fn_name, ob.kind, smt_badge
-                                );
-                                println!("           VC: {}", ob.formula_desc);
-                                if let Some(ce) = &ob.counterexample {
-                                    println!("           Counterexample: {}", ce);
-                                }
+                            (Some(p), Some(v), Some(agr)) => {
+                                format!(" [SMT {}: {} | Agreement: {}]", p, v, agr)
                             }
-                        }
-                        if !all_ok {
-                            return 1;
+                            _ => String::new(),
+                        };
+                        println!(
+                            "  [{}] fn `{}` — {}{}",
+                            ob.status, ob.fn_name, ob.kind, smt_badge
+                        );
+                        println!("           VC: {}", ob.formula_desc);
+                        if let Some(ce) = &ob.counterexample {
+                            println!("           Counterexample: {}", ce);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        return 1;
-                    }
+                }
+                if !all_ok {
+                    return 1;
                 }
             }
 
             if cmd == "model-check" || cmd == "all" {
-                match model_check_source(&src, max_states) {
+                match session.model_check(max_states) {
                     Ok(reports) => {
                         let any_violation = reports.iter().any(|r| !r.violations.is_empty());
                         if json_output && cmd == "model-check" {
@@ -446,7 +439,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
 
             if cmd == "run" || cmd == "all" {
-                match run_source(&src, seed, trace) {
+                match session.run(seed, trace) {
                     Ok((outputs, trace_log)) => {
                         if trace && !trace_log.is_empty() {
                             println!("=== Nondeterministic Execution Trace (seed={}) ===", seed);

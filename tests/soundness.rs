@@ -439,3 +439,65 @@ fn test_p2_1_nested_do_od_under_let_and_boundary_constant_sampling() {
     );
 }
 
+#[test]
+fn test_p3_2_and_p3_3_symbolic_bmc_and_compilation_session() {
+    use bil::model_check::symbolic_bmc_program;
+    use bil::smt::{Prover, Verdict};
+    use bil::CompilationSession;
+
+    let safe_counter_src = r#"
+        system BoundedCounter {
+            state count: Int = 0
+            state locked: Bool = false
+
+            invariant CountWithinBounds:
+                count >= 0 && count <= 3
+
+            transition
+                !locked && count < 3 -> count := count + 1
+            []  !locked && count == 3 -> locked := true
+            []  locked && count > 0 -> count := count - 1
+            []  locked && count == 0 -> locked := false
+        }
+
+        let init_ok = 1
+    "#;
+
+    let mut session = CompilationSession::from_source(safe_counter_src).expect("session from_source");
+    let mc_reports = session.model_check(500).expect("explicit model check");
+    assert_eq!(mc_reports.len(), 1);
+    assert!(mc_reports[0].violations.is_empty());
+
+    let ir = session.lower_ir();
+    assert_eq!(ir.lir.globals.len(), 1);
+
+    let bmc_reports = symbolic_bmc_program(&session.program, &session.ontology, 6, Prover::Auto);
+    assert_eq!(bmc_reports.len(), 1);
+    assert!(bmc_reports[0].smt2_script.contains("(declare-const count__0 Int)"));
+    assert!(bmc_reports[0].smt2_script.contains("(declare-const count__6 Int)"));
+    if bmc_reports[0].verdict != Verdict::Skipped {
+        assert!(bmc_reports[0].safe_up_to_k);
+    }
+
+    // Buggy system that violates invariant at depth 3 must be caught by symbolic BMC:
+    let buggy_counter_src = r#"
+        system OverflowCounter {
+            state count: Int = 0
+
+            invariant MaxTwo:
+                count <= 2
+
+            transition
+                count < 5 -> count := count + 1
+            []  count >= 5 -> count := 0
+        }
+    "#;
+    let buggy_session = CompilationSession::from_source(buggy_counter_src).expect("buggy session");
+    let buggy_bmc = symbolic_bmc_program(&buggy_session.program, &buggy_session.ontology, 4, Prover::Auto);
+    assert_eq!(buggy_bmc.len(), 1);
+    if buggy_bmc[0].verdict != Verdict::Skipped {
+        assert_eq!(buggy_bmc[0].verdict, Verdict::Consistent);
+        assert!(!buggy_bmc[0].safe_up_to_k);
+    }
+}
+

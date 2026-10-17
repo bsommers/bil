@@ -117,3 +117,48 @@ pub fn run_source(
 ) -> Result<RunOutput, String> {
     run_source_typed(src, seed, trace).map_err(|e| e.to_string())
 }
+
+/// Memoized compilation session (`P3.3`) that parses, validates OntoLogic DAGs,
+/// and typechecks once, caching the lowered 3-level IR across verification,
+/// model-checking, and execution passes.
+pub struct CompilationSession {
+    pub program: Program,
+    pub ontology: OntologyRegistry,
+    pub tenv: TypeEnv,
+    ir: Option<MultiLevelIr>,
+}
+
+impl CompilationSession {
+    pub fn from_source(src: &str) -> Result<Self, String> {
+        let (program, ontology, tenv) = check_source(src)?;
+        Ok(Self {
+            program,
+            ontology,
+            tenv,
+            ir: None,
+        })
+    }
+
+    pub fn lower_ir(&mut self) -> &MultiLevelIr {
+        if self.ir.is_none() {
+            let built = MultiLevelIr::build(&self.program, &self.ontology, &mut self.tenv);
+            self.ir = Some(built);
+        }
+        self.ir.as_ref().unwrap()
+    }
+
+    pub fn verify(&self) -> Vec<ProofObligation> {
+        wp::verify_program(&self.program, &self.ontology)
+    }
+
+    pub fn model_check(&self, max_states: usize) -> Result<Vec<ModelCheckReport>, String> {
+        model_check::model_check_program(&self.program, &self.ontology, max_states)
+    }
+
+    pub fn run(&self, seed: u64, trace: bool) -> Result<RunOutput, String> {
+        let mut interp = Interpreter::new(self.ontology.clone(), seed, trace);
+        let outputs = interp.run_program(&self.program).map_err(|e| e.to_string())?;
+        Ok((outputs, interp.trace_log))
+    }
+}
+

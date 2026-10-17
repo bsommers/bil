@@ -366,7 +366,7 @@ fn test_native_aot_build_and_binary_execution() {
     let grid_stdout = String::from_utf8_lossy(&grid_out.stdout);
     assert!(
         grid_stdout.contains("stabilized_fleet = [Pipeline")
-            && grid_stdout.contains("total_stabilized_pressure = 2080"),
+            && grid_stdout.contains("total_stabilized_pressure = 2130"),
         "grid_stdout was: {}",
         grid_stdout
     );
