@@ -206,5 +206,123 @@ fn test_p0_3_euclidean_div_mod_and_checked_overflow_parity() {
     );
 }
 
+#[test]
+fn test_p0_4_capture_avoiding_complete_subst_and_eval_error_refutes() {
+    use bil::ast::{BinOp, Expr, MatchArm, Pattern, QuantifierKind};
+    use bil::wp::subst_expr;
+    use std::collections::BTreeMap;
+
+    // 1. Capture-avoiding substitution under Quantifier:
+    //    (forall y in 0..=1 : y != result)[result := y]
+    //    must alpha-rename bound `y` so free `y` in replacement is not captured!
+    let src = r#"
+        fn add_ten(y: Int) -> Int
+          requires y == 10
+          ensures  forall y in 0..=1 : y != result
+        =
+          y
+    "#;
+    let obs = verify_source(src).expect("verify add_ten with quantifier capture");
+    let ob = obs.iter().find(|o| o.fn_name == "add_ten").unwrap();
+    assert!(
+        ob.verified,
+        "Variable capture in subst_expr corrupted quantifier postcondition: {:?}",
+        ob
+    );
+
+    // 2. Complete substitution inside Match arms:
+    let match_expr = Expr::Match {
+        scrutinee: Box::new(Expr::Var("x".into())),
+        arms: vec![MatchArm {
+            pattern: Pattern::Wildcard,
+            body: Expr::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expr::Var("target".into())),
+                right: Box::new(Expr::Int(1)),
+            },
+        }],
+    };
+    let mut map = BTreeMap::new();
+    map.insert("target".to_string(), Expr::Int(41));
+    let sub_match = subst_expr(&match_expr, &map);
+    if let Expr::Match { arms, .. } = sub_match {
+        assert_eq!(
+            arms[0].body,
+            Expr::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expr::Int(41)),
+                right: Box::new(Expr::Int(1)),
+            },
+            "subst_expr must substitute inside Match.arms"
+        );
+    } else {
+        panic!("expected Expr::Match");
+    }
+
+    // 3. Complete substitution inside Quantifier with direct AST check
+    let q_expr = Expr::Quantifier {
+        kind: QuantifierKind::Forall,
+        var: "y".into(),
+        domain: Box::new(Expr::Var("dom".into())),
+        body: Box::new(Expr::Binary {
+            op: BinOp::Neq,
+            left: Box::new(Expr::Var("y".into())),
+            right: Box::new(Expr::Var("result".into())),
+        }),
+    };
+    let mut q_map = BTreeMap::new();
+    q_map.insert("result".into(), Expr::Var("y".into()));
+    let sub_q = subst_expr(&q_expr, &q_map);
+    if let Expr::Quantifier { var, body, .. } = sub_q {
+        assert_ne!(
+            var, "y",
+            "bound variable `y` must be alpha-renamed when replacement contains free `y`"
+        );
+        if let Expr::Binary { left, right, .. } = *body {
+            assert_eq!(*left, Expr::Var(var));
+            assert_eq!(*right, Expr::Var("y".into()));
+        }
+    }
+
+    // 4. Division-by-zero during bounded VC evaluation must refute (fail-closed), not pass!
+    let div_zero_vc_src = r#"
+        fn unsafe_div_guard(x: Int) -> Int
+          requires x >= 0
+          ensures  result >= 0
+        =
+          if 10 / x >= 0 -> 1
+          [] 10 / x < 0  -> 0
+          fi
+    "#;
+    let div_obs = verify_source(div_zero_vc_src).expect("typecheck unsafe_div_guard");
+    let totality_ob = div_obs
+        .iter()
+        .find(|o| o.fn_name == "unsafe_div_guard" && o.kind.to_string().contains("Guard Totality"))
+        .expect("Guard Totality obligation");
+    assert!(
+        !totality_ob.verified,
+        "Guard Totality with division by zero at x = 0 must be refuted, got: {:?}",
+        totality_ob
+    );
+
+    // 5. LetIn wrapping IfFi must still generate IfFiGuardTotality obligation
+    let let_iffi_src = r#"
+        fn let_wrapped_bad_if(x: Int) -> Int
+          requires x >= 0
+          ensures  result > 0
+        =
+          let shifted = x + 1 in
+          if shifted > 10 -> shifted
+          fi
+    "#;
+    let let_obs = verify_source(let_iffi_src).expect("typecheck let_wrapped_bad_if");
+    let let_totality = let_obs
+        .iter()
+        .find(|o| o.fn_name == "let_wrapped_bad_if" && o.kind.to_string().contains("Guard Totality"))
+        .expect("LetIn wrapping IfFi must still emit Guard Totality obligation");
+    assert!(!let_totality.verified);
+}
+
+
 
 

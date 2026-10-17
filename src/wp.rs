@@ -123,8 +123,164 @@ pub struct ProofObligation {
     pub smt2_script: Option<String>,
 }
 
-/// Symbolic simultaneous substitution `expr[var := replacement]` (Dijkstra's textual substitution)
+/// Collects all free variable names occurring in `expr`.
+pub fn free_vars(expr: &Expr) -> BTreeSet<String> {
+    let mut vars = BTreeSet::new();
+    collect_free_vars(expr, &BTreeSet::new(), &mut vars);
+    vars
+}
+
+fn collect_free_vars(expr: &Expr, bound: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Placeholder => {}
+        Expr::Var(name) => {
+            if !bound.contains(name) {
+                out.insert(name.clone());
+            }
+        }
+        Expr::Unary { expr: inner, .. } => collect_free_vars(inner, bound, out),
+        Expr::Binary { left, right, .. } => {
+            collect_free_vars(left, bound, out);
+            collect_free_vars(right, bound, out);
+        }
+        Expr::Quantifier {
+            var, domain, body, ..
+        } => {
+            collect_free_vars(domain, bound, out);
+            let mut inner_bound = bound.clone();
+            inner_bound.insert(var.clone());
+            collect_free_vars(body, &inner_bound, out);
+        }
+        Expr::IfFi { branches } => {
+            for br in branches {
+                collect_free_vars(&br.guard, bound, out);
+                match &br.body {
+                    GclBody::Expr(e) => collect_free_vars(e, bound, out),
+                    GclBody::Updates(ups) => {
+                        for (_, ue) in ups {
+                            collect_free_vars(ue, bound, out);
+                        }
+                    }
+                    GclBody::Skip | GclBody::Abort => {}
+                }
+            }
+        }
+        Expr::DoOd {
+            inits,
+            invariant,
+            variant,
+            branches,
+            then_expr,
+        } => {
+            let mut inner_bound = bound.clone();
+            for (vname, iexpr) in inits {
+                collect_free_vars(iexpr, &inner_bound, out);
+                inner_bound.insert(vname.clone());
+            }
+            if let Some(inv) = invariant {
+                collect_free_vars(inv, &inner_bound, out);
+            }
+            if let Some(var_e) = variant {
+                collect_free_vars(var_e, &inner_bound, out);
+            }
+            for br in branches {
+                collect_free_vars(&br.guard, &inner_bound, out);
+                match &br.body {
+                    GclBody::Expr(e) => collect_free_vars(e, &inner_bound, out),
+                    GclBody::Updates(ups) => {
+                        for (_, ue) in ups {
+                            collect_free_vars(ue, &inner_bound, out);
+                        }
+                    }
+                    GclBody::Skip | GclBody::Abort => {}
+                }
+            }
+            collect_free_vars(then_expr, &inner_bound, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_free_vars(scrutinee, bound, out);
+            for arm in arms {
+                let mut arm_bound = bound.clone();
+                for pv in pattern_bound_vars(&arm.pattern) {
+                    arm_bound.insert(pv);
+                }
+                collect_free_vars(&arm.body, &arm_bound, out);
+            }
+        }
+        Expr::RecordInit { fields, .. } => {
+            for (_, v) in fields {
+                collect_free_vars(v, bound, out);
+            }
+        }
+        Expr::RecordWith { base, updates } => {
+            collect_free_vars(base, bound, out);
+            for (_, v) in updates {
+                collect_free_vars(v, bound, out);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_free_vars(base, bound, out),
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_free_vars(a, bound, out);
+            }
+        }
+        Expr::List(items) => {
+            for i in items {
+                collect_free_vars(i, bound, out);
+            }
+        }
+        Expr::LetIn { name, value, body } => {
+            collect_free_vars(value, bound, out);
+            let mut inner_bound = bound.clone();
+            inner_bound.insert(name.clone());
+            collect_free_vars(body, &inner_bound, out);
+        }
+    }
+}
+
+fn pattern_bound_vars(pat: &Pattern) -> Vec<String> {
+    match pat {
+        Pattern::Var(v) if v != "_" => vec![v.clone()],
+        Pattern::Variant(_, bindings) => bindings
+            .iter()
+            .filter(|b| b.as_str() != "_")
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn fresh_var_name(base: &str, avoid: &BTreeSet<String>) -> String {
+    let mut idx = 0usize;
+    loop {
+        let candidate = format!("{}_{}", base, idx);
+        if !avoid.contains(&candidate) {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+fn subst_gcl_branch(br: &GuardedBranch, mapping: &BTreeMap<String, Expr>) -> GuardedBranch {
+    GuardedBranch {
+        guard: subst_expr(&br.guard, mapping),
+        body: match &br.body {
+            GclBody::Expr(e) => GclBody::Expr(subst_expr(e, mapping)),
+            GclBody::Updates(ups) => GclBody::Updates(
+                ups.iter()
+                    .map(|(v, ue)| (v.clone(), subst_expr(ue, mapping)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        },
+    }
+}
+
+/// Capture-avoiding simultaneous substitution `expr[var := replacement]` (Dijkstra's textual substitution)
 pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
+    if mapping.is_empty() {
+        return expr.clone();
+    }
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Placeholder => {
             expr.clone()
@@ -145,30 +301,40 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
             domain,
             body,
         } => {
+            let sub_domain = subst_expr(domain, mapping);
             let mut inner_map = mapping.clone();
             inner_map.remove(var);
+            let body_fvs = free_vars(body);
+            let mut repl_fvs = BTreeSet::new();
+            for (k, v) in &inner_map {
+                if body_fvs.contains(k) {
+                    repl_fvs.extend(free_vars(v));
+                }
+            }
+            let (final_var, final_body) = if repl_fvs.contains(var) {
+                let mut avoid = body_fvs;
+                avoid.extend(repl_fvs);
+                avoid.extend(inner_map.keys().cloned());
+                avoid.insert(var.clone());
+                let fresh = fresh_var_name(var, &avoid);
+                let mut rename_map = BTreeMap::new();
+                rename_map.insert(var.clone(), Expr::Var(fresh.clone()));
+                let renamed_body = subst_expr(body, &rename_map);
+                (fresh, subst_expr(&renamed_body, &inner_map))
+            } else {
+                (var.clone(), subst_expr(body, &inner_map))
+            };
             Expr::Quantifier {
                 kind: kind.clone(),
-                var: var.clone(),
-                domain: Box::new(subst_expr(domain, mapping)),
-                body: Box::new(subst_expr(body, &inner_map)),
+                var: final_var,
+                domain: Box::new(sub_domain),
+                body: Box::new(final_body),
             }
         }
         Expr::IfFi { branches } => Expr::IfFi {
             branches: branches
                 .iter()
-                .map(|b| GuardedBranch {
-                    guard: subst_expr(&b.guard, mapping),
-                    body: match &b.body {
-                        GclBody::Expr(e) => GclBody::Expr(subst_expr(e, mapping)),
-                        GclBody::Updates(ups) => GclBody::Updates(
-                            ups.iter()
-                                .map(|(v, ue)| (v.clone(), subst_expr(ue, mapping)))
-                                .collect(),
-                        ),
-                        other => other.clone(),
-                    },
-                })
+                .map(|b| subst_gcl_branch(b, mapping))
                 .collect(),
         },
         Expr::DoOd {
@@ -177,19 +343,43 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
             variant,
             branches,
             then_expr,
-        } => Expr::DoOd {
-            inits: inits
-                .iter()
-                .map(|(v, ie)| (v.clone(), subst_expr(ie, mapping)))
-                .collect(),
-            invariant: invariant.as_ref().map(|i| Box::new(subst_expr(i, mapping))),
-            variant: variant.as_ref().map(|v| Box::new(subst_expr(v, mapping))),
-            branches: branches.clone(),
-            then_expr: Box::new(subst_expr(then_expr, mapping)),
-        },
+        } => {
+            let mut sub_inits = Vec::new();
+            let mut inner_map = mapping.clone();
+            for (v, ie) in inits {
+                sub_inits.push((v.clone(), subst_expr(ie, &inner_map)));
+                inner_map.remove(v);
+            }
+            Expr::DoOd {
+                inits: sub_inits,
+                invariant: invariant
+                    .as_ref()
+                    .map(|i| Box::new(subst_expr(i, &inner_map))),
+                variant: variant
+                    .as_ref()
+                    .map(|v| Box::new(subst_expr(v, &inner_map))),
+                branches: branches
+                    .iter()
+                    .map(|b| subst_gcl_branch(b, &inner_map))
+                    .collect(),
+                then_expr: Box::new(subst_expr(then_expr, &inner_map)),
+            }
+        }
         Expr::Match { scrutinee, arms } => Expr::Match {
             scrutinee: Box::new(subst_expr(scrutinee, mapping)),
-            arms: arms.clone(),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    let mut arm_map = mapping.clone();
+                    for pv in pattern_bound_vars(&arm.pattern) {
+                        arm_map.remove(&pv);
+                    }
+                    MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: subst_expr(&arm.body, &arm_map),
+                    }
+                })
+                .collect(),
         },
         Expr::RecordInit { concept, fields } => Expr::RecordInit {
             concept: concept.clone(),
@@ -244,12 +434,46 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
             let sub_val = subst_expr(value, mapping);
             let mut inner_map = mapping.clone();
             inner_map.remove(name);
+            let body_fvs = free_vars(body);
+            let mut repl_fvs = BTreeSet::new();
+            for (k, v) in &inner_map {
+                if body_fvs.contains(k) {
+                    repl_fvs.extend(free_vars(v));
+                }
+            }
+            let (final_name, final_body) = if repl_fvs.contains(name) {
+                let mut avoid = body_fvs;
+                avoid.extend(repl_fvs);
+                avoid.extend(inner_map.keys().cloned());
+                avoid.insert(name.clone());
+                let fresh = fresh_var_name(name, &avoid);
+                let mut rename_map = BTreeMap::new();
+                rename_map.insert(name.clone(), Expr::Var(fresh.clone()));
+                let renamed_body = subst_expr(body, &rename_map);
+                (fresh, subst_expr(&renamed_body, &inner_map))
+            } else {
+                (name.clone(), subst_expr(body, &inner_map))
+            };
             Expr::LetIn {
-                name: name.clone(),
+                name: final_name,
                 value: Box::new(sub_val),
-                body: Box::new(subst_expr(body, &inner_map)),
+                body: Box::new(final_body),
             }
         }
+    }
+}
+
+/// Peels top-level `let x = v in body` bindings by substituting `x := v` into `body`,
+/// allowing structural GCL obligations (`if..fi`, `do..od`) inside `let` bindings to be verified.
+fn peel_let_bindings(expr: &Expr) -> Expr {
+    match expr {
+        Expr::LetIn { name, value, body } => {
+            let mut map = BTreeMap::new();
+            map.insert(name.clone(), (**value).clone());
+            let substituted = subst_expr(body, &map);
+            peel_let_bindings(&substituted)
+        }
+        other => other.clone(),
     }
 }
 
@@ -591,8 +815,9 @@ fn verify_program_inner(
                     }
                 }
 
-                // 2. Structural GCL obligations inside function body
-                match &f.body {
+                // 2. Structural GCL obligations inside function body (peeling outer let-bindings)
+                let peeled_body = peel_let_bindings(&f.body);
+                match &peeled_body {
                     Expr::IfFi { branches } => {
                         // Obligation A: Guard Totality: Pre => (G1 ∨ G2 ∨ ... ∨ Gn)
                         let bb = branches
@@ -947,7 +1172,15 @@ fn search_counterexample(
         match interp.eval_expr(vc, env) {
             Ok(Value::Bool(true)) => (true, None),
             Ok(Value::Bool(false)) => (false, Some(format_env_assignment(env))),
-            _ => (true, None),
+            Ok(other) => (
+                false,
+                Some(format!(
+                    "{} -> non-boolean VC: {}",
+                    format_env_assignment(env),
+                    other
+                )),
+            ),
+            Err(e) => (false, Some(format!("{} -> {}", format_env_assignment(env), e))),
         }
     } else {
         let (vname, vals) = &domains[idx];

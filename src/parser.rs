@@ -17,11 +17,16 @@ impl fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    in_let_value: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            in_let_value: false,
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -549,7 +554,7 @@ impl Parser {
                 Token::Le => BinOp::Le,
                 Token::Gt => BinOp::Gt,
                 Token::Ge => BinOp::Ge,
-                Token::In => BinOp::In,
+                Token::In if !self.in_let_value => BinOp::In,
                 Token::Range => BinOp::Range,
                 Token::RangeInc => BinOp::RangeInc,
                 Token::Plus => BinOp::Add,
@@ -616,12 +621,18 @@ impl Parser {
             }
             Token::LParen => {
                 self.advance();
-                let expr = self.parse_expr(0)?;
+                let saved = self.in_let_value;
+                self.in_let_value = false;
+                let expr = self.parse_expr(0);
+                self.in_let_value = saved;
+                let expr = expr?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
             Token::LBracket => {
                 self.advance();
+                let saved = self.in_let_value;
+                self.in_let_value = false;
                 let mut items = Vec::new();
                 while self.peek() != &Token::RBracket && self.peek() != &Token::Eof {
                     items.push(self.parse_expr(0)?);
@@ -629,6 +640,7 @@ impl Parser {
                         self.advance();
                     }
                 }
+                self.in_let_value = saved;
                 self.expect(&Token::RBracket)?;
                 Ok(Expr::List(items))
             }
@@ -658,7 +670,11 @@ impl Parser {
                 self.advance();
                 let name = self.expect_ident()?;
                 self.expect(&Token::Eq)?;
-                let value = self.parse_expr(0)?;
+                let saved = self.in_let_value;
+                self.in_let_value = true;
+                let value = self.parse_expr(0);
+                self.in_let_value = saved;
+                let value = value?;
                 self.expect(&Token::In)?;
                 let body = self.parse_expr(0)?;
                 Ok(Expr::LetIn {
