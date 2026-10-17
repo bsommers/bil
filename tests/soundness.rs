@@ -118,3 +118,18 @@ fn test_p0_2_concrete_counterexample_beats_smt_and_honest_status() {
     assert!(matches!(classify_br.status, Status::BoundedOnly { .. }));
 }
 
+#[test]
+fn test_p0_6_ir_lowering_and_vm_do_not_invoke_smt_solver() {
+    let grid_src = std::fs::read_to_string("examples/smart_grid.bil").unwrap();
+    let ir = bil::lower_ir_source(&grid_src).expect("lower IR without invoking SMT solver");
+    assert_eq!(ir.vir.proof_obligations.len(), 12);
+    for ob in &ir.vir.proof_obligations {
+        assert!(
+            ob.smt_prover.is_none() && ob.smt_verdict.is_none(),
+            "VIR lowering must not spawn external SMT solvers during IR lowering/VM/build, got: {:?}",
+            ob
+        );
+    }
+}
+
+

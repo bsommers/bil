@@ -2,7 +2,7 @@ use crate::ast::Program;
 use crate::ir::hir::{HirFn, HirProgram, HirSpec, HirSystem};
 use crate::ontology::OntologyRegistry;
 use crate::types::Type;
-use crate::wp::{verify_program, ProofObligation};
+use crate::wp::{generate_obligations, ProofObligation};
 use std::fmt;
 
 /// Verus-inspired execution & verification stratification mode
@@ -59,7 +59,7 @@ impl VirProgram {
             spec_items.push(VirSpecItem::ContractSpec(sp.clone()));
         }
 
-        let proof_obligations = verify_program(program, ontology);
+        let proof_obligations = generate_obligations(program, ontology);
 
         VirProgram {
             spec_items,
@@ -87,14 +87,13 @@ impl fmt::Display for VirProgram {
             }
         }
         for ob in &self.proof_obligations {
-            let status = if ob.verified { "PROVED" } else { "UNPROVED" };
             writeln!(
                 f,
                 "  [{}] fn `{}` :: {} [{}] => {}",
                 VirMode::Proof,
                 ob.fn_name,
                 ob.kind,
-                status,
+                ob.status,
                 ob.formula_desc
             )?;
         }
