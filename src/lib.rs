@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod eval;
+pub mod ir;
 pub mod lexer;
 pub mod model_check;
 pub mod ontology;
@@ -10,11 +11,17 @@ pub mod wp;
 
 use ast::Program;
 use eval::{Interpreter, Value};
+use ir::MultiLevelIr;
 use model_check::ModelCheckReport;
 use ontology::OntologyRegistry;
 use parser::Parser;
 use types::TypeEnv;
 use wp::ProofObligation;
+
+pub fn lower_ir_source(src: &str) -> Result<MultiLevelIr, String> {
+    let (program, ontology, mut tenv) = check_source(src)?;
+    Ok(MultiLevelIr::build(&program, &ontology, &mut tenv))
+}
 
 pub fn emit_verus_source(src: &str) -> Result<String, String> {
     let (program, ontology, _) = check_source(src)?;

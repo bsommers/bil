@@ -156,3 +156,23 @@ fn test_verus_rust_codegen() {
     assert!(gcd_verus.contains("pub open spec fn gcd_spec_contract"));
     assert!(gcd_verus.contains("gcd_spec_contract(a, b, result)"));
 }
+
+#[test]
+fn test_three_level_ir_lowering_and_ghost_erasure() {
+    let src = std::fs::read_to_string("examples/smart_grid.bil").unwrap();
+    let ir = bil::lower_ir_source(&src).expect("lower 3-level IR");
+
+    // HIR checks: 6 flattened BFO concepts, 2 axioms, 2 functions
+    assert_eq!(ir.hir.concepts.len(), 6);
+    assert_eq!(ir.hir.axioms.len(), 2);
+    assert_eq!(ir.hir.functions.len(), 2);
+
+    // VIR checks: 2 spec items, 12 proof obligations (all verified)
+    assert_eq!(ir.vir.spec_items.len(), 2);
+    assert_eq!(ir.vir.proof_obligations.len(), 12);
+    assert!(ir.vir.proof_obligations.iter().all(|o| o.verified));
+
+    // LIR checks: Ghost erasure strips 2 axioms + 4 requires/ensures + 2 loop invariant/variant = 8 ghost items
+    assert_eq!(ir.lir.erased_ghost_count, 8);
+    assert_eq!(ir.lir.functions.len(), 2);
+}

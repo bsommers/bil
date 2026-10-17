@@ -11,9 +11,9 @@
 ## Active Milestone Requirements (v0.2)
 
 ### Phase 1: 3-Level Intermediate Representation (`HIR` $\to$ `VIR` $\to$ `LIR`)
-- [ ] **REQ-101 (`HIR`)**: High-Level Ontology & Typed Logic IR — flatten inherited `concept` fields, desugar `|>` pipelines and `_` partial applications into explicit closures, and annotate all nodes with resolved Hindley-Milner types.
-- [ ] **REQ-102 (`VIR`)**: Verification & Guarded Transition IR (Verus-style `spec` / `proof` / `exec` modes) — canonical representation of proof obligations, `requires`/`ensures`, `invariant`/`variant`, and nondeterministic guarded transitions (`[]`, `choose`).
-- [ ] **REQ-103 (`LIR`)**: Low-Level SSA / Control & Dataflow IR — perform Ghost Erasure (stripping `spec`, `axiom`, `invariant`, `variant` after verification) and lower GCL `if..fi` / `do..od` into deterministic basic-block control flow.
+- [x] **REQ-101 (`HIR`)**: High-Level Ontology & Typed Logic IR — flatten inherited `concept` fields, desugar `|>` pipelines and `_` partial applications into explicit closures, and annotate all nodes with resolved Hindley-Milner types.
+- [x] **REQ-102 (`VIR`)**: Verification & Guarded Transition IR (Verus-style `spec` / `proof` / `exec` modes) — canonical representation of proof obligations, `requires`/`ensures`, `invariant`/`variant`, and nondeterministic guarded transitions (`[]`, `choose`).
+- [x] **REQ-103 (`LIR`)**: Low-Level SSA / Control & Dataflow IR — perform Ghost Erasure (stripping `spec`, `axiom`, `invariant`, `variant` after verification) and lower GCL `if..fi` / `do..od` into deterministic basic-block control flow.
 
 ### Phase 2: Unbounded SMT-LIB2 / Z3 & Enhanced Verus Verification
 - [ ] **REQ-201**: Emit standard SMT-LIB2 queries from `VIR` Verification Conditions and optionally invoke `z3` / `cvc5` for unbounded mathematical proof discharge alongside the built-in finite-domain solver.

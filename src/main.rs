@@ -1,6 +1,6 @@
 use bil::{
-    check_source, emit_verus_source, model_check_source, ontology::transpile_ontologic_sexpr,
-    run_source, verify_source,
+    check_source, emit_verus_source, lower_ir_source, model_check_source,
+    ontology::transpile_ontologic_sexpr, run_source, verify_source,
 };
 use std::env;
 use std::fs;
@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::process;
 
 fn print_usage() {
-    eprintln!("bil v0.1.0 — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + Model Checker + Verus Backend)");
+    eprintln!("bil v0.2.0 — Bounded Invariant Logic (OntoLogic + FOL + Dijkstra GCL + 3-Level IR + Verus Backend)");
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
@@ -16,6 +16,7 @@ fn print_usage() {
     eprintln!("  bil model-check <file.bil>             Exhaustively verify nondeterministic system state spaces");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
     eprintln!("  bil all <file.bil> [--seed N] [--trace] Run check + verify + model-check + run");
+    eprintln!("  bil dump-ir <file.bil> [--level hir|vir|lir|all] Inspect 3-Level IR (HIR -> VIR -> LIR)");
     eprintln!("  bil emit-verus <file.bil>              Emit provably correct Verus Rust code (verus! {{ ... }})");
     eprintln!("  bil import-ontologic <file.logic>      Convert OntoLogic S-expression (.logic) to .bil");
     eprintln!("  bil repl                               Start interactive bil shell");
@@ -31,6 +32,35 @@ fn main() {
     let cmd = args[1].as_str();
     match cmd {
         "repl" => run_repl(),
+        "dump-ir" => {
+            if args.len() < 3 {
+                eprintln!("Usage: bil dump-ir <file.bil> [--level hir|vir|lir|all]");
+                process::exit(1);
+            }
+            let path = &args[2];
+            let mut level = "all";
+            if args.len() >= 5 && args[3] == "--level" {
+                level = args[4].as_str();
+            }
+            let src = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path, e);
+                process::exit(1);
+            });
+            match lower_ir_source(&src) {
+                Ok(ir) => match level {
+                    "hir" => print!("{}", ir.hir),
+                    "vir" => print!("{}", ir.vir),
+                    "lir" => print!("{}", ir.lir),
+                    _ => {
+                        print!("{}\n{}\n{}", ir.hir, ir.vir, ir.lir);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
         "emit-verus" => {
             if args.len() < 3 {
                 eprintln!("Usage: bil emit-verus <file.bil>");
