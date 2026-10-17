@@ -149,6 +149,55 @@ pub fn find_solver_binary(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Pluggable SMT solver backend port (`ProcessSolver` for real Z3/CVC5/Vampire subprocesses,
+/// `MockSolver` for deterministic unit tests without external solver binaries).
+pub trait SolverBackend: Send + Sync {
+    fn name(&self) -> &str;
+    fn check(&self, smt2_input: &str) -> ProverResult;
+}
+
+pub struct ProcessSolver {
+    pub prover: Prover,
+}
+
+impl SolverBackend for ProcessSolver {
+    fn name(&self) -> &str {
+        match self.prover {
+            Prover::Z3 => "z3",
+            Prover::Cvc5 => "cvc5",
+            Prover::Vampire => "vampire",
+            Prover::Auto => "auto",
+        }
+    }
+
+    fn check(&self, smt2_input: &str) -> ProverResult {
+        run_smt_prover(self.prover, smt2_input)
+    }
+}
+
+pub struct MockSolver {
+    pub solver_name: String,
+    pub handler: fn(&str) -> Verdict,
+}
+
+impl SolverBackend for MockSolver {
+    fn name(&self) -> &str {
+        &self.solver_name
+    }
+
+    fn check(&self, smt2_input: &str) -> ProverResult {
+        let verdict = (self.handler)(smt2_input);
+        ProverResult {
+            prover: self.solver_name.clone(),
+            verdict,
+            stdout: String::new(),
+            stderr: String::new(),
+            elapsed_ms: 0,
+            detail: format!("mock {} returned {:?}", self.solver_name, verdict),
+        }
+    }
+}
+
 /// Runs raw SMT-LIB2 input through the selected solver backend (`OntoLogic/Solver.hs::runProver`
 /// + `clif2OntoLogic/verify/prover.py::run_z3`).
 pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
@@ -182,9 +231,56 @@ pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
     }
 }
 
+/// Executes multiple refutation assertions `(not VC_i)` in a single incremental `(push 1)` / `(pop 1)`
+/// solver session sharing `base_theory` so ontology sorts and axioms are parsed only once.
+pub fn run_smt_incremental_batch(
+    prover: Prover,
+    base_theory: &str,
+    refutation_assertions: &[String],
+) -> Option<Vec<Verdict>> {
+    if refutation_assertions.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut script = String::from(base_theory);
+    if !script.ends_with('\n') {
+        script.push('\n');
+    }
+    for assertion in refutation_assertions {
+        script.push_str("(push 1)\n");
+        script.push_str(&format!("(assert {})\n", assertion));
+        script.push_str("(check-sat)\n");
+        script.push_str("(pop 1)\n");
+    }
+    let res = run_smt_prover(prover, &script);
+    if res.verdict == Verdict::Skipped || res.stdout.contains("(error") || res.stderr.contains("(error") {
+        return None;
+    }
+    let mut verdicts = Vec::new();
+    for line in res.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line == "unsat" {
+            verdicts.push(Verdict::Inconsistent);
+        } else if line == "sat" {
+            verdicts.push(Verdict::Consistent);
+        } else if line == "unknown" {
+            verdicts.push(Verdict::Unknown);
+        }
+    }
+    if verdicts.len() == refutation_assertions.len() {
+        Some(verdicts)
+    } else {
+        None
+    }
+}
+
 fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverResult {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::io::Read as _;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+
+    static SMT_CACHE: OnceLock<Mutex<std::collections::BTreeMap<u64, ProverResult>>> =
+        OnceLock::new();
 
     let Some(bin_path) = find_solver_binary(bin_name) else {
         return ProverResult {
@@ -202,6 +298,27 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(6000);
     let timeout = Duration::from_millis(timeout_ms);
+
+    let cache_key = {
+        let mut hasher = DefaultHasher::new();
+        bin_name.hash(&mut hasher);
+        bin_path.hash(&mut hasher);
+        args.hash(&mut hasher);
+        timeout_ms.hash(&mut hasher);
+        smt2_input.hash(&mut hasher);
+        hasher.finish()
+    };
+
+    if timeout_ms >= 1000 {
+        if let Some(cached) = SMT_CACHE
+            .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&cache_key).cloned())
+        {
+            return cached;
+        }
+    }
 
     let start = Instant::now();
     let mut child = match Command::new(&bin_path)
@@ -316,14 +433,27 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
         }
     }
 
-    ProverResult {
+    let result = ProverResult {
         prover: bin_name.to_string(),
         verdict,
         stdout,
         stderr,
         elapsed_ms,
         detail,
+    };
+
+    if timeout_ms >= 1000 && env::var("BIL_Z3").is_err() && env::var("BIL_Z3_PATH").is_err() {
+        if let Ok(mut guard) = SMT_CACHE
+            .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+            .lock()
+        {
+            if guard.len() < 512 {
+                guard.insert(cache_key, result.clone());
+            }
+        }
     }
+
+    result
 }
 
 /// Evaluates agreement between bounded counterexample search and unbounded SMT refutation
@@ -541,7 +671,7 @@ pub fn emit_vc_smt2(
     for p in params {
         let vname = sanitize_smt_ident(&p.name);
         if seen.insert(vname.clone()) {
-            let smt_ty = map_type_to_smt(&p.ty, ontology);
+            let smt_ty = map_type_to_smt_opt(&p.ty, ontology, program)?;
             lines.push(format!("(declare-const {} {})", vname, smt_ty));
             if let TypeExpr::Named(cname) = &p.ty {
                 if ontology.concepts.contains_key(cname) {
@@ -593,6 +723,33 @@ fn map_type_to_smt(ty: &TypeExpr, ontology: &OntologyRegistry) -> String {
     }
 }
 
+fn map_type_to_smt_opt(
+    ty: &TypeExpr,
+    ontology: &OntologyRegistry,
+    program: &Program,
+) -> Option<String> {
+    match ty {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Int" | "Integer" => Some("Int".to_string()),
+            "Float" | "Double" => Some("Real".to_string()),
+            "Bool" | "Boolean" => Some("Bool".to_string()),
+            "String" | "Str" => Some("String".to_string()),
+            other if ontology.concepts.contains_key(other) => Some("Entity".to_string()),
+            other => {
+                for item in &program.items {
+                    if let Item::TypeDecl(adt) = item {
+                        if adt.name == other && adt.variants.iter().all(|v| v.payload.is_empty()) {
+                            return Some("Int".to_string());
+                        }
+                    }
+                }
+                None
+            }
+        },
+        _ => None,
+    }
+}
+
 /// Translates a `bil` AST `Expr` into SMT-LIB2 syntax (`OntoLogic/Emitters/SMT.hs::emitFOLToSMT`
 /// + `clif2OntoLogic/verify/smt.py::sentence_to_smtlib2`).
 pub fn expr_to_smt(
@@ -614,7 +771,7 @@ pub fn expr_to_smt(
             Some(s)
         }
         Expr::Bool(b) => Some(b.to_string()),
-        Expr::Str(s) => Some(format!("\"{}\"", s.replace('"', ""))),
+        Expr::Str(s) => Some(format!("\"{}\"", s.replace('"', "\"\""))),
         Expr::Var(v) => Some(sanitize_smt_ident(v)),
         Expr::Unary { op, expr: inner } => {
             let sub = expr_to_smt(inner, ontology, entity_var)?;
@@ -713,3 +870,39 @@ pub fn expr_to_smt(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smt_string_escaping_and_mock_solver_and_batch() {
+        let ont = OntologyRegistry::default();
+        let s = expr_to_smt(&Expr::Str("a\"b".into()), &ont, None).unwrap();
+        assert_eq!(s, "\"a\"\"b\"");
+
+        let mock = MockSolver {
+            solver_name: "mock-z3".into(),
+            handler: |script| {
+                if script.contains("(assert false)") {
+                    Verdict::Inconsistent
+                } else {
+                    Verdict::Consistent
+                }
+            },
+        };
+        assert_eq!(mock.name(), "mock-z3");
+        assert_eq!(mock.check("(assert false)").verdict, Verdict::Inconsistent);
+
+        if find_solver_binary("z3").is_some() {
+            let verdicts = run_smt_incremental_batch(
+                Prover::Z3,
+                "(set-logic ALL)\n(declare-const x Int)\n(assert (> x 0))\n",
+                &["(<= x 0)".to_string(), "(> x 10)".to_string()],
+            )
+            .expect("incremental batch should succeed");
+            assert_eq!(verdicts, vec![Verdict::Inconsistent, Verdict::Consistent]);
+        }
+    }
+}
+
