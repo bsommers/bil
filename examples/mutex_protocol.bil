@@ -1,0 +1,33 @@
+// ============================================================================
+// Practical Application 2: Distributed Systems & Network Protocols
+// Peterson's Mutual Exclusion Protocol modeled with Dijkstra Guarded Commands
+// Verified via Explicit-State Model Checking (`bil model-check`)
+// ============================================================================
+
+type Phase = Idle | Trying | Critical
+
+system PetersonMutex {
+  state p0: Phase = Idle
+  state p1: Phase = Idle
+  state turn: Int = 0
+
+  // Safety Property 1: Mutual Exclusion — P0 and P1 are NEVER both in Critical section
+  invariant MutualExclusion:
+    !(p0 == Critical && p1 == Critical)
+
+  // Safety Property 2: Turn variable stays within valid process IDs {0, 1}
+  invariant ValidTurn:
+    turn == 0 || turn == 1
+
+  // Nondeterministic Interleaved Guarded Transitions (SPIN / Promela style)
+  transition
+    p0 == Idle                               -> p0 := Trying, turn := 1
+  [] p0 == Trying && (p1 == Idle || turn == 0) -> p0 := Critical
+  [] p0 == Critical                          -> p0 := Idle
+  [] p1 == Idle                               -> p1 := Trying, turn := 0
+  [] p1 == Trying && (p0 == Idle || turn == 1) -> p1 := Critical
+  [] p1 == Critical                          -> p1 := Idle
+}
+
+let protocol_name = "PetersonTwoProcessMutex"
+assert true

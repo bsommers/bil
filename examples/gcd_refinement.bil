@@ -1,0 +1,51 @@
+// ============================================================================
+// Practical Application 4: Safety-Critical Verified Algorithms & Refinement
+// Demonstrates Dijkstra's Guarded Command Language (GCL) + Refinement Calculus
+// ============================================================================
+
+// 1. Abstract First-Order Logic Specification (`spec`)
+spec gcd_spec(a: Int, b: Int) -> Int
+  requires a > 0 && b > 0
+  ensures  result > 0 && (a % result == 0) && (b % result == 0)
+           && (forall d in 1..=min(a, b) : (a % d == 0 && b % d == 0) => d <= result)
+
+fn gcd_val(u: Int, v: Int) -> Int =
+  if u <= 0 || v < 0 -> 0
+  [] u > 0 && v == 0 -> u
+  [] u > 0 && v > 0  -> gcd_val(v, u % v)
+  fi
+
+// 2. Concrete Correct-by-Construction GCL Implementation refining `gcd_spec`
+fn gcd(a: Int, b: Int) -> Int
+  refines  gcd_spec
+  requires a > 0 && b > 0
+  ensures  result > 0 && (a % result == 0) && (b % result == 0)
+=
+  do x = a, y = b
+    invariant x > 0 && y > 0 && gcd_val(x, y) == gcd_val(a, b)
+    variant   x + y
+  :
+    x > y -> x := x - y
+  [] y > x -> y := y - x
+  od
+  then x
+
+// 3. Nondeterministic Minimum/Maximum Selection via Guarded Alternative (`if ... fi`)
+// Notice that when a == b, BOTH guards hold simultaneously!
+// Dijkstra's GCL embraces this nondeterminism: whichever branch is chosen,
+// the postcondition `result <= a && result <= b && (result == a || result == b)` is PROVED.
+fn min_gcl(a: Int, b: Int) -> Int
+  requires true
+  ensures  result <= a && result <= b && (result == a || result == b)
+=
+  if a <= b -> a
+  [] b <= a -> b
+  fi
+
+let g1 = gcd(48, 18)
+let g2 = gcd(1071, 462)
+let m1 = min_gcl(42, 42)
+
+assert g1 == 6
+assert g2 == 21
+assert m1 == 42

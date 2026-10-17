@@ -1,0 +1,11 @@
+{
+  "project": "bil",
+  "version": "0.1.0",
+  "mode": "autonomous",
+  "granularity": "standard",
+  "model_profile": "balanced",
+  "gates": {
+    "test_command": "cargo test",
+    "check_command": "cargo check"
+  }
+}

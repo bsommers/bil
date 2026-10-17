@@ -1,0 +1,52 @@
+// ============================================================================
+// Practical Application 3: Hardware & Digital Controller Design
+// Asynchronous Dual-Channel Bus Arbiter with True Nondeterministic Grants
+// ============================================================================
+
+type GrantState = NoGrant | GrantA | GrantB
+
+system DualBusArbiter {
+  state req_a: Bool = true
+  state req_b: Bool = true
+  state grant: GrantState = NoGrant
+  state cycles_left: Int = 4
+
+  // Hardware Safety Invariant: A grant is only issued to an actively requesting master
+  invariant GrantRequiresRequest:
+    (grant == GrantA => req_a) && (grant == GrantB => req_b)
+
+  invariant BoundedCycles:
+    cycles_left >= 0
+
+  // Termination / Progress Bound Function
+  variant cycles_left
+
+  // Valid terminal state when all arbitration cycles complete
+  terminal cycles_left == 0 && grant == NoGrant
+
+  // When both req_a and req_b are true and grant == NoGrant,
+  // BOTH Guard #1 and Guard #2 are enabled simultaneously!
+  // The model checker explores both nondeterministic hardware arbitration paths.
+  transition
+    cycles_left > 0 && grant == NoGrant && req_a ->
+      grant := GrantA, cycles_left := cycles_left - 1
+  [] cycles_left > 0 && grant == NoGrant && req_b ->
+      grant := GrantB, cycles_left := cycles_left - 1
+  [] cycles_left > 0 && (grant == GrantA || grant == GrantB) ->
+      grant := NoGrant, cycles_left := cycles_left - 1
+  [] cycles_left == 0 && (grant == GrantA || grant == GrantB) ->
+      grant := NoGrant
+}
+
+// Stateless Arbiter Decision Function with Overlapping Guards
+fn arbitrate_step(req_a: Bool, req_b: Bool) -> GrantState
+  requires true
+  ensures  (result == GrantA => req_a) && (result == GrantB => req_b)
+=
+  if req_a              -> GrantA
+  [] req_b              -> GrantB
+  [] !req_a && !req_b   -> NoGrant
+  fi
+
+let sample_grant = arbitrate_step(true, true)
+assert sample_grant == GrantA || sample_grant == GrantB

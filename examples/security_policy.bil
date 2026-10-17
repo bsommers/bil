@@ -1,0 +1,40 @@
+// ============================================================================
+// Practical Application 5: Zero-Trust Policy & Cloud Datacenter Compliance
+// First-Order Logic axioms + Nondeterministic Failover Selection (`choose`)
+// ============================================================================
+
+concept CloudResource {
+  id: String,
+  region: String,
+  encrypted: Bool
+}
+
+concept ComputeNode <: CloudResource {
+  cpu_load: Int,
+  mfa_enabled: Bool,
+  public_ip: Bool
+}
+
+// Zero-Trust Security Axiom: Every public-facing compute node must enforce encryption and MFA
+axiom ZeroTrustPublicNode:
+  forall n in ComputeNode : n.public_ip => (n.encrypted && n.mfa_enabled)
+
+let cluster = [
+  ComputeNode { id: "node-alpha", region: "us-east", encrypted: true, cpu_load: 85, mfa_enabled: true,  public_ip: true },
+  ComputeNode { id: "node-beta",  region: "us-east", encrypted: true, cpu_load: 25, mfa_enabled: true,  public_ip: true },
+  ComputeNode { id: "node-gamma", region: "eu-west", encrypted: true, cpu_load: 30, mfa_enabled: false, public_ip: false },
+  ComputeNode { id: "node-delta", region: "us-east", encrypted: true, cpu_load: 40, mfa_enabled: true,  public_ip: false }
+]
+
+// Nondeterministic selection (`choose`): pick any healthy low-load encrypted node
+let failover_target =
+  choose n in cluster : n.encrypted && n.cpu_load < 50 && n.mfa_enabled
+
+let compliant_public_nodes =
+  cluster
+  |> where(_.public_ip)
+  |> map(_.id)
+
+assert failover_target.cpu_load < 50
+assert failover_target.encrypted && failover_target.mfa_enabled
+assert count(compliant_public_nodes) == 2

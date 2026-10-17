@@ -1,0 +1,91 @@
+// ============================================================================
+// Practical Application 1: Industrial IoT, SCADA & Smart Energy (OntoLogic + GCL)
+// Unites BFO OntoLogic hierarchies, First-Order Logic axioms, verified GCL
+// pressure-relief controllers, and functional `|>` telemetry pipelines.
+// ============================================================================
+
+// 1. BFO / OntoLogic Taxonomy (DAG cycle-checked at compile time)
+concept Entity
+concept Continuant <: Entity
+concept MaterialEntity <: Continuant
+concept Equipment <: MaterialEntity {
+  id: String,
+  active: Bool
+}
+concept Pipeline <: Equipment {
+  pressure: Int,
+  flow_rate: Int
+}
+concept Valve <: Equipment {
+  position: Int
+}
+
+// 2. Algebraic Data Type for Safety Classification
+type SafetyStatus =
+  | Normal
+  | ReliefRequired(Int)
+  | EmergencyShutdown(String)
+
+// 3. OntoLogic Domain Axioms (First-Order Logic with Unicode/ASCII support)
+axiom ValveBounds:
+  ∀ v ∈ Valve : v.position >= 0 ∧ v.position <= 100
+
+axiom ActivePipelineSafety:
+  ∀ p ∈ Pipeline : (p.active ∧ p.pressure > 1000) ⇒ p.flow_rate > 0
+
+// 4. Guarded Command Classification (`if ... fi`) proved total & sound via WP
+fn classify_pipeline(p: Pipeline) -> SafetyStatus
+  requires p.pressure >= 0
+  ensures  (p.pressure > 1200) => (result == EmergencyShutdown(p.id))
+=
+  if p.pressure <= 800                      -> Normal
+  [] p.pressure > 800 && p.pressure <= 1200 -> ReliefRequired(p.pressure - 800)
+  [] p.pressure > 1200                      -> EmergencyShutdown(p.id)
+  fi
+
+// 5. Nondeterministic Autonomous Pressure-Bleed Controller (`do ... od`)
+// When pressure > 950, both standard relief (-150 PSI) and fast relief (-250 PSI)
+// valves are enabled nondeterministically (`[]`).
+// Both paths are proved to preserve `cur.pressure >= 0` and decrease `cur.pressure`.
+fn stabilize_pipeline(p0: Pipeline) -> Pipeline
+  requires p0.pressure >= 0
+  ensures  result.pressure <= 800 && result.pressure >= 0
+=
+  do cur = p0
+    invariant cur.pressure >= 0
+    variant   cur.pressure
+  :
+    cur.pressure > 800 -> cur := cur with { pressure: max(0, cur.pressure - 150) }
+  [] cur.pressure > 950 -> cur := cur with { pressure: max(0, cur.pressure - 250) }
+  od
+  then cur
+
+// 6. Telemetry Dataset & Functional Query Pipeline (`|>`)
+let valves = [
+  Valve { id: "V-01", active: true, position: 100 },
+  Valve { id: "V-02", active: true, position: 45 },
+  Valve { id: "V-03", active: false, position: 0 }
+]
+
+let raw_fleet = [
+  Pipeline { id: "P-101", active: true,  pressure: 1350, flow_rate: 55 },
+  Pipeline { id: "P-102", active: true,  pressure: 650,  flow_rate: 30 },
+  Pipeline { id: "P-103", active: true,  pressure: 980,  flow_rate: 40 },
+  Pipeline { id: "P-104", active: false, pressure: 200,  flow_rate: 0 }
+]
+
+let stabilized_fleet =
+  raw_fleet
+  |> where(_.active)
+  |> map(stabilize_pipeline(_))
+  |> sort_by(_.pressure)
+
+let total_stabilized_pressure =
+  stabilized_fleet
+  |> map(_.pressure)
+  |> sum()
+
+// 7. First-Order Logic Assertions over Pipeline Results
+assert ∀ p ∈ stabilized_fleet : classify_pipeline(p) == Normal
+assert ∃ p ∈ raw_fleet : classify_pipeline(p) == EmergencyShutdown("P-101")
+assert count(stabilized_fleet) == 3
