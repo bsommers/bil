@@ -172,3 +172,27 @@ fn next_rand_index(len: usize) -> usize {
     (r as usize) % len
 }
 
+thread_local! {
+    static CONCEPT_STORE: std::cell::RefCell<BTreeMap<String, Vec<BilVal>>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+fn register_instance(val: &BilVal) {
+    match val {
+        BilVal::Concept { name, .. } => {
+            CONCEPT_STORE.with(|store| {
+                let mut map = store.borrow_mut();
+                let list = map.entry(name.clone()).or_default();
+                if !list.contains(val) {
+                    list.push(val.clone());
+                }
+            });
+        }
+        BilVal::List(items) => {
+            for item in items.iter() {
+                register_instance(item);
+            }
+        }
+        _ => {}
+    }
+}

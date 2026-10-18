@@ -157,12 +157,10 @@ impl TypeEnv {
             (Type::Concept(sub), Type::Concept(sup)) => {
                 if self.ontology.is_subconcept(sub, sup) {
                     Ok(Type::Concept(sup.clone()))
-                } else if let Some(anc) = self.ontology.common_ancestor(sub, sup) {
-                    Ok(Type::Concept(anc))
                 } else {
                     Err(TypeError {
                         message: format!(
-                            "OntoLogic concept '{}' is not compatible with '{}'",
+                            "OntoLogic concept '{}' is not a subconcept of '{}'",
                             sub, sup
                         ),
                         span,
@@ -181,7 +179,7 @@ impl TypeEnv {
             (Type::Fn(aa, ra), Type::Fn(ae, re)) if aa.len() == ae.len() => {
                 let mut uargs = Vec::new();
                 for (x, y) in aa.iter().zip(ae.iter()) {
-                    uargs.push(self.unify(x, y, span)?);
+                    uargs.push(self.unify(y, x, span)?);
                 }
                 let uret = self.unify(ra, re, span)?;
                 Ok(Type::Fn(uargs, Box::new(uret)))
@@ -190,6 +188,32 @@ impl TypeEnv {
                 message: format!("Type mismatch: expected {}, found {}", e, a),
                 span,
             }),
+        }
+    }
+
+    /// Computes the least upper bound (join) of two types in symmetric contexts (`List`, `IfFi`, `Match`, `==`/`!=`).
+    pub fn join_types(&mut self, t1: &Type, t2: &Type, span: Span) -> Result<Type, TypeError> {
+        let a = self.apply(t1);
+        let b = self.apply(t2);
+        match (&a, &b) {
+            (Type::Concept(c1), Type::Concept(c2)) => {
+                if let Some(anc) = self.ontology.common_ancestor(c1, c2) {
+                    Ok(Type::Concept(anc))
+                } else {
+                    Err(TypeError {
+                        message: format!(
+                            "OntoLogic concepts '{}' and '{}' have no common ancestor",
+                            c1, c2
+                        ),
+                        span,
+                    })
+                }
+            }
+            (Type::List(ia), Type::List(ib)) => {
+                let j = self.join_types(ia, ib, span)?;
+                Ok(Type::List(Box::new(j)))
+            }
+            _ => self.unify(&a, &b, span),
         }
     }
 
@@ -556,19 +580,30 @@ impl TypeEnv {
                 BinOp::Eq | BinOp::Neq => {
                     let lt = self.infer_expr(left, local, span)?;
                     let rt = self.infer_expr(right, local, span)?;
-                    self.unify(&lt, &rt, span)?;
+                    self.join_types(&lt, &rt, span)?;
                     Ok(Type::Bool)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     let lt = self.infer_expr(left, local, span)?;
                     let rt = self.infer_expr(right, local, span)?;
-                    self.unify(&lt, &rt, span)?;
-                    Ok(Type::Bool)
+                    let u = self.unify(&lt, &rt, span)?;
+                    match self.apply(&u) {
+                        Type::Int | Type::Float | Type::Var(_) => Ok(Type::Bool),
+                        other => Err(TypeError {
+                            message: format!(
+                                "Comparison operator '{}' requires numeric operands (Int or Float), found {}",
+                                op, other
+                            ),
+                            span,
+                        }),
+                    }
                 }
                 BinOp::In => {
                     let lt = self.infer_expr(left, local, span)?;
                     let rt = self.infer_expr(right, local, span)?;
-                    self.unify(&rt, &Type::List(Box::new(lt)), span)?;
+                    let elem_ty = self.fresh_var();
+                    self.unify(&rt, &Type::List(Box::new(elem_ty.clone())), span)?;
+                    self.join_types(&lt, &elem_ty, span)?;
                     Ok(Type::Bool)
                 }
                 BinOp::Range | BinOp::RangeInc => {
@@ -578,10 +613,44 @@ impl TypeEnv {
                     self.unify(&rt, &Type::Int, span)?;
                     Ok(Type::List(Box::new(Type::Int)))
                 }
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                BinOp::Mod => {
                     let lt = self.infer_expr(left, local, span)?;
                     let rt = self.infer_expr(right, local, span)?;
-                    self.unify(&lt, &rt, span)
+                    self.unify(&lt, &Type::Int, span)?;
+                    self.unify(&rt, &Type::Int, span)?;
+                    Ok(Type::Int)
+                }
+                BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                    let lt = self.infer_expr(left, local, span)?;
+                    let rt = self.infer_expr(right, local, span)?;
+                    let u = self.unify(&lt, &rt, span)?;
+                    let resolved = self.apply(&u);
+                    match resolved {
+                        Type::Int | Type::Float | Type::Var(_) => Ok(resolved),
+                        other => Err(TypeError {
+                            message: format!(
+                                "Arithmetic operator '{}' requires numeric operands (Int or Float), found {}",
+                                op, other
+                            ),
+                            span,
+                        }),
+                    }
+                }
+                BinOp::Add => {
+                    let lt = self.infer_expr(left, local, span)?;
+                    let rt = self.infer_expr(right, local, span)?;
+                    let u = self.unify(&lt, &rt, span)?;
+                    let resolved = self.apply(&u);
+                    match resolved {
+                        Type::Int | Type::Float | Type::Str | Type::Var(_) => Ok(resolved),
+                        other => Err(TypeError {
+                            message: format!(
+                                "Operator '+' requires numeric (Int, Float) or String operands, found {}",
+                                other
+                            ),
+                            span,
+                        }),
+                    }
                 }
             },
             Expr::Quantifier {
@@ -612,14 +681,14 @@ impl TypeEnv {
                         span,
                     });
                 }
-                let result_ty = self.fresh_var();
+                let mut result_ty = self.fresh_var();
                 for br in branches {
                     let gt = self.infer_expr(&br.guard, local, span)?;
                     self.unify(&gt, &Type::Bool, span)?;
                     match &br.body {
                         GclBody::Expr(e) => {
                             let bt = self.infer_expr(e, local, span)?;
-                            self.unify(&bt, &result_ty, span)?;
+                            result_ty = self.join_types(&bt, &result_ty, span)?;
                         }
                         GclBody::Updates(ups) => {
                             for (v, ue) in ups {
@@ -630,7 +699,7 @@ impl TypeEnv {
                                 let ut = self.infer_expr(ue, local, span)?;
                                 self.unify(&ut, &vt, span)?;
                             }
-                            self.unify(&Type::Unit, &result_ty, span)?;
+                            result_ty = self.join_types(&Type::Unit, &result_ty, span)?;
                         }
                         GclBody::Skip | GclBody::Abort => {}
                     }
@@ -691,7 +760,7 @@ impl TypeEnv {
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.infer_expr(scrutinee, local, span)?;
                 let scr_ty = self.apply(&scr_ty);
-                let res_ty = self.fresh_var();
+                let mut res_ty = self.fresh_var();
                 let mut covered_variants = BTreeSet::new();
                 let mut has_wildcard = false;
 
@@ -743,7 +812,7 @@ impl TypeEnv {
                         }
                     }
                     let bt = self.infer_expr(&arm.body, &mut arm_local, span)?;
-                    self.unify(&bt, &res_ty, span)?;
+                    res_ty = self.join_types(&bt, &res_ty, span)?;
                 }
 
                 // Exhaustiveness check for ADTs
@@ -942,7 +1011,7 @@ impl TypeEnv {
                 let mut current_elem = elem_ty;
                 for item in items {
                     let it = self.infer_expr(item, local, span)?;
-                    current_elem = self.unify(&it, &current_elem, span)?;
+                    current_elem = self.join_types(&it, &current_elem, span)?;
                 }
                 Ok(Type::List(Box::new(self.apply(&current_elem))))
             }

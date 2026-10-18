@@ -11,6 +11,7 @@ use std::fmt;
 pub struct LirProgram {
     pub functions: Vec<LirFn>,
     pub globals: Vec<(String, Type, LirExpr)>,
+    pub assertions: Vec<LirExpr>,
     pub erased_ghost_count: usize,
 }
 
@@ -119,9 +120,15 @@ impl LirProgram {
             globals.push((b.name.clone(), b.ty.clone(), val));
         }
 
+        let mut assertions = Vec::new();
+        for a in &hir.asserts {
+            assertions.push(lower_hir_expr(a, &mut erased_ghost_count));
+        }
+
         LirProgram {
             functions,
             globals,
+            assertions,
             erased_ghost_count,
         }
     }

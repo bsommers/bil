@@ -132,3 +132,119 @@ fn test_differential_equivalence_edge_case_expressions() {
 
     assert_three_way_equivalence("edge_cases", src, 42);
 }
+
+#[test]
+fn test_v050_p0_1_directional_subtyping_and_join_types() {
+    // 1. Sibling concepts sharing a common ancestor (Continuant) must NOT be assignable to each other
+    let sibling_assign = r#"
+        concept Continuant {}
+        concept Pipeline <: Continuant { pressure: Int }
+        concept Valve <: Continuant { open: Bool }
+        let v: Pipeline = Valve { open: true }
+    "#;
+    let err = bil::check_source(sibling_assign).unwrap_err();
+    assert!(
+        err.contains("not a subconcept"),
+        "expected directional subtyping error for sibling concepts, got: {:?}",
+        err
+    );
+
+    // 2. Superconcept must NOT be assignable to subconcept
+    let down_assign = r#"
+        concept Continuant {}
+        concept Asset <: Continuant { id: Int }
+        concept Pump <: Asset { rpm: Int }
+        let a: Asset = Asset { id: 1 }
+        let p: Pump = a
+    "#;
+    let err2 = bil::check_source(down_assign).unwrap_err();
+    assert!(
+        err2.contains("not a subconcept"),
+        "expected directional subtyping error for downcast, got: {:?}",
+        err2
+    );
+
+    // 3. Upcast (subconcept -> superconcept) and heterogeneous list join (`[Pipeline, Valve]`) MUST succeed
+    let valid_upcast_and_join = r#"
+        concept Continuant {}
+        concept Pipeline <: Continuant { pressure: Int }
+        concept Valve <: Continuant { open: Bool }
+        let p = Pipeline { pressure: 80 }
+        let v = Valve { open: true }
+        let c: Continuant = p
+        let items: List<Continuant> = [p, v]
+        let n = count(items)
+    "#;
+    bil::check_source(valid_upcast_and_join).expect("upcast and list join should typecheck");
+}
+
+#[test]
+fn test_v050_p0_2_numeric_and_comparable_operator_constraints() {
+    let invalid_cases = [
+        ("let x = true + false", "Operator '+'"),
+        ("let x = \"a\" - \"b\"", "Arithmetic operator '-'"),
+        ("let x = true * false", "Arithmetic operator '*'"),
+        ("let x = true < false", "Comparison operator '<'"),
+        ("let x = 3.5 % 1.5", "Type mismatch"),
+    ];
+    for (src, expected_msg) in invalid_cases {
+        let err = bil::check_source(src).unwrap_err();
+        assert!(
+            err.contains(expected_msg),
+            "for `{}` expected error containing `{}`, got: {:?}",
+            src,
+            expected_msg,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_v050_p0_3_and_p1_3_top_level_assert_and_concept_store_three_way_parity() {
+    // 1. Concept domain quantifier (`forall b in Boxed`) and `is_a` across Eval, VM, and Native AOT
+    let valid_concept_domain_src = r#"
+        concept Continuant {}
+        concept Boxed <: Continuant {
+            val: Int
+        }
+        concept SubBoxed <: Boxed {
+            extra: Int
+        }
+
+        let b1 = Boxed { val: 10 }
+        let b2 = SubBoxed { val: 20, extra: 5 }
+        let all_positive = forall b in Boxed : b.val > 0 && is_a(b, "Continuant")
+        let instance_cnt = count(Boxed)
+        assert all_positive
+        assert instance_cnt == 2
+    "#;
+    assert_three_way_equivalence("concept_domain_and_asserts", valid_concept_domain_src, 42);
+
+    // 2. Failing top-level assertion MUST fail in Eval, VM, AND Native AOT
+    let failing_assert_src = r#"
+        let x = 10
+        assert x > 100
+    "#;
+    assert!(
+        run_source(failing_assert_src, 42, false).is_err(),
+        "eval must reject failing top-level assert"
+    );
+    assert!(
+        run_vm_source(failing_assert_src, 42).is_err(),
+        "vm must reject failing top-level assert"
+    );
+    let bin_path = std::env::temp_dir().join(format!(
+        "bil_diff_fail_assert_{}",
+        std::process::id()
+    ));
+    build_native_source(failing_assert_src, &bin_path).expect("build failing_assert_src");
+    let out = Command::new(&bin_path)
+        .output()
+        .expect("run failing_assert binary");
+    let _ = fs::remove_file(&bin_path);
+    assert!(
+        !out.status.success(),
+        "native AOT binary must fail when top-level assert evaluates to false"
+    );
+}
+

@@ -87,6 +87,44 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
     out.push_str(include_str!("runtime_prelude.rs"));
     out.push('\n');
 
+    let _ = writeln!(out, "fn is_subconcept(sub: &str, sup: &str) -> bool {{");
+    let _ = writeln!(out, "    if sub == sup {{ return true; }}");
+    let _ = writeln!(out, "    match (sub, sup) {{");
+    for c in &hir.concepts {
+        for anc in &c.ancestors {
+            let _ = writeln!(out, "        ({:?}, {:?}) => true,", c.name, anc);
+        }
+    }
+    let _ = writeln!(out, "        _ => false,");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "}}\n");
+
+    let _ = writeln!(out, "fn query_concept_instances(concept: &str) -> Option<BilVal> {{");
+    let _ = writeln!(out, "    let is_known = matches!(concept,");
+    if hir.concepts.is_empty() {
+        let _ = writeln!(out, "        \"Entity\"");
+    } else {
+        let names: Vec<String> = hir.concepts.iter().map(|c| format!("{:?}", c.name)).collect();
+        let _ = writeln!(out, "        {}", names.join(" | "));
+    }
+    let _ = writeln!(out, "    );");
+    let _ = writeln!(out, "    if !is_known {{ return None; }}");
+    let _ = writeln!(out, "    let mut instances = Vec::new();");
+    let _ = writeln!(out, "    CONCEPT_STORE.with(|store| {{");
+    let _ = writeln!(out, "        let map = store.borrow();");
+    let _ = writeln!(out, "        for (cname, list) in map.iter() {{");
+    let _ = writeln!(out, "            if is_subconcept(cname, concept) {{");
+    let _ = writeln!(out, "                for item in list {{");
+    let _ = writeln!(out, "                    if !instances.contains(item) {{");
+    let _ = writeln!(out, "                        instances.push(item.clone());");
+    let _ = writeln!(out, "                    }}");
+    let _ = writeln!(out, "                }}");
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "    }});");
+    let _ = writeln!(out, "    Some(BilVal::List(Rc::new(instances)))");
+    let _ = writeln!(out, "}}\n");
+
     // Emit each LirFn as a callable `bil_fn_<name>(env: &mut BTreeMap<String, BilVal>, args: Vec<BilVal>) -> BilVal`
     for func in &lir.functions {
         let fn_id = sanitize_rust_ident(&func.name);
@@ -114,6 +152,10 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
         "fn call_bil_fn(name: &str, args: Vec<BilVal>, globals: &BTreeMap<String, BilVal>) -> BilVal {{"
     );
     let _ = writeln!(out, "    match name {{");
+    let _ = writeln!(
+        out,
+        "        \"is_a\" => match (&args[0], &args[1]) {{ (BilVal::Concept {{ name, .. }}, BilVal::Str(target)) => BilVal::Bool(is_subconcept(name, target)), _ => BilVal::Bool(false) }},"
+    );
     let _ = writeln!(
         out,
         "        \"min\" => match (&args[0], &args[1]) {{ (BilVal::Int(a), BilVal::Int(b)) => BilVal::Int(*a.min(b)), _ => panic!(\"min\") }},"
@@ -182,12 +224,27 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
         let expr_code = emit_lir_val_expr(gexpr, 2);
         let _ = writeln!(out, "        {}", expr_code);
         let _ = writeln!(out, "    }};");
+        let _ = writeln!(out, "    register_instance(&val_{});", gid);
         let _ = writeln!(out, "    println!(\"{{}} = {{}}\", {:?}, val_{});", gname, gid);
         let _ = writeln!(
             out,
             "    globals.insert({:?}.to_string(), val_{});",
             gname, gid
         );
+    }
+    for (idx, aexpr) in lir.assertions.iter().enumerate() {
+        let _ = writeln!(out, "    {{");
+        let _ = writeln!(out, "        let mut env = globals.clone();");
+        let acode = emit_lir_val_expr(aexpr, 2);
+        let _ = writeln!(out, "        let _aval = {};", acode);
+        let _ = writeln!(out, "        if _aval != BilVal::Bool(true) {{");
+        let _ = writeln!(
+            out,
+            "            panic!(\"Native AOT runtime assertion #{} failed (evaluated to {{}})\", _aval);",
+            idx + 1
+        );
+        let _ = writeln!(out, "        }}");
+        let _ = writeln!(out, "    }}");
     }
     let _ = writeln!(out, "}}");
 
@@ -334,8 +391,8 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
         LirExpr::Bool(v) => format!("BilVal::Bool({})", v),
         LirExpr::Str(s) => format!("BilVal::Str({:?}.to_string())", s),
         LirExpr::Var(v) => format!(
-            "env.get({:?}).or_else(|| globals.get({:?})).expect({:?}).clone()",
-            v, v, v
+            "env.get({:?}).cloned().or_else(|| globals.get({:?}).cloned()).or_else(|| query_concept_instances({:?})).expect({:?})",
+            v, v, v, v
         ),
         LirExpr::Placeholder => {
             "env.get(\"_\").expect(\"placeholder _\").clone()".to_string()
@@ -374,8 +431,8 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
             }
             let _ = write!(
                 s,
-                "{}    BilVal::Concept {{ name: {:?}.to_string(), fields: _f }}\n{}}}",
-                pad, name, pad
+                "{}    let _inst = BilVal::Concept {{ name: {:?}.to_string(), fields: _f }};\n{}    register_instance(&_inst);\n{}    _inst\n{}}}",
+                pad, name, pad, pad, pad
             );
             s
         }
@@ -395,7 +452,11 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                     emit_lir_val_expr(v, indent + 2)
                 );
             }
-            let _ = write!(s, "{}    }}\n{}    _base\n{}}}", pad, pad, pad);
+            let _ = write!(
+                s,
+                "{}    }}\n{}    register_instance(&_base);\n{}    _base\n{}}}",
+                pad, pad, pad, pad
+            );
             s
         }
         LirExpr::Field { base, field } => format!(
@@ -705,7 +766,7 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                     "{{\n{pad}    let _dom = {dom_s};\n{pad}    let mut _ok = false;\n{pad}    if let BilVal::List(_items) = _dom {{\n{pad}        for _it in _items.iter() {{\n{pad}            let mut env = env.clone();\n{pad}            env.insert({var:?}.to_string(), _it.clone());\n{pad}            if {body_s} == BilVal::Bool(true) {{ _ok = true; break; }}\n{pad}        }}\n{pad}    }}\n{pad}    BilVal::Bool(_ok)\n{pad}}}"
                 ),
                 QuantifierKind::Choose => format!(
-                    "{{\n{pad}    let _dom = {dom_s};\n{pad}    let mut _found = None;\n{pad}    if let BilVal::List(_items) = _dom {{\n{pad}        for _it in _items.iter() {{\n{pad}            let mut env = env.clone();\n{pad}            env.insert({var:?}.to_string(), _it.clone());\n{pad}            if {body_s} == BilVal::Bool(true) {{ _found = Some(_it.clone()); break; }}\n{pad}        }}\n{pad}    }}\n{pad}    _found.expect(\"choose empty domain\")\n{pad}}}"
+                    "{{\n{pad}    let _dom = {dom_s};\n{pad}    let mut _candidates = Vec::new();\n{pad}    if let BilVal::List(_items) = _dom {{\n{pad}        for _it in _items.iter() {{\n{pad}            let mut env = env.clone();\n{pad}            env.insert({var:?}.to_string(), _it.clone());\n{pad}            if {body_s} == BilVal::Bool(true) {{ _candidates.push(_it.clone()); }}\n{pad}        }}\n{pad}    }}\n{pad}    assert!(!_candidates.is_empty(), \"choose empty domain\");\n{pad}    _candidates[next_rand_index(_candidates.len())].clone()\n{pad}}}"
                 ),
             }
         }

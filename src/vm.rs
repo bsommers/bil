@@ -77,6 +77,7 @@ pub struct CompiledFn {
 pub struct BytecodeProgram {
     pub functions: BTreeMap<String, CompiledFn>,
     pub globals: Vec<(String, Vec<BytecodeOp>)>,
+    pub assertions: Vec<Vec<BytecodeOp>>,
     pub adt_variants: BTreeMap<String, usize>,
     pub erased_ghost_count: usize,
 }
@@ -113,9 +114,18 @@ impl BytecodeProgram {
             globals.push((gname.clone(), code));
         }
 
+        let mut assertions = Vec::new();
+        for aexpr in &lir.assertions {
+            let mut code = Vec::new();
+            compile_expr(aexpr, &mut code);
+            code.push(BytecodeOp::Return);
+            assertions.push(code);
+        }
+
         BytecodeProgram {
             functions,
             globals,
+            assertions,
             adt_variants,
             erased_ghost_count: lir.erased_ghost_count,
         }
@@ -124,7 +134,8 @@ impl BytecodeProgram {
     pub fn total_instructions(&self) -> usize {
         let fn_ins: usize = self.functions.values().map(|f| f.code.len()).sum();
         let gl_ins: usize = self.globals.iter().map(|(_, c)| c.len()).sum();
-        fn_ins + gl_ins
+        let as_ins: usize = self.assertions.iter().map(|c| c.len()).sum();
+        fn_ins + gl_ins + as_ins
     }
 }
 
@@ -388,6 +399,14 @@ impl BytecodeVm {
             self.register_instance(&val);
             self.globals.insert(gname.clone(), val.clone());
             results.push((gname, val));
+        }
+        let assertions_code = self.prog.assertions.clone();
+        for (idx, acode) in assertions_code.into_iter().enumerate() {
+            let mut env = BTreeMap::new();
+            let aval = self.exec_code(&acode, &mut env)?;
+            if aval != Value::Bool(true) {
+                return Err(format!("VM runtime assertion #{} failed (evaluated to {})", idx + 1, aval));
+            }
         }
         Ok(results)
     }
