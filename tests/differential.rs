@@ -248,3 +248,57 @@ fn test_v050_p0_3_and_p1_3_top_level_assert_and_concept_store_three_way_parity()
     );
 }
 
+#[test]
+fn test_v050_p1_1_p1_2_p2_1_expr_utils_incremental_vc_and_cli_bmc() {
+    // 1. P1.1: Verify expr_utils works directly without wp coupling
+    let parsed = bil::parse_source("let z = x + y + 10").unwrap();
+    if let bil::ast::Item::Let(l) = &parsed.items[0] {
+        let fvs = bil::expr_utils::free_vars(&l.value);
+        assert!(fvs.contains("x") && fvs.contains("y"));
+        let mut ints = std::collections::BTreeSet::new();
+        bil::expr_utils::extract_int_constants(&l.value, &mut ints);
+        assert!(ints.contains(&10));
+    }
+
+    // 2. P1.2: Verify multi-obligation GCL functions (if..fi & do..od) discharge via incremental SMT batching
+    let gcl_src = r#"
+        fn abs_val(x: Int) -> Int
+            ensures result >= 0
+        = if
+            x >= 0 -> x
+            [] x < 0 -> -x
+          fi
+
+        fn count_down(n: Int) -> Int
+            requires n >= 0
+            ensures result == 0
+        = do r = n
+            invariant r >= 0
+            variant r
+            r > 0 -> r := r - 1
+          od then r
+    "#;
+    let obs = bil::verify_source(gcl_src).expect("verify gcl_src");
+    assert_eq!(obs.len(), 3 + 5);
+    assert!(obs.iter().all(|o| o.verified));
+
+    // 3. P2.1: Verify CLI `bil model-check <file.bil> --bmc 3` and `--bmc=3 --json`
+    let exit_code = bil::cli::run_cli(&[
+        "bil".into(),
+        "model-check".into(),
+        "examples/mutex_protocol.bil".into(),
+        "--bmc".into(),
+        "3".into(),
+    ]);
+    assert_eq!(exit_code, 0);
+
+    let exit_code_json = bil::cli::run_cli(&[
+        "bil".into(),
+        "model-check".into(),
+        "examples/mutex_protocol.bil".into(),
+        "--bmc=3".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(exit_code_json, 0);
+}
+

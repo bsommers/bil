@@ -20,7 +20,7 @@ pub fn print_usage() {
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
     eprintln!("  bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
     eprintln!("  bil verify <file.bil> [--format json]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
-    eprintln!("  bil model-check <file.bil> [--max-states N] [--format json] Exhaustively verify safety & LTL temporal liveness");
+    eprintln!("  bil model-check <file.bil> [--max-states N] [--bmc K] [--format json] Exhaustively or symbolically verify system models");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
     eprintln!("  bil vm <file.bil> [--seed N] [--dump-bytecode] Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
     eprintln!("  bil build <file.bil> [-o <out_bin>]    Compile Ghost-Erased LIR to a standalone native ELF binary");
@@ -296,6 +296,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             let mut seed = 42u64;
             let mut trace = false;
             let mut max_states = 50_000usize;
+            let mut bmc_k: Option<usize> = None;
             let mut json_output = false;
             let mut i = 3;
             while i < args.len() {
@@ -309,12 +310,24 @@ pub fn run_cli(args: &[String]) -> i32 {
                         max_states = args[i + 1].parse().unwrap_or(50_000);
                         i += 1;
                     }
+                    "--bmc" if i + 1 < args.len() => {
+                        if let Ok(k) = args[i + 1].parse::<usize>() {
+                            bmc_k = Some(k);
+                        }
+                        i += 1;
+                    }
+                    s if s.starts_with("--bmc=") => {
+                        if let Ok(k) = s["--bmc=".len()..].parse::<usize>() {
+                            bmc_k = Some(k);
+                        }
+                    }
                     "--format" if i + 1 < args.len() => {
                         if args[i + 1] == "json" {
                             json_output = true;
                         }
                         i += 1;
                     }
+                    "--json" => json_output = true,
                     _ => {}
                 }
                 i += 1;
@@ -379,61 +392,99 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
 
             if cmd == "model-check" || cmd == "all" {
-                match session.model_check(max_states) {
-                    Ok(reports) => {
-                        let any_violation = reports.iter().any(|r| !r.violations.is_empty());
-                        if json_output && cmd == "model-check" {
-                            if let Ok(js) = serde_json::to_string_pretty(&reports) {
-                                println!("{}", js);
-                            }
-                            if any_violation {
-                                return 1;
-                            }
-                        } else {
-                            for rep in reports {
+                if let Some(k) = bmc_k {
+                    let bmc_reports = session.symbolic_bmc(k, Prover::Auto);
+                    let any_unsat_violation = bmc_reports
+                        .iter()
+                        .any(|r| r.verdict == Verdict::Consistent);
+                    if json_output && cmd == "model-check" {
+                        if let Ok(js) = serde_json::to_string_pretty(&bmc_reports) {
+                            println!("{}", js);
+                        }
+                    } else {
+                        for rep in &bmc_reports {
+                            println!(
+                                "=== Symbolic Bounded Model Checker (BMC): system `{}` (depth k = {}) ===",
+                                rep.system_name, rep.depth_k
+                            );
+                            if rep.safe_up_to_k {
                                 println!(
-                                    "=== Explicit-State & LTL Model Checker: system `{}` ===",
-                                    rep.system_name
+                                    "  [BMC PROVED SAFE (k={})] Prover `{}` proved no invariant violation up to {} steps (refutation UNSAT).",
+                                    rep.depth_k, rep.prover, rep.depth_k
                                 );
+                            } else if rep.verdict == Verdict::Consistent {
                                 println!(
-                                    "  States explored: {} | Transitions fired: {} | Max depth: {} | Max nondeterministic branching: {}",
-                                    rep.states_explored,
-                                    rep.transitions_fired,
-                                    rep.max_depth,
-                                    rep.max_branching_factor
+                                    "  [BMC VIOLATION (k={})] Prover `{}` found an invariant violation within {} steps (SAT).",
+                                    rep.depth_k, rep.prover, rep.depth_k
                                 );
-                                for tr in &rep.temporal_results {
-                                    let badge = if tr.verified { "PROVED" } else { "FAILED" };
-                                    println!(
-                                        "  [LTL {}] temporal `{}`: {}",
-                                        badge, tr.name, tr.formula_desc
-                                    );
-                                }
-                                if rep.violations.is_empty() {
-                                    if rep.complete {
-                                        println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
-                                    } else {
-                                        println!(
-                                            "  [BOUNDED / INCOMPLETE (truncated at {} states)] No violations found within state bound.",
-                                            rep.truncated_at.unwrap_or(rep.states_explored)
-                                        );
-                                    }
-                                } else {
-                                    for v in &rep.violations {
-                                        println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);
-                                        println!("  Counterexample Trace ({} steps):", v.trace.len());
-                                        for line in &v.trace {
-                                            println!("    {}", line);
-                                        }
-                                    }
-                                    return 1;
-                                }
+                            } else {
+                                println!(
+                                    "  [BMC INCONCLUSIVE (k={})] Prover `{}` verdict: {}.",
+                                    rep.depth_k, rep.prover, rep.verdict
+                                );
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("{}", e);
+                    if any_unsat_violation {
                         return 1;
+                    }
+                } else {
+                    match session.model_check(max_states) {
+                        Ok(reports) => {
+                            let any_violation = reports.iter().any(|r| !r.violations.is_empty());
+                            if json_output && cmd == "model-check" {
+                                if let Ok(js) = serde_json::to_string_pretty(&reports) {
+                                    println!("{}", js);
+                                }
+                                if any_violation {
+                                    return 1;
+                                }
+                            } else {
+                                for rep in reports {
+                                    println!(
+                                        "=== Explicit-State & LTL Model Checker: system `{}` ===",
+                                        rep.system_name
+                                    );
+                                    println!(
+                                        "  States explored: {} | Transitions fired: {} | Max depth: {} | Max nondeterministic branching: {}",
+                                        rep.states_explored,
+                                        rep.transitions_fired,
+                                        rep.max_depth,
+                                        rep.max_branching_factor
+                                    );
+                                    for tr in &rep.temporal_results {
+                                        let badge = if tr.verified { "PROVED" } else { "FAILED" };
+                                        println!(
+                                            "  [LTL {}] temporal `{}`: {}",
+                                            badge, tr.name, tr.formula_desc
+                                        );
+                                    }
+                                    if rep.violations.is_empty() {
+                                        if rep.complete {
+                                            println!("  [VERIFIED] All safety invariants, LTL temporal properties, deadlock-freedom (BB), and variant bounds hold.");
+                                        } else {
+                                            println!(
+                                                "  [BOUNDED / INCOMPLETE (truncated at {} states)] No violations found within state bound.",
+                                                rep.truncated_at.unwrap_or(rep.states_explored)
+                                            );
+                                        }
+                                    } else {
+                                        for v in &rep.violations {
+                                            println!("  [VIOLATION] {} at state {}", v.kind, v.state_str);
+                                            println!("  Counterexample Trace ({} steps):", v.trace.len());
+                                            for line in &v.trace {
+                                                println!("    {}", line);
+                                            }
+                                        }
+                                        return 1;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            return 1;
+                        }
                     }
                 }
             }

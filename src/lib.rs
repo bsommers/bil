@@ -5,6 +5,7 @@ pub mod codegen;
 pub mod driver;
 pub mod error;
 pub mod eval;
+pub mod expr_utils;
 pub mod ir;
 pub mod lexer;
 pub mod model_check;

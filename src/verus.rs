@@ -446,6 +446,6 @@ fn verus_self_expr(expr: &Expr, states: &[StateVarDecl]) -> String {
     for st in states {
         map.insert(st.name.clone(), Expr::Var(format!("self.{}", st.name)));
     }
-    let substituted = crate::wp::subst_expr(expr, &map);
+    let substituted = crate::expr_utils::subst_expr(expr, &map);
     verus_expr(&substituted, true)
 }

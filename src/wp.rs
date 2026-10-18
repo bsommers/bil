@@ -1,8 +1,10 @@
 use crate::ast::*;
 use crate::eval::{Interpreter, Value};
+pub use crate::expr_utils::{extract_int_constants, format_expr_concise, free_vars, subst_expr};
 use crate::ontology::OntologyRegistry;
 use crate::smt::{
-    emit_vc_smt2, evaluate_vc_agreement, run_smt_prover, AgreementOutcome, Prover, ProverResult,
+    emit_vc_smt2, emit_vc_smt2_header, evaluate_vc_agreement, expr_to_smt,
+    run_smt_incremental_batch_with_prover, run_smt_prover, AgreementOutcome, Prover, ProverResult,
     Verdict,
 };
 use serde::Serialize;
@@ -124,346 +126,6 @@ pub struct ProofObligation {
     pub smt2_script: Option<String>,
 }
 
-/// Collects all free variable names occurring in `expr`.
-pub fn free_vars(expr: &Expr) -> BTreeSet<String> {
-    let mut vars = BTreeSet::new();
-    collect_free_vars(expr, &BTreeSet::new(), &mut vars);
-    vars
-}
-
-fn collect_free_vars(expr: &Expr, bound: &BTreeSet<String>, out: &mut BTreeSet<String>) {
-    match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Placeholder => {}
-        Expr::Var(name) => {
-            if !bound.contains(name) {
-                out.insert(name.clone());
-            }
-        }
-        Expr::Unary { expr: inner, .. } => collect_free_vars(inner, bound, out),
-        Expr::Binary { left, right, .. } => {
-            collect_free_vars(left, bound, out);
-            collect_free_vars(right, bound, out);
-        }
-        Expr::Quantifier {
-            var, domain, body, ..
-        } => {
-            collect_free_vars(domain, bound, out);
-            let mut inner_bound = bound.clone();
-            inner_bound.insert(var.clone());
-            collect_free_vars(body, &inner_bound, out);
-        }
-        Expr::IfFi { branches } => {
-            for br in branches {
-                collect_free_vars(&br.guard, bound, out);
-                match &br.body {
-                    GclBody::Expr(e) => collect_free_vars(e, bound, out),
-                    GclBody::Updates(ups) => {
-                        for (_, ue) in ups {
-                            collect_free_vars(ue, bound, out);
-                        }
-                    }
-                    GclBody::Skip | GclBody::Abort => {}
-                }
-            }
-        }
-        Expr::DoOd {
-            inits,
-            invariant,
-            variant,
-            branches,
-            then_expr,
-        } => {
-            let mut inner_bound = bound.clone();
-            for (vname, iexpr) in inits {
-                collect_free_vars(iexpr, &inner_bound, out);
-                inner_bound.insert(vname.clone());
-            }
-            if let Some(inv) = invariant {
-                collect_free_vars(inv, &inner_bound, out);
-            }
-            if let Some(var_e) = variant {
-                collect_free_vars(var_e, &inner_bound, out);
-            }
-            for br in branches {
-                collect_free_vars(&br.guard, &inner_bound, out);
-                match &br.body {
-                    GclBody::Expr(e) => collect_free_vars(e, &inner_bound, out),
-                    GclBody::Updates(ups) => {
-                        for (_, ue) in ups {
-                            collect_free_vars(ue, &inner_bound, out);
-                        }
-                    }
-                    GclBody::Skip | GclBody::Abort => {}
-                }
-            }
-            collect_free_vars(then_expr, &inner_bound, out);
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_free_vars(scrutinee, bound, out);
-            for arm in arms {
-                let mut arm_bound = bound.clone();
-                for pv in pattern_bound_vars(&arm.pattern) {
-                    arm_bound.insert(pv);
-                }
-                collect_free_vars(&arm.body, &arm_bound, out);
-            }
-        }
-        Expr::RecordInit { fields, .. } => {
-            for (_, v) in fields {
-                collect_free_vars(v, bound, out);
-            }
-        }
-        Expr::RecordWith { base, updates } => {
-            collect_free_vars(base, bound, out);
-            for (_, v) in updates {
-                collect_free_vars(v, bound, out);
-            }
-        }
-        Expr::FieldAccess { base, .. } => collect_free_vars(base, bound, out),
-        Expr::Call { args, .. } => {
-            for a in args {
-                collect_free_vars(a, bound, out);
-            }
-        }
-        Expr::List(items) => {
-            for i in items {
-                collect_free_vars(i, bound, out);
-            }
-        }
-        Expr::LetIn { name, value, body } => {
-            collect_free_vars(value, bound, out);
-            let mut inner_bound = bound.clone();
-            inner_bound.insert(name.clone());
-            collect_free_vars(body, &inner_bound, out);
-        }
-    }
-}
-
-fn pattern_bound_vars(pat: &Pattern) -> Vec<String> {
-    match pat {
-        Pattern::Var(v) if v != "_" => vec![v.clone()],
-        Pattern::Variant(_, bindings) => bindings
-            .iter()
-            .filter(|b| b.as_str() != "_")
-            .cloned()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn fresh_var_name(base: &str, avoid: &BTreeSet<String>) -> String {
-    let mut idx = 0usize;
-    loop {
-        let candidate = format!("{}_{}", base, idx);
-        if !avoid.contains(&candidate) {
-            return candidate;
-        }
-        idx += 1;
-    }
-}
-
-fn subst_gcl_branch(br: &GuardedBranch, mapping: &BTreeMap<String, Expr>) -> GuardedBranch {
-    GuardedBranch {
-        guard: subst_expr(&br.guard, mapping),
-        body: match &br.body {
-            GclBody::Expr(e) => GclBody::Expr(subst_expr(e, mapping)),
-            GclBody::Updates(ups) => GclBody::Updates(
-                ups.iter()
-                    .map(|(v, ue)| (v.clone(), subst_expr(ue, mapping)))
-                    .collect(),
-            ),
-            other => other.clone(),
-        },
-    }
-}
-
-/// Capture-avoiding simultaneous substitution `expr[var := replacement]` (Dijkstra's textual substitution)
-pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
-    if mapping.is_empty() {
-        return expr.clone();
-    }
-    match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Placeholder => {
-            expr.clone()
-        }
-        Expr::Var(name) => mapping.get(name).cloned().unwrap_or_else(|| expr.clone()),
-        Expr::Unary { op, expr: inner } => Expr::Unary {
-            op: *op,
-            expr: Box::new(subst_expr(inner, mapping)),
-        },
-        Expr::Binary { op, left, right } => Expr::Binary {
-            op: *op,
-            left: Box::new(subst_expr(left, mapping)),
-            right: Box::new(subst_expr(right, mapping)),
-        },
-        Expr::Quantifier {
-            kind,
-            var,
-            domain,
-            body,
-        } => {
-            let sub_domain = subst_expr(domain, mapping);
-            let mut inner_map = mapping.clone();
-            inner_map.remove(var);
-            let body_fvs = free_vars(body);
-            let mut repl_fvs = BTreeSet::new();
-            for (k, v) in &inner_map {
-                if body_fvs.contains(k) {
-                    repl_fvs.extend(free_vars(v));
-                }
-            }
-            let (final_var, final_body) = if repl_fvs.contains(var) {
-                let mut avoid = body_fvs;
-                avoid.extend(repl_fvs);
-                avoid.extend(inner_map.keys().cloned());
-                avoid.insert(var.clone());
-                let fresh = fresh_var_name(var, &avoid);
-                let mut rename_map = BTreeMap::new();
-                rename_map.insert(var.clone(), Expr::Var(fresh.clone()));
-                let renamed_body = subst_expr(body, &rename_map);
-                (fresh, subst_expr(&renamed_body, &inner_map))
-            } else {
-                (var.clone(), subst_expr(body, &inner_map))
-            };
-            Expr::Quantifier {
-                kind: kind.clone(),
-                var: final_var,
-                domain: Box::new(sub_domain),
-                body: Box::new(final_body),
-            }
-        }
-        Expr::IfFi { branches } => Expr::IfFi {
-            branches: branches
-                .iter()
-                .map(|b| subst_gcl_branch(b, mapping))
-                .collect(),
-        },
-        Expr::DoOd {
-            inits,
-            invariant,
-            variant,
-            branches,
-            then_expr,
-        } => {
-            let mut sub_inits = Vec::new();
-            let mut inner_map = mapping.clone();
-            for (v, ie) in inits {
-                sub_inits.push((v.clone(), subst_expr(ie, &inner_map)));
-                inner_map.remove(v);
-            }
-            Expr::DoOd {
-                inits: sub_inits,
-                invariant: invariant
-                    .as_ref()
-                    .map(|i| Box::new(subst_expr(i, &inner_map))),
-                variant: variant
-                    .as_ref()
-                    .map(|v| Box::new(subst_expr(v, &inner_map))),
-                branches: branches
-                    .iter()
-                    .map(|b| subst_gcl_branch(b, &inner_map))
-                    .collect(),
-                then_expr: Box::new(subst_expr(then_expr, &inner_map)),
-            }
-        }
-        Expr::Match { scrutinee, arms } => Expr::Match {
-            scrutinee: Box::new(subst_expr(scrutinee, mapping)),
-            arms: arms
-                .iter()
-                .map(|arm| {
-                    let mut arm_map = mapping.clone();
-                    for pv in pattern_bound_vars(&arm.pattern) {
-                        arm_map.remove(&pv);
-                    }
-                    MatchArm {
-                        pattern: arm.pattern.clone(),
-                        body: subst_expr(&arm.body, &arm_map),
-                    }
-                })
-                .collect(),
-        },
-        Expr::RecordInit { concept, fields } => Expr::RecordInit {
-            concept: concept.clone(),
-            fields: fields
-                .iter()
-                .map(|(k, v)| (k.clone(), subst_expr(v, mapping)))
-                .collect(),
-        },
-        Expr::RecordWith { base, updates } => Expr::RecordWith {
-            base: Box::new(subst_expr(base, mapping)),
-            updates: updates
-                .iter()
-                .map(|(k, v)| (k.clone(), subst_expr(v, mapping)))
-                .collect(),
-        },
-        Expr::FieldAccess { base, field } => {
-            let sub_base = subst_expr(base, mapping);
-            // Symbolic reduction: `(base with { f: val }).f` -> `val`
-            if let Expr::RecordWith {
-                base: inner_base,
-                updates,
-            } = &sub_base
-            {
-                for (uk, uv) in updates.iter().rev() {
-                    if uk == field {
-                        return uv.clone();
-                    }
-                }
-                return Expr::FieldAccess {
-                    base: inner_base.clone(),
-                    field: field.clone(),
-                };
-            }
-            if let Expr::RecordInit { fields, .. } = &sub_base {
-                for (fk, fv) in fields {
-                    if fk == field {
-                        return fv.clone();
-                    }
-                }
-            }
-            Expr::FieldAccess {
-                base: Box::new(sub_base),
-                field: field.clone(),
-            }
-        }
-        Expr::Call { func, args } => Expr::Call {
-            func: func.clone(),
-            args: args.iter().map(|a| subst_expr(a, mapping)).collect(),
-        },
-        Expr::List(items) => Expr::List(items.iter().map(|i| subst_expr(i, mapping)).collect()),
-        Expr::LetIn { name, value, body } => {
-            let sub_val = subst_expr(value, mapping);
-            let mut inner_map = mapping.clone();
-            inner_map.remove(name);
-            let body_fvs = free_vars(body);
-            let mut repl_fvs = BTreeSet::new();
-            for (k, v) in &inner_map {
-                if body_fvs.contains(k) {
-                    repl_fvs.extend(free_vars(v));
-                }
-            }
-            let (final_name, final_body) = if repl_fvs.contains(name) {
-                let mut avoid = body_fvs;
-                avoid.extend(repl_fvs);
-                avoid.extend(inner_map.keys().cloned());
-                avoid.insert(name.clone());
-                let fresh = fresh_var_name(name, &avoid);
-                let mut rename_map = BTreeMap::new();
-                rename_map.insert(name.clone(), Expr::Var(fresh.clone()));
-                let renamed_body = subst_expr(body, &rename_map);
-                (fresh, subst_expr(&renamed_body, &inner_map))
-            } else {
-                (name.clone(), subst_expr(body, &inner_map))
-            };
-            Expr::LetIn {
-                name: final_name,
-                value: Box::new(sub_val),
-                body: Box::new(final_body),
-            }
-        }
-    }
-}
-
 /// Peels top-level `let x = v in body` bindings by substituting `x := v` into `body`,
 /// allowing structural GCL obligations (`if..fi`, `do..od`) inside `let` bindings to be verified.
 fn peel_let_bindings(expr: &Expr) -> Expr {
@@ -547,52 +209,6 @@ fn wp_branch_body(body: &GclBody, post: &Expr, default_var: Option<&str>) -> Exp
     }
 }
 
-pub fn format_expr_concise(expr: &Expr) -> String {
-    match expr {
-        Expr::Int(v) => v.to_string(),
-        Expr::Float(v) => v.to_string(),
-        Expr::Bool(v) => v.to_string(),
-        Expr::Str(s) => format!("\"{}\"", s),
-        Expr::Var(v) => v.clone(),
-        Expr::Placeholder => "_".into(),
-        Expr::Unary { op, expr: inner } => match op {
-            UnaryOp::Not => format!("!({})", format_expr_concise(inner)),
-            UnaryOp::Neg => format!("-{}", format_expr_concise(inner)),
-        },
-        Expr::Binary { op, left, right } => format!(
-            "({} {} {})",
-            format_expr_concise(left),
-            op,
-            format_expr_concise(right)
-        ),
-        Expr::FieldAccess { base, field } => format!("{}.{}", format_expr_concise(base), field),
-        Expr::Call { func, args } => {
-            let s: Vec<String> = args.iter().map(format_expr_concise).collect();
-            format!("{}({})", func, s.join(", "))
-        }
-        Expr::Quantifier {
-            kind,
-            var,
-            domain,
-            body,
-        } => {
-            let k = match kind {
-                QuantifierKind::Forall => "forall",
-                QuantifierKind::Exists => "exists",
-                QuantifierKind::Choose => "choose",
-            };
-            format!(
-                "({} {} in {} : {})",
-                k,
-                var,
-                format_expr_concise(domain),
-                format_expr_concise(body)
-            )
-        }
-        _ => format!("{:?}", expr),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn build_vc_obligation(
     program: &Program,
@@ -658,6 +274,150 @@ fn build_vc_obligation(
         agreement,
         smt2_script,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_vc_obligations_batch(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    fn_name: &str,
+    fn_params: &[Param],
+    specs: Vec<(ObligationKind, Vec<Param>, Expr)>,
+    include_axioms: bool,
+    proved_lemmas: &[ProofDecl],
+    run_smt: bool,
+) -> Vec<ProofObligation> {
+    if !run_smt || specs.len() <= 1 {
+        return specs
+            .into_iter()
+            .map(|(kind, state_params, vc)| {
+                build_vc_obligation(
+                    program,
+                    ontology,
+                    fn_name,
+                    kind,
+                    fn_params,
+                    &state_params,
+                    &vc,
+                    include_axioms,
+                    proved_lemmas,
+                    run_smt,
+                )
+            })
+            .collect();
+    }
+
+    let mut union_params = Vec::new();
+    let mut seen = BTreeSet::new();
+    for p in fn_params {
+        if seen.insert(p.name.clone()) {
+            union_params.push(p.clone());
+        }
+    }
+    for (_, sp, _) in &specs {
+        for p in sp {
+            if seen.insert(p.name.clone()) {
+                union_params.push(p.clone());
+            }
+        }
+    }
+
+    let header_opt = emit_vc_smt2_header(
+        program,
+        ontology,
+        &union_params,
+        include_axioms,
+        proved_lemmas,
+    );
+    let refutations_opt: Option<Vec<String>> = specs
+        .iter()
+        .map(|(_, _, vc)| expr_to_smt(vc, ontology, None).map(|s| format!("(not {})", s)))
+        .collect();
+
+    let batch_smt = match (header_opt, refutations_opt) {
+        (Some(header), Some(refutations)) => {
+            run_smt_incremental_batch_with_prover(Prover::Auto, &header, &refutations)
+        }
+        _ => None,
+    };
+
+    let Some((prover_name, verdicts)) = batch_smt else {
+        return specs
+            .into_iter()
+            .map(|(kind, state_params, vc)| {
+                build_vc_obligation(
+                    program,
+                    ontology,
+                    fn_name,
+                    kind,
+                    fn_params,
+                    &state_params,
+                    &vc,
+                    include_axioms,
+                    proved_lemmas,
+                    run_smt,
+                )
+            })
+            .collect();
+    };
+
+    specs
+        .into_iter()
+        .zip(verdicts)
+        .map(|((kind, state_params, vc), verdict)| {
+            let (bounded_ok, ce, samples) =
+                check_vc_bounded(program, ontology, fn_params, &state_params, &vc);
+
+            let mut all_params = Vec::new();
+            let mut p_seen = BTreeSet::new();
+            for p in fn_params.iter().chain(state_params.iter()) {
+                if p_seen.insert(p.name.clone()) {
+                    all_params.push(p.clone());
+                }
+            }
+
+            let smt2_script = emit_vc_smt2(
+                program,
+                ontology,
+                &all_params,
+                &vc,
+                include_axioms,
+                proved_lemmas,
+            );
+            let smt_res = ProverResult {
+                prover: prover_name.clone(),
+                verdict,
+                stdout: match verdict {
+                    Verdict::Consistent => "sat".into(),
+                    Verdict::Inconsistent => "unsat".into(),
+                    _ => "unknown".into(),
+                },
+                stderr: String::new(),
+                elapsed_ms: 0,
+                detail: format!("{} incremental batch ({})", prover_name, verdict),
+            };
+            let agr = evaluate_vc_agreement(bounded_ok, smt_res.verdict);
+            let status = decide_status(ce.clone(), samples, Some(&smt_res));
+            let verified = matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
+            let counterexample = match &status {
+                Status::Refuted { counterexample } => Some(counterexample.clone()),
+                _ => ce,
+            };
+
+            ProofObligation {
+                fn_name: fn_name.to_string(),
+                kind,
+                formula_desc: format_expr_concise(&vc),
+                status,
+                verified,
+                counterexample,
+                smt_prover: Some(smt_res.prover),
+                smt_verdict: Some(smt_res.verdict),
+                agreement: Some(agr),
+                smt2_script,
+            }
+        })
+        .collect()
 }
 
 /// Generates all Dijkstra Weakest Precondition (`wp`), Refinement (`refines`),
@@ -820,42 +580,35 @@ fn verify_program_inner(
                 let peeled_body = peel_let_bindings(&f.body);
                 match &peeled_body {
                     Expr::IfFi { branches } => {
+                        let mut batch_specs = Vec::with_capacity(1 + branches.len());
                         // Obligation A: Guard Totality: Pre => (G1 ∨ G2 ∨ ... ∨ Gn)
                         let bb = branches
                             .iter()
                             .map(|b| b.guard.clone())
                             .fold(Expr::Bool(false), disj);
                         let vc_totality = implies(pre.clone(), bb);
-                        obligations.push(build_vc_obligation(
-                            program,
-                            ontology,
-                            &f.name,
-                            ObligationKind::IfFiGuardTotality,
-                            &f.params,
-                            &[],
-                            &vc_totality,
-                            false,
-                            &proved_lemmas,
-                            run_smt,
-                        ));
+                        batch_specs.push((ObligationKind::IfFiGuardTotality, Vec::new(), vc_totality));
 
                         // Obligation B: Each branch satisfies Post: (Pre ∧ Gi) => wp(Si, Post)
                         for (idx, br) in branches.iter().enumerate() {
                             let wp_s = wp_branch_body(&br.body, &post, None);
                             let vc_br = implies(conj(pre.clone(), br.guard.clone()), wp_s);
-                            obligations.push(build_vc_obligation(
-                                program,
-                                ontology,
-                                &f.name,
+                            batch_specs.push((
                                 ObligationKind::IfFiBranchPostcondition(idx),
-                                &f.params,
-                                &[],
-                                &vc_br,
-                                false,
-                                &proved_lemmas,
-                                run_smt,
+                                Vec::new(),
+                                vc_br,
                             ));
                         }
+                        obligations.extend(build_vc_obligations_batch(
+                            program,
+                            ontology,
+                            &f.name,
+                            &f.params,
+                            batch_specs,
+                            false,
+                            &proved_lemmas,
+                            run_smt,
+                        ));
                     }
                     Expr::DoOd {
                         inits,
@@ -885,21 +638,12 @@ fn verify_program_inner(
                             });
                         }
 
+                        let mut batch_specs = Vec::new();
+
                         // 1. Initialization: Pre => I[state := init]
                         let inv_init = subst_expr(&inv, &init_map);
                         let vc_init = implies(pre.clone(), inv_init);
-                        obligations.push(build_vc_obligation(
-                            program,
-                            ontology,
-                            &f.name,
-                            ObligationKind::DoOdInitialization,
-                            &f.params,
-                            &[],
-                            &vc_init,
-                            false,
-                            &proved_lemmas,
-                            run_smt,
-                        ));
+                        batch_specs.push((ObligationKind::DoOdInitialization, Vec::new(), vc_init));
 
                         let default_state_var = inits.first().map(|(n, _)| n.as_str());
 
@@ -908,17 +652,10 @@ fn verify_program_inner(
                             let pre_inv_g = conj(pre.clone(), conj(inv.clone(), br.guard.clone()));
                             let wp_inv = wp_branch_body(&br.body, &inv, default_state_var);
                             let vc_pres = implies(pre_inv_g.clone(), wp_inv);
-                            obligations.push(build_vc_obligation(
-                                program,
-                                ontology,
-                                &f.name,
+                            batch_specs.push((
                                 ObligationKind::DoOdPreservation(idx),
-                                &f.params,
-                                &state_params,
-                                &vc_pres,
-                                false,
-                                &proved_lemmas,
-                                run_smt,
+                                state_params.clone(),
+                                vc_pres,
                             ));
 
                             if let Some(var_expr) = variant {
@@ -929,17 +666,10 @@ fn verify_program_inner(
                                     right: Box::new(Expr::Int(0)),
                                 };
                                 let vc_nn = implies(pre_inv_g.clone(), v_non_neg);
-                                obligations.push(build_vc_obligation(
-                                    program,
-                                    ontology,
-                                    &f.name,
+                                batch_specs.push((
                                     ObligationKind::DoOdVariantNonNegative(idx),
-                                    &f.params,
-                                    &state_params,
-                                    &vc_nn,
-                                    false,
-                                    &proved_lemmas,
-                                    run_smt,
+                                    state_params.clone(),
+                                    vc_nn,
                                 ));
 
                                 // Strict decrease: (Pre ∧ I ∧ Gi) => wp(Si, V) < V
@@ -950,17 +680,10 @@ fn verify_program_inner(
                                     right: var_expr.clone(),
                                 };
                                 let vc_dec = implies(pre_inv_g, v_dec);
-                                obligations.push(build_vc_obligation(
-                                    program,
-                                    ontology,
-                                    &f.name,
+                                batch_specs.push((
                                     ObligationKind::DoOdVariantDecrease(idx),
-                                    &f.params,
-                                    &state_params,
-                                    &vc_dec,
-                                    false,
-                                    &proved_lemmas,
-                                    run_smt,
+                                    state_params.clone(),
+                                    vc_dec,
                                 ));
                             }
                         }
@@ -974,14 +697,18 @@ fn verify_program_inner(
                         res_map.insert("result".into(), (**then_expr).clone());
                         let post_exit = subst_expr(&post, &res_map);
                         let vc_exit = implies(conj(pre.clone(), conj(inv, not(bb))), post_exit);
-                        obligations.push(build_vc_obligation(
+                        batch_specs.push((
+                            ObligationKind::DoOdExitPostcondition,
+                            state_params,
+                            vc_exit,
+                        ));
+
+                        obligations.extend(build_vc_obligations_batch(
                             program,
                             ontology,
                             &f.name,
-                            ObligationKind::DoOdExitPostcondition,
                             &f.params,
-                            &state_params,
-                            &vc_exit,
+                            batch_specs,
                             false,
                             &proved_lemmas,
                             run_smt,
@@ -1220,104 +947,6 @@ fn search_counterexample(
 fn format_env_assignment(env: &BTreeMap<String, Value>) -> String {
     let parts: Vec<String> = env.iter().map(|(k, v)| format!("{} = {}", k, v)).collect();
     format!("{{ {} }}", parts.join(", "))
-}
-
-/// Extracts integer constants `c` and their immediate neighbors `c - 1, c, c + 1` from an expression
-/// so bounded counterexample search automatically probes threshold boundaries.
-fn extract_int_constants(expr: &Expr, out: &mut BTreeSet<i64>) {
-    match expr {
-        Expr::Int(c) => {
-            for v in [c.saturating_sub(1), *c, c.saturating_add(1)] {
-                if out.len() < 24 {
-                    out.insert(v);
-                }
-            }
-        }
-        Expr::Unary {
-            op: UnaryOp::Neg,
-            expr: inner,
-        } => {
-            if let Expr::Int(c) = &**inner {
-                let nc = c.saturating_neg();
-                for v in [nc.saturating_sub(1), nc, nc.saturating_add(1)] {
-                    if out.len() < 24 {
-                        out.insert(v);
-                    }
-                }
-            } else {
-                extract_int_constants(inner, out);
-            }
-        }
-        Expr::Unary { expr: inner, .. } => extract_int_constants(inner, out),
-        Expr::Binary { left, right, .. } => {
-            extract_int_constants(left, out);
-            extract_int_constants(right, out);
-        }
-        Expr::Quantifier { domain, body, .. } => {
-            extract_int_constants(domain, out);
-            extract_int_constants(body, out);
-        }
-        Expr::FieldAccess { base, .. } => extract_int_constants(base, out),
-        Expr::RecordInit { fields, .. } => {
-            for (_, v) in fields {
-                extract_int_constants(v, out);
-            }
-        }
-        Expr::RecordWith { base, updates } => {
-            extract_int_constants(base, out);
-            for (_, v) in updates {
-                extract_int_constants(v, out);
-            }
-        }
-        Expr::Call { args, .. } | Expr::List(args) => {
-            for a in args {
-                extract_int_constants(a, out);
-            }
-        }
-        Expr::LetIn { value, body, .. } => {
-            extract_int_constants(value, out);
-            extract_int_constants(body, out);
-        }
-        Expr::Match { scrutinee, arms } => {
-            extract_int_constants(scrutinee, out);
-            for a in arms {
-                extract_int_constants(&a.body, out);
-            }
-        }
-        Expr::IfFi { branches } => {
-            for br in branches {
-                extract_int_constants(&br.guard, out);
-                if let GclBody::Expr(e) = &br.body {
-                    extract_int_constants(e, out);
-                }
-            }
-        }
-        Expr::DoOd {
-            inits,
-            invariant,
-            variant,
-            branches,
-            then_expr,
-        } => {
-            for (_, ie) in inits {
-                extract_int_constants(ie, out);
-            }
-            if let Some(inv) = invariant {
-                extract_int_constants(inv, out);
-            }
-            if let Some(var) = variant {
-                extract_int_constants(var, out);
-            }
-            for br in branches {
-                extract_int_constants(&br.guard, out);
-                if let GclBody::Expr(e) = &br.body {
-                    extract_int_constants(e, out);
-                }
-            }
-            extract_int_constants(then_expr, out);
-        }
-        _ => {}
-    }
 }
 
 fn sample_domain_for_type(

@@ -155,6 +155,10 @@ impl CompilationSession {
         model_check::model_check_program(&self.program, &self.ontology, max_states)
     }
 
+    pub fn symbolic_bmc(&self, k: usize, prover: Prover) -> Vec<model_check::SymbolicBmcReport> {
+        model_check::symbolic_bmc_program(&self.program, &self.ontology, k, prover)
+    }
+
     pub fn run(&self, seed: u64, trace: bool) -> Result<RunOutput, String> {
         let mut interp = Interpreter::new(self.ontology.clone(), seed, trace);
         let outputs = interp.run_program(&self.program).map_err(|e| e.to_string())?;

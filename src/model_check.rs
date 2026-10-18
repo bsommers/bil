@@ -1,7 +1,7 @@
 use crate::ast::*;
 use crate::eval::{Interpreter, Value};
+use crate::expr_utils::{format_expr_concise, subst_expr};
 use crate::ontology::OntologyRegistry;
-use crate::wp::format_expr_concise;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -791,7 +791,7 @@ pub fn emit_symbolic_bmc_smt2(
     // Assert initial state at step 0
     let map0 = step_var_map(&sys.states, 0);
     for st in &sys.states {
-        let init_e = crate::wp::subst_expr(&st.init, &map0);
+        let init_e = subst_expr(&st.init, &map0);
         let init_smt = crate::smt::expr_to_smt(&init_e, ontology, None)?;
         lines.push(format!("(assert (= {}__0 {}))", st.name, init_smt));
     }
@@ -803,7 +803,7 @@ pub fn emit_symbolic_bmc_smt2(
         let mut guards_smt = Vec::new();
 
         for tr in &sys.transitions {
-            let g_sub = crate::wp::subst_expr(&tr.guard, &cur_map);
+            let g_sub = subst_expr(&tr.guard, &cur_map);
             let g_smt = crate::smt::expr_to_smt(&g_sub, ontology, None)?;
             guards_smt.push(g_smt.clone());
 
@@ -811,7 +811,7 @@ pub fn emit_symbolic_bmc_smt2(
             let mut updated_vars = BTreeSet::new();
             for (vname, uexpr) in &tr.updates {
                 updated_vars.insert(vname.as_str());
-                let u_sub = crate::wp::subst_expr(uexpr, &cur_map);
+                let u_sub = subst_expr(uexpr, &cur_map);
                 let u_smt = crate::smt::expr_to_smt(&u_sub, ontology, None)?;
                 branch_conjuncts.push(format!("(= {}__{} {})", vname, step + 1, u_smt));
             }
@@ -850,7 +850,7 @@ pub fn emit_symbolic_bmc_smt2(
     for step in 0..=k {
         let map_t = step_var_map(&sys.states, step);
         for inv in &sys.invariants {
-            let inv_sub = crate::wp::subst_expr(&inv.formula, &map_t);
+            let inv_sub = subst_expr(&inv.formula, &map_t);
             let inv_smt = crate::smt::expr_to_smt(&inv_sub, ontology, None)?;
             all_step_invs.push(inv_smt);
         }

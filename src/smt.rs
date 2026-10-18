@@ -239,8 +239,19 @@ pub fn run_smt_incremental_batch(
     base_theory: &str,
     refutation_assertions: &[String],
 ) -> Option<Vec<Verdict>> {
+    run_smt_incremental_batch_with_prover(prover, base_theory, refutation_assertions)
+        .map(|(_, verdicts)| verdicts)
+}
+
+/// Executes multiple refutation assertions `(not VC_i)` in a single incremental `(push 1)` / `(pop 1)`
+/// solver session and returns `(prover_name, verdicts)`.
+pub fn run_smt_incremental_batch_with_prover(
+    prover: Prover,
+    base_theory: &str,
+    refutation_assertions: &[String],
+) -> Option<(String, Vec<Verdict>)> {
     if refutation_assertions.is_empty() {
-        return Some(Vec::new());
+        return Some((prover.name().to_string(), Vec::new()));
     }
     let mut script = String::from(base_theory);
     if !script.ends_with('\n') {
@@ -267,7 +278,7 @@ pub fn run_smt_incremental_batch(
         }
     }
     if verdicts.len() == refutation_assertions.len() {
-        Some(verdicts)
+        Some((res.prover, verdicts))
     } else {
         None
     }
@@ -614,17 +625,15 @@ pub fn prove_subsumption(
     }
 }
 
-/// Emits an SMT-LIB2 refutation script for a Dijkstra `wp` or Verus `proof` Verification Condition (`VC`).
-/// Proves validity of `VC` by checking unsatisfiability (`unsat`) of `(not VC)`.
-pub fn emit_vc_smt2(
+/// Emits the shared SMT-LIB2 preamble (sorts, ontology predicates, ADT constants, parameter declarations,
+/// and proved parameterless lemmas) for one or more Verification Conditions.
+pub fn emit_vc_smt2_header(
     program: &Program,
     ontology: &OntologyRegistry,
     params: &[Param],
-    vc: &Expr,
     include_axioms: bool,
     proved_lemmas: &[ProofDecl],
 ) -> Option<String> {
-    let vc_smt = expr_to_smt(vc, ontology, None)?;
     let mut lines = Vec::new();
     if include_axioms {
         lines.push(emit_ontology_smt2_base(program, ontology));
@@ -703,10 +712,27 @@ pub fn emit_vc_smt2(
         }
     }
 
-    lines.push(format!(";; Refutation of VC: {}", crate::wp::format_expr_concise(vc)));
-    lines.push(format!("(assert (not {}))", vc_smt));
-    lines.push("(check-sat)".to_string());
     Some(lines.join("\n") + "\n")
+}
+
+/// Emits an SMT-LIB2 refutation script for a Dijkstra `wp` or Verus `proof` Verification Condition (`VC`).
+/// Proves validity of `VC` by checking unsatisfiability (`unsat`) of `(not VC)`.
+pub fn emit_vc_smt2(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    params: &[Param],
+    vc: &Expr,
+    include_axioms: bool,
+    proved_lemmas: &[ProofDecl],
+) -> Option<String> {
+    let vc_smt = expr_to_smt(vc, ontology, None)?;
+    let mut s = emit_vc_smt2_header(program, ontology, params, include_axioms, proved_lemmas)?;
+    s.push_str(&format!(
+        ";; Refutation of VC: {}\n(assert (not {}))\n(check-sat)\n",
+        crate::expr_utils::format_expr_concise(vc),
+        vc_smt
+    ));
+    Some(s)
 }
 
 fn map_type_to_smt(ty: &TypeExpr, ontology: &OntologyRegistry) -> String {
