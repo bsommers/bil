@@ -1,6 +1,6 @@
 # Test Suite & Coverage Report — `bil`
 
-**Date:** `2026-10-18` (commit `31e5c38`, v0.4.0+)
+**Date:** `2026-10-18` (baseline at commit `31e5c38`, v0.4.0+; updated the same day after adding `tests/cli.rs`, see §8)
 **Tooling used:** `cargo-llvm-cov 0.9.1` (stable rustc 1.89 for line/function/region; nightly `--branch` for branch coverage)
 
 This is the first coverage report for the repo, so there's no earlier one to compare against.
@@ -13,7 +13,7 @@ This is the first coverage report for the repo, so there's no earlier one to com
 |---|---|
 | Test framework(s) | Built-in `cargo test` (`#[test]`), plus `cargo-fuzz`/libFuzzer targets in `fuzz/` (`lex`, `parse`, `check`) |
 | Total test files | 4 integration (`tests/bil_tests.rs`, `differential.rs`, `security.rs`, `soundness.rs`), plus unit tests in `src/codegen.rs`, `src/smt.rs` and `src/symbol.rs` |
-| Total test cases | 37 (15 integration + 6 differential + 5 security + 8 soundness + 3 unit) |
+| Total test cases | 37 at baseline (15 integration + 6 differential + 5 security + 8 soundness + 3 unit); 47 runnable plus 4 ignored after §8 |
 | CI-enforced? | **No.** The repo has no `.github/workflows` and no other CI config |
 | Runtime | ≈ 8 s (`cargo test`, debug build, z3 and cvc5 on `PATH`) |
 
@@ -61,7 +61,7 @@ A verifier has a different kind of critical path than a web service. Its worst f
 |---|---|---|
 | `decide_status`: the SMT `sat`-but-no-bounded-counterexample arm, plus both `Unknown` arms | `src/wp.rs:45-57` | This is the only function that turns evidence into a verdict, and three of its five outcomes are never exercised. **No test covers "bounded search misses but SMT finds a model"**, which is the main reason the SMT backend exists. The `Unknown` arms (no solver and no samples, or a solver error) are also never reached, so a regression that maps them to `Proved`/`BoundedOnly` would go unnoticed. |
 | `bil verify` exit code and verdict rendering | `src/cli.rs:340-400` (34 of 60 lines missed) | CI and users rely on the exit code. No test checks that `bil verify` returns non-zero for a `Refuted` or `Unknown` obligation. The probe from the architecture review (false lemma gives exit 1) is currently checked by hand only. |
-| `model-check` flag parsing: silent fallbacks | `src/cli.rs:302-333` | **Confirmed silent failure:** `bil model-check lin.bil --bmc abc` prints `[VERIFIED]` and exits 0, and BMC never runs. `--max-states 1O0` silently falls back to 50 000, `--seed x` falls back to 42, and unknown flags (`--jsno`, `--bmcc`) fall through `_ => {}`. The same pattern appears in `vm` (`:63-70`) and `build`/`solve` (`:153`). |
+| **BOUNDED obligations exit 0, even when the solver failed** | `src/wp.rs:259`, `:401`, `:554` (`verified` includes `BoundedOnly`); `src/cli.rs:389` | **Confirmed false pass:** if every solver errors or crashes and bounded sampling misses the counterexample, a false contract (`requires x * x == 1369 ensures result == 0`, refuted by x = ±37) prints `[BOUNDED (12 samples)]` and `bil verify` **exits 0**. The display is honest, but CI only looks at the exit code. This is a policy decision rather than a plain bug; options are a nonzero exit for `BoundedOnly`, or a `--strict` flag. Pinned by the ignored test `verify_exits_nonzero_when_solver_fails_and_sampling_misses` in `tests/cli.rs`. |
 | `run_single_binary`: the SMT-LIB `(error …)` path and the spawn/wait failure paths | `src/smt.rs:298-305`, `:344-352`, `:399-407`, `:425-427` | These paths produce `Skipped`/`Unknown` when the solver is missing, fails to spawn, or rejects the script. None are tested. If one regresses to `Inconsistent`, every obligation becomes PROVED. A fake solver on `BIL_Z3` that prints `(error "x")\nunsat` would cover the most dangerous case. |
 | `find_solver_binary`: the `PATH` search and env-dir branches | `src/smt.rs:123-145` | This decides which executable gets spawned. The env-override branch is covered, but the `PATH` fallback and the `is_file` checks aren't. |
 | `collect_free_vars` for `Match`, `LetIn`, `Call`, `FieldAccess`, `RecordInit`/`RecordWith`, `List` and `Unary` | `src/expr_utils.rs:22-113` (71 of 88 lines missed) | Capture-avoiding substitution (P0.4) depends on free-variable sets. If a binding form is wrong here, `subst_expr` can capture variables without any error, and the resulting VC is quietly wrong. Today only `Var`, `Binary`, `Quantifier`, `IfFi` and `DoOd` are exercised. |
@@ -71,6 +71,8 @@ A verifier has a different kind of critical path than a web service. Its worst f
 
 | Function/Module | File | Why it matters |
 |---|---|---|
+| CLI flag parsing: silent fallbacks | `src/cli.rs:302-333`, `:63-70`, `:153` | **Confirmed:** `--bmc abc` silently falls back to explicit-state checking, so a different analysis runs than the one requested. That analysis is still sound: a violation still exits 1. `--max-states 1O0` silently becomes 50 000, `--seed x` becomes 42, and unknown flags (`--jsno`, `--bmcc`, `--dump-bytcode`) fall through `_ => {}`. Pinned by three ignored tests in `tests/cli.rs`. *(An earlier draft of this report said `--bmc abc` gave a false `[VERIFIED]`. That came from a shell pipe hiding the exit code. Corrected 2026-10-18.)* |
+| SMT counterexamples contain no model | `src/wp.rs:45-47`, `src/smt.rs` | When only the solver refutes a VC, the counterexample printed is `SMT model: sat`, because the script never asks the solver for a model (`(get-model)`), so no values for `x` are shown. The verdict is correct but the counterexample isn't usable. |
 | `encode_value_canonical` for `List`, `ConceptInstance`, `PartialCall`, `Float` and `Unit` | `src/model_check.rs:77-120` | This is the state-deduplication key. A collision makes BFS skip reachable states, so the checker reports VERIFIED without exploring them. Only systems whose state is `Int`, `Bool` or `Str` are tested. |
 | `model_check_system` (114 of 348 lines missed) | `src/model_check.rs:180` | The fairness and LTL branches beyond the basic `~>` case, and the deadlock reporting, are only partly exercised. |
 | `infer_expr` / `infer_pipe` (137 + 73 lines missed) | `src/types.rs:523`, `:1027` | Pipe stages and less common expression forms in the type checker. A type hole here lets an ill-typed program reach the verifier. |
@@ -98,7 +100,7 @@ A verifier has a different kind of critical path than a web service. Its worst f
 - [ ] ~~`set -e` interaction~~: not applicable.
 - [~] **External commands are mocked.** `BIL_Z3` and the `BIL_<PROVER>_PATH` overrides exist, and `SolverBackend`/`MockSolver` support in-process fakes. But no test uses a fake solver *binary* on the real spawn path to cover the `(error`, crash, garbage-output or ignores-stdin cases.
 - [x] **No command strings are built by splicing.** Solvers and `rustc` are invoked with argv arrays, and the SMT-LIB and Rust emitters escape their input (SEC-1; `tests/security.rs`).
-- [ ] **Unknown values in dispatch tables fail loudly.** The top-level command dispatch does (`_ => print_usage(); 1`). Per-command flag parsing does not: unknown flags and unparseable values are silently ignored (see the P0 row above).
+- [ ] **Unknown values in dispatch tables fail loudly.** The top-level command dispatch does (`_ => print_usage(); 1`). Per-command flag parsing does not: unknown flags and unparseable values are silently ignored (see the P1 row above).
 
 ---
 
@@ -106,9 +108,9 @@ A verifier has a different kind of critical path than a web service. Its worst f
 
 In priority order. Each item names the file it belongs in.
 
-1. **`tests/soundness.rs`: unit tests for every arm of `decide_status`.** Cover the bounded counterexample beating `unsat`, `unsat` alone giving `Proved`, `sat` with no bounded counterexample giving `Refuted`, `Unknown` with samples giving `BoundedOnly`, `Unknown` with 0 samples giving `Unknown`, and `None` with 0 samples giving `Unknown`. These are pure function calls taking about 5 minutes to write, and they pin the verdict lattice.
-2. **New `tests/cli.rs` that runs `env!("CARGO_BIN_EXE_bil")` end to end.** Check that `verify` exits non-zero on the false-lemma probe and exits 0 on `examples/gcd_refinement.bil`. Check that `model-check --bmc abc`, `--max-states 1O0` and an unknown flag each **fail with exit 2 and a message**. This needs a code change first: replace the `unwrap_or(default)` and `_ => {}` fallbacks with errors. Write the test before the fix.
-3. **`tests/security.rs`: a fake-solver binary harness.** Write a temp script on `BIL_Z3` for each case:
+1. ✅ *Done 2026-10-18 (`test_decide_status_covers_every_verdict_arm`).* **`tests/soundness.rs`: unit tests for every arm of `decide_status`.** Cover the bounded counterexample beating `unsat`, `unsat` alone giving `Proved`, `sat` with no bounded counterexample giving `Refuted`, `Unknown` with samples giving `BoundedOnly`, `Unknown` with 0 samples giving `Unknown`, and `None` with 0 samples giving `Unknown`. These are pure function calls taking about 5 minutes to write, and they pin the verdict lattice.
+2. ✅ *Done 2026-10-18; flag fixes still open, pinned by 3 ignored tests.* **New `tests/cli.rs` that runs `env!("CARGO_BIN_EXE_bil")` end to end.** Check that `verify` exits non-zero on the false-lemma probe and exits 0 on `examples/gcd_refinement.bil`. Check that `model-check --bmc abc`, `--max-states 1O0` and an unknown flag each **fail with exit 2 and a message**. This needs a code change first: replace the `unwrap_or(default)` and `_ => {}` fallbacks with errors. Write the test before the fix.
+3. 🟡 *Partly done: `broken_solver_output_is_never_reported_as_proved` in `tests/cli.rs` covers the error-then-unsat, crash, garbage and timeout cases. The stdin-ignoring solver is still open.* **`tests/security.rs`: a fake-solver binary harness.** Write a temp script on `BIL_Z3` for each case:
    - `(error "x")\nunsat` must give `Unknown`, not `Proved`.
    - Exit 139 with no output must give `Unknown`.
    - A sleep longer than the timeout must give `Unknown` within the timeout plus slack.
@@ -147,3 +149,19 @@ cargo llvm-cov --summary-only                              # line/function/regio
 cargo +nightly llvm-cov --branch --summary-only            # branch
 cargo llvm-cov --html && xdg-open target/llvm-cov/html/index.html
 ```
+
+---
+
+## 8. Update — 2026-10-18, after action items 1–2
+
+Added `test_decide_status_covers_every_verdict_arm` (`tests/soundness.rs`) and a new `tests/cli.rs`. The CLI file has 9 passing tests, plus 4 `#[ignore]`d tests that reproduce open bugs: 3 flag-parsing tests, and 1 for exit 0 on `BoundedOnly` after a solver failure. Run the ignored ones with `cargo test --test cli -- --ignored`.
+
+| Module | Before | After |
+|---|---|---|
+| `cli.rs` | 15.6% | 37.2% |
+| `main.rs` | 0% | 100% |
+| `wp.rs` | 88.8% | 91.7% |
+| `smt.rs` | 78.1% | 80.3% |
+| **Total lines** | **73.2%** | **74.2%** |
+
+Totals are from `cargo llvm-cov` on stable. The line count rose from 9303 to 9376 because the `bil` binary itself is now instrumented.
