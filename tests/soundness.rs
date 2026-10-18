@@ -501,3 +501,78 @@ fn test_p3_2_and_p3_3_symbolic_bmc_and_compilation_session() {
     }
 }
 
+
+fn prover_result(verdict: Verdict, stdout: &str, detail: &str) -> bil::smt::ProverResult {
+    bil::smt::ProverResult {
+        prover: "z3".into(),
+        verdict,
+        stdout: stdout.into(),
+        stderr: String::new(),
+        elapsed_ms: 1,
+        detail: detail.into(),
+    }
+}
+
+#[test]
+fn test_decide_status_covers_every_verdict_arm() {
+    use bil::wp::{decide_status, Status};
+
+    let unsat = prover_result(Verdict::Inconsistent, "unsat", "unsat");
+    let sat = prover_result(Verdict::Consistent, "sat\n(model)\n", "sat");
+    let unknown = prover_result(Verdict::Unknown, "unknown", "z3 inconclusive");
+    let skipped = prover_result(Verdict::Skipped, "", "z3 binary not found");
+
+    // A concrete bounded counterexample wins over every SMT verdict, including none.
+    for smt in [Some(&unsat), Some(&sat), Some(&unknown), Some(&skipped), None] {
+        assert_eq!(
+            decide_status(Some("{ x = 1 }".into()), 4, smt),
+            Status::Refuted {
+                counterexample: "{ x = 1 }".into()
+            }
+        );
+    }
+
+    // unsat on the negated VC proves it, with or without samples.
+    for samples in [0, 4] {
+        assert_eq!(
+            decide_status(None, samples, Some(&unsat)),
+            Status::Proved { by: "z3".into() }
+        );
+    }
+
+    // sat on the negated VC refutes it even when bounded search found nothing.
+    assert_eq!(
+        decide_status(None, 4, Some(&sat)),
+        Status::Refuted {
+            counterexample: "SMT model: sat\n(model)".into()
+        }
+    );
+
+    // Inconclusive or missing solver with samples is bounded evidence only.
+    for smt in [Some(&unknown), Some(&skipped), None] {
+        assert_eq!(
+            decide_status(None, 4, smt),
+            Status::BoundedOnly { samples: 4 }
+        );
+    }
+
+    // No samples and no decisive solver answer is Unknown, never Proved.
+    assert_eq!(
+        decide_status(None, 0, Some(&unknown)),
+        Status::Unknown {
+            reason: "z3 inconclusive".into()
+        }
+    );
+    assert_eq!(
+        decide_status(None, 0, Some(&skipped)),
+        Status::Unknown {
+            reason: "z3 binary not found".into()
+        }
+    );
+    assert_eq!(
+        decide_status(None, 0, None),
+        Status::Unknown {
+            reason: "no solver and no samples".into()
+        }
+    );
+}
