@@ -5,6 +5,18 @@ All notable changes to **`bil` (Bounded Invariant Logic)** will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] - 2026-10-17
+
+### Added (P2 Verification Depth & P3 Performance/Architecture)
+- **`P2.1` (`src/wp.rs`)**: Constant-guided boundary sampling (`extract_int_constants` probing $c - 1, c, c + 1$ for every literal constant in functions and obligations), ADT/List/skewed multi-field `ConceptInstance` witness generation, and recursive `do ... od` invariant verification under `let` bindings.
+- **`P2.2` (`src/semantics.rs`, `src/runtime_prelude.rs`)**: Enforce a `100_000`-element cap on materialized integer ranges (`..` and `..=`) across interpreter, bytecode VM, and native AOT execution.
+- **`P2.3` (`src/smt.rs`)**: Escape SMT-LIB2 string literals via `""` doubling, enforce strict sort mapping (`map_type_to_smt_opt`) so unsupported non-nullary parameter sorts return `None` rather than unsoundly mapping to `Int`, and introduce the `SolverBackend` trait (`ProcessSolver`, `MockSolver`).
+- **`P2.4` + `P2.5` (`src/model_check.rs`, `src/cli.rs`, `src/wp.rs`)**: Precompute `q_holds` once per temporal property, eliminate duplicate Tarjan SCC passes in `check_eventually_from`, add `--format json` to `bil verify` and `bil model-check`, add `--seed <N>` to `bil vm`, and achieve zero `cargo clippy --all-targets -- -D warnings` warnings.
+- **`P2.6` + `P2.7` (`docs/SEMANTICS.md`, `tests/differential.rs`, `src/codegen.rs`, `src/runtime_prelude.rs`)**: Document formal language semantics across all four backends and add a 3-way differential equivalence suite verifying identical outputs across `eval`, `vm`, and standalone native AOT binaries (including seeded Xorshift64* GCL nondeterminism).
+- **`P3.1` (`src/smt.rs`)**: Add incremental `(push 1)` / `(pop 1)` SMT batch execution (`run_smt_incremental_batch`) and in-memory `SMT_CACHE`.
+- **`P3.2` (`src/model_check.rs`)**: Add Symbolic Bounded Model Checking (`symbolic_bmc_program`, `symbolic_bmc_system`, `emit_symbolic_bmc_smt2`) unrolling `system` transition relations in SMT-LIB2 up to depth $k$.
+- **`P3.3` (`src/driver.rs`, `src/cli.rs`)**: Add memoized `CompilationSession` so `bil all` parses, validates OntoLogic DAGs, and typechecks once across all pipeline stages.
+
 ## [v0.3.0] - 2026-10-17
 
 ### Fixed (P0 Soundness & Correctness)
