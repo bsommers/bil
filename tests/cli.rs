@@ -226,12 +226,10 @@ fn model_check_truncation_is_not_reported_as_verified() {
     assert!(text.contains("INCOMPLETE"), "{}", text);
 }
 
-// The tests below pin flag-parsing bugs in `src/cli.rs`: bad values and unknown flags
-// are silently ignored, so a different analysis runs than the one requested.
-// Remove `#[ignore]` with the fix.
+// Bad flag values and unknown flags must fail loudly. Silently ignoring them would
+// run a different analysis than the one requested.
 
 #[test]
-#[ignore = "bug: unparseable --bmc value silently falls back to explicit-state checking"]
 fn model_check_rejects_unparseable_bmc_depth() {
     let dir = scratch_dir("bad-bmc");
     let src = write_source(
@@ -243,7 +241,6 @@ fn model_check_rejects_unparseable_bmc_depth() {
 }
 
 #[test]
-#[ignore = "bug: unparseable --max-states value silently becomes 50000"]
 fn model_check_rejects_unparseable_max_states() {
     let dir = scratch_dir("bad-max-states");
     let src = write_source(
@@ -255,7 +252,6 @@ fn model_check_rejects_unparseable_max_states() {
 }
 
 #[test]
-#[ignore = "bug: unknown flags are silently ignored"]
 fn unknown_flags_are_rejected() {
     let src = "examples/gcd_refinement.bil";
     for args in [
@@ -265,5 +261,56 @@ fn unknown_flags_are_rejected() {
     ] {
         let out = bil(&args);
         assert_ne!(out.status.code(), Some(0), "{:?} was accepted", args);
+    }
+}
+
+#[test]
+fn invalid_flag_values_and_missing_values_are_rejected() {
+    let src = "examples/gcd_refinement.bil";
+    let cases: &[&[&str]] = &[
+        &["run", src, "--seed"],
+        &["run", src, "--seed", "x"],
+        &["vm", src, "--seed", "-1"],
+        &["verify", src, "--format", "xml"],
+        &["solve", src, "--prover", "z4"],
+        &["solve", src, "--subsumes", "OnlyOne"],
+        &["dump-ir", src, "--level", "mir"],
+        &["build", src, "-o"],
+    ];
+    for args in cases {
+        let out = bil(args);
+        assert_eq!(out.status.code(), Some(1), "{:?} was accepted", args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("error:"), "{:?} gave no error message: {}", args, err);
+    }
+}
+
+#[test]
+fn valid_flags_are_still_accepted() {
+    let dir = scratch_dir("valid-flags");
+    let sys = write_source(
+        &dir,
+        "system Lin { state n: Int = 0  terminal n == 10  transition n < 10 -> n := n + 1 }\n",
+    );
+    let sys = sys.to_str().unwrap();
+    let ex = "examples/gcd_refinement.bil";
+    let cases: &[&[&str]] = &[
+        &["model-check", sys, "--max-states", "1000", "--seed", "7"],
+        &["model-check", sys, "--format", "json"],
+        &["model-check", sys, "--format", "text"],
+        &["run", ex, "--seed", "7", "--trace"],
+        &["vm", ex, "--seed", "7", "--dump-bytecode"],
+        &["dump-ir", ex, "--level", "lir"],
+        &["check", ex],
+    ];
+    for args in cases {
+        let out = bil(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

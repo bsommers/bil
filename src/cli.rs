@@ -18,7 +18,7 @@ pub fn print_usage() {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
-    eprintln!("  bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
+    eprintln!("  bil solve <file.bil> [--prover z3|cvc5|vampire|auto] [--subsumes Child Parent] [--emit-smt2]");
     eprintln!("  bil verify <file.bil> [--format json]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
     eprintln!("  bil model-check <file.bil> [--max-states N] [--bmc K] [--format json] Exhaustively or symbolically verify system models");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
@@ -36,6 +36,89 @@ fn read_source_file(path: &str) -> Result<String, i32> {
         eprintln!("Failed to read {}: {}", path, e);
         1
     })
+}
+
+/// Returns the value after the flag at `args[*i]`, advancing `i` onto it.
+fn flag_value<'a>(args: &'a [String], i: &mut usize) -> Result<&'a str, i32> {
+    let flag = &args[*i];
+    *i += 1;
+    args.get(*i).map(String::as_str).ok_or_else(|| {
+        eprintln!("error: `{}` requires a value", flag);
+        1
+    })
+}
+
+fn parse_flag<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, i32> {
+    value.parse().map_err(|_| {
+        eprintln!("error: invalid value `{}` for `{}`", value, flag);
+        1
+    })
+}
+
+fn unknown_flag(cmd: &str, flag: &str) -> i32 {
+    eprintln!("error: unknown option `{}` for `bil {}`", flag, cmd);
+    1
+}
+
+fn parse_prover(value: &str) -> Result<Prover, i32> {
+    match value.to_ascii_lowercase().as_str() {
+        "z3" | "cvc5" | "vampire" | "auto" => Ok(Prover::parse(value)),
+        _ => {
+            eprintln!(
+                "error: invalid value `{}` for `--prover` (expected z3, cvc5, vampire or auto)",
+                value
+            );
+            Err(1)
+        }
+    }
+}
+
+/// Options shared by `check`, `verify`, `model-check`, `run` and `all`.
+struct PipelineOpts {
+    seed: u64,
+    trace: bool,
+    max_states: usize,
+    bmc_k: Option<usize>,
+    json_output: bool,
+}
+
+fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> {
+    let mut opts = PipelineOpts {
+        seed: 42,
+        trace: false,
+        max_states: 50_000,
+        bmc_k: None,
+        json_output: false,
+    };
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--trace" => opts.trace = true,
+            "--seed" => opts.seed = parse_flag("--seed", flag_value(args, &mut i)?)?,
+            "--max-states" => {
+                opts.max_states = parse_flag("--max-states", flag_value(args, &mut i)?)?
+            }
+            "--bmc" => opts.bmc_k = Some(parse_flag("--bmc", flag_value(args, &mut i)?)?),
+            s if s.starts_with("--bmc=") => {
+                opts.bmc_k = Some(parse_flag("--bmc", &s["--bmc=".len()..])?)
+            }
+            "--format" => match flag_value(args, &mut i)? {
+                "json" => opts.json_output = true,
+                "text" => opts.json_output = false,
+                other => {
+                    eprintln!(
+                        "error: invalid value `{}` for `--format` (expected json or text)",
+                        other
+                    );
+                    return Err(1);
+                }
+            },
+            "--json" => opts.json_output = true,
+            other => return Err(unknown_flag(cmd, other)),
+        }
+        i += 1;
+    }
+    Ok(opts)
 }
 
 /// Runs the CLI with the provided `args` and returns a process exit code (`0` on success).
@@ -63,11 +146,13 @@ pub fn run_cli(args: &[String]) -> i32 {
             while i < args.len() {
                 match args[i].as_str() {
                     "--dump-bytecode" => dump_bc = true,
-                    "--seed" if i + 1 < args.len() => {
-                        seed = args[i + 1].parse().unwrap_or(42);
-                        i += 1;
+                    "--seed" => {
+                        match flag_value(args, &mut i).and_then(|v| parse_flag("--seed", v)) {
+                            Ok(v) => seed = v,
+                            Err(code) => return code,
+                        }
                     }
-                    _ => {}
+                    other => return unknown_flag(cmd, other),
                 }
                 i += 1;
             }
@@ -102,9 +187,12 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
             let mut i = 3;
             while i < args.len() {
-                if (args[i] == "-o" || args[i] == "--output") && i + 1 < args.len() {
-                    out_bin = PathBuf::from(&args[i + 1]);
-                    i += 1;
+                match args[i].as_str() {
+                    "-o" | "--output" => match flag_value(args, &mut i) {
+                        Ok(v) => out_bin = PathBuf::from(v),
+                        Err(code) => return code,
+                    },
+                    other => return unknown_flag(cmd, other),
                 }
                 i += 1;
             }
@@ -131,7 +219,7 @@ pub fn run_cli(args: &[String]) -> i32 {
         }
         "solve" => {
             if args.len() < 3 {
-                eprintln!("Usage: bil solve <file.bil> [--prover z3|cvc5|auto] [--subsumes Child Parent] [--emit-smt2]");
+                eprintln!("Usage: bil solve <file.bil> [--prover z3|cvc5|vampire|auto] [--subsumes Child Parent] [--emit-smt2]");
                 return 1;
             }
             let path = &args[2];
@@ -141,16 +229,20 @@ pub fn run_cli(args: &[String]) -> i32 {
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--prover" | "-p" if i + 1 < args.len() => {
-                        prover = Prover::parse(&args[i + 1]);
-                        i += 1;
-                    }
-                    "--subsumes" if i + 2 < args.len() => {
+                    "--prover" | "-p" => match flag_value(args, &mut i).and_then(parse_prover) {
+                        Ok(p) => prover = p,
+                        Err(code) => return code,
+                    },
+                    "--subsumes" => {
+                        if i + 2 >= args.len() {
+                            eprintln!("error: `--subsumes` requires two concept names");
+                            return 1;
+                        }
                         subsumes = Some((args[i + 1].clone(), args[i + 2].clone()));
                         i += 2;
                     }
                     "--emit-smt2" => emit_smt2 = true,
-                    _ => {}
+                    other => return unknown_flag(cmd, other),
                 }
                 i += 1;
             }
@@ -223,8 +315,23 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
             let path = &args[2];
             let mut level = "all";
-            if args.len() >= 5 && args[3] == "--level" {
-                level = args[4].as_str();
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--level" => match flag_value(args, &mut i) {
+                        Ok(v @ ("hir" | "vir" | "lir" | "all")) => level = v,
+                        Ok(v) => {
+                            eprintln!(
+                                "error: invalid value `{}` for `--level` (expected hir, vir, lir or all)",
+                                v
+                            );
+                            return 1;
+                        }
+                        Err(code) => return code,
+                    },
+                    other => return unknown_flag(cmd, other),
+                }
+                i += 1;
             }
             let Ok(src) = read_source_file(path) else {
                 return 1;
@@ -293,45 +400,16 @@ pub fn run_cli(args: &[String]) -> i32 {
                 return 1;
             }
             let path = &args[2];
-            let mut seed = 42u64;
-            let mut trace = false;
-            let mut max_states = 50_000usize;
-            let mut bmc_k: Option<usize> = None;
-            let mut json_output = false;
-            let mut i = 3;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--trace" => trace = true,
-                    "--seed" if i + 1 < args.len() => {
-                        seed = args[i + 1].parse().unwrap_or(42);
-                        i += 1;
-                    }
-                    "--max-states" if i + 1 < args.len() => {
-                        max_states = args[i + 1].parse().unwrap_or(50_000);
-                        i += 1;
-                    }
-                    "--bmc" if i + 1 < args.len() => {
-                        if let Ok(k) = args[i + 1].parse::<usize>() {
-                            bmc_k = Some(k);
-                        }
-                        i += 1;
-                    }
-                    s if s.starts_with("--bmc=") => {
-                        if let Ok(k) = s["--bmc=".len()..].parse::<usize>() {
-                            bmc_k = Some(k);
-                        }
-                    }
-                    "--format" if i + 1 < args.len() => {
-                        if args[i + 1] == "json" {
-                            json_output = true;
-                        }
-                        i += 1;
-                    }
-                    "--json" => json_output = true,
-                    _ => {}
-                }
-                i += 1;
-            }
+            let PipelineOpts {
+                seed,
+                trace,
+                max_states,
+                bmc_k,
+                json_output,
+            } = match parse_pipeline_opts(cmd, args) {
+                Ok(opts) => opts,
+                Err(code) => return code,
+            };
 
             let Ok(src) = read_source_file(path) else {
                 return 1;
