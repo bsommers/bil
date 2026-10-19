@@ -4,7 +4,9 @@ use crate::{
     build_native_source, emit_verus_source, lower_ir_source, ontology::transpile_ontologic_sexpr,
     prove_subsumption_source, run_source, run_vm_source,
     smt::{Prover, SubsumptionResult, Verdict},
-    solve_ontology_source, CompilationSession,
+    solve_ontology_source,
+    wp::Status,
+    CompilationSession,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -19,7 +21,8 @@ pub fn print_usage() {
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
     eprintln!("  bil solve <file.bil> [--prover z3|cvc5|vampire|auto] [--subsumes Child Parent] [--emit-smt2]");
-    eprintln!("  bil verify <file.bil> [--format json]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
+    eprintln!("  bil verify <file.bil> [--format json] [--allow-bounded]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
+    eprintln!("                                         (exits 1 if any obligation is only bounded-checked, unless --allow-bounded)");
     eprintln!("  bil model-check <file.bil> [--max-states N] [--bmc K] [--format json] Exhaustively or symbolically verify system models");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
     eprintln!("  bil vm <file.bil> [--seed N] [--dump-bytecode] Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
@@ -80,6 +83,8 @@ struct PipelineOpts {
     max_states: usize,
     bmc_k: Option<usize>,
     json_output: bool,
+    /// Accept bounded-only (sampled, not proved) obligations as passing.
+    allow_bounded: bool,
 }
 
 fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> {
@@ -89,6 +94,7 @@ fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> 
         max_states: 50_000,
         bmc_k: None,
         json_output: false,
+        allow_bounded: false,
     };
     let mut i = 3;
     while i < args.len() {
@@ -114,6 +120,7 @@ fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> 
                 }
             },
             "--json" => opts.json_output = true,
+            "--allow-bounded" => opts.allow_bounded = true,
             other => return Err(unknown_flag(cmd, other)),
         }
         i += 1;
@@ -406,6 +413,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                 max_states,
                 bmc_k,
                 json_output,
+                allow_bounded,
             } = match parse_pipeline_opts(cmd, args) {
                 Ok(opts) => opts,
                 Err(code) => return code,
@@ -465,6 +473,18 @@ pub fn run_cli(args: &[String]) -> i32 {
                     }
                 }
                 if !all_ok {
+                    return 1;
+                }
+                let bounded_only = obligations
+                    .iter()
+                    .filter(|ob| matches!(ob.status, Status::BoundedOnly { .. }))
+                    .count();
+                if bounded_only > 0 && !allow_bounded {
+                    eprintln!(
+                        "error: {} obligation(s) were only checked on bounded samples, not proved; \
+                         pass --allow-bounded to accept bounded evidence",
+                        bounded_only
+                    );
                     return 1;
                 }
             }

@@ -70,20 +70,38 @@ fn usage_errors_exit_nonzero() {
     );
 }
 
+/// Examples whose obligations are all proved exit 0. Examples with bounded-only
+/// obligations exit 1 by default and 0 with `--allow-bounded`.
 #[test]
-fn verify_exits_zero_on_every_example() {
+fn verify_exit_code_on_every_example() {
+    let bounded_only = ["gcd_refinement.bil", "smart_grid.bil"];
     for entry in fs::read_dir("examples").unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "bil") {
-            let out = bil(&["verify", path.to_str().unwrap()]);
-            assert_eq!(
-                out.status.code(),
-                Some(0),
-                "{} should verify:\n{}",
-                path.display(),
-                stdout(&out)
-            );
+        if path.extension().is_none_or(|e| e != "bil") {
+            continue;
         }
+        let file = path.to_str().unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let strict = bil(&["verify", file]);
+        let expected = if bounded_only.contains(&name) { 1 } else { 0 };
+        assert_eq!(
+            strict.status.code(),
+            Some(expected),
+            "{}:\n{}",
+            name,
+            stdout(&strict)
+        );
+        if expected == 1 {
+            assert!(String::from_utf8_lossy(&strict.stderr).contains("--allow-bounded"));
+        }
+        let lenient = bil(&["verify", file, "--allow-bounded"]);
+        assert_eq!(
+            lenient.status.code(),
+            Some(0),
+            "{}:\n{}",
+            name,
+            stdout(&lenient)
+        );
     }
 }
 
@@ -111,7 +129,11 @@ fn verify_exits_nonzero_on_false_lemma_and_never_proves_it() {
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(1), "{}", text);
     for line in text.lines().filter(|l| l.contains("`bogus`")) {
-        assert!(!line.contains("PROVED"), "false lemma reported proved: {}", line);
+        assert!(
+            !line.contains("PROVED"),
+            "false lemma reported proved: {}",
+            line
+        );
     }
 }
 
@@ -127,7 +149,8 @@ fn verify_exits_nonzero_when_only_smt_finds_the_counterexample() {
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(1), "{}", text);
     assert!(
-        text.lines().any(|l| l.contains("Postcondition") && l.contains("[REFUTED]")),
+        text.lines()
+            .any(|l| l.contains("Postcondition") && l.contains("[REFUTED]")),
         "{}",
         text
     );
@@ -151,9 +174,15 @@ fn verify_json_exits_nonzero_on_refuted_obligation() {
 #[test]
 fn broken_solver_output_is_never_reported_as_proved() {
     let cases = [
-        ("smtlib-error-then-unsat", "echo '(error \"boom\")'\necho unsat"),
+        (
+            "smtlib-error-then-unsat",
+            "echo '(error \"boom\")'\necho unsat",
+        ),
         ("crash-no-output", "exit 139"),
-        ("garbage", "echo 'segmentation fault (core dumped) unsatisfiable?'"),
+        (
+            "garbage",
+            "echo 'segmentation fault (core dumped) unsatisfiable?'",
+        ),
         ("timeout", "sleep 5\necho unsat"),
     ];
     for (name, body) in cases {
@@ -173,12 +202,9 @@ fn broken_solver_output_is_never_reported_as_proved() {
     }
 }
 
-/// Current policy: BOUNDED obligations count as passing, so when the solver is
-/// broken and sampling misses the counterexample, a false contract exits 0.
-/// Remove `#[ignore]` once the policy is changed (for example, a `--strict` flag
-/// or a nonzero exit for BoundedOnly).
+/// A broken solver plus sampling that misses the counterexample leaves only
+/// bounded evidence for a false contract, which must not exit 0 by default.
 #[test]
-#[ignore = "policy decision pending: BoundedOnly currently exits 0"]
 fn verify_exits_nonzero_when_solver_fails_and_sampling_misses() {
     let dir = scratch_dir("bounded-only-exit");
     let solver = fake_solver(&dir, "echo '(error \"boom\")'");
@@ -281,7 +307,12 @@ fn invalid_flag_values_and_missing_values_are_rejected() {
         let out = bil(args);
         assert_eq!(out.status.code(), Some(1), "{:?} was accepted", args);
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("error:"), "{:?} gave no error message: {}", args, err);
+        assert!(
+            err.contains("error:"),
+            "{:?} gave no error message: {}",
+            args,
+            err
+        );
     }
 }
 

@@ -24,7 +24,7 @@
 ```bash
 cargo run -- check <file.bil>                    # OntoLogic DAG + contradiction linter + HM typechecker
 cargo run -- solve <file.bil> [--subsumes C P]   # Z3/CVC5 SMT-LIB2 ontology consistency & subsumption prover
-cargo run -- verify <file.bil>                   # Dijkstra WP, Refinement & Verus proof verifier (Bounded + Z3)
+cargo run -- verify <file.bil> [--allow-bounded] # Dijkstra WP, Refinement & Verus proof verifier (Bounded + Z3); exits 1 on bounded-only obligations unless --allow-bounded
 cargo run -- model-check <file.bil>              # Explicit-state + LTL temporal (`~>`, `eventually`) model checker
 cargo run -- run <file.bil> [--seed N] [--trace] # Tree-walk interpreter with nondeterministic trace
 cargo run -- vm <file.bil> [--dump-bytecode]     # Execute Ghost-Erased LIR on the Register/Stack Bytecode VM
