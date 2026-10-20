@@ -5,6 +5,33 @@ All notable changes to **`bil` (Bounded Invariant Logic)** will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] - 2026-10-19
+
+### ⚠️ Breaking
+- **`bil verify` and `bil all` exit `1` when any obligation is only bounded-checked** (`BoundedOnly`: sampled, never proved by a solver). Previously these counted as passing, so a solver failure plus a sampling miss let a false contract exit `0`. Pass the new **`--allow-bounded`** flag to accept bounded evidence. `examples/gcd_refinement.bil` and `examples/smart_grid.bil` now need it. The library's `ProofObligation::verified` field is unchanged.
+- **Unknown CLI options and invalid flag values are now errors** (exit `1`, `error: …` on stderr). Before, they were silently ignored or replaced by defaults: `--bmc abc` ran explicit-state checking instead, `--max-states 1O0` became `50000`, `--prover z4` became `auto`, and typos such as `--jsno` were dropped.
+
+### Fixed (Type Soundness & Backend Parity)
+- **`P0.1` (`src/types.rs`)**: Directional subtyping (`actual <: expected`) in `TypeEnv::unify`, contravariant function parameters, and `join_types` via the ontology's common ancestor for lists, `if`/`match` branches, `==`/`!=` and `in`.
+- **`P0.2` (`src/types.rs`)**: Numeric and comparable type constraints on arithmetic and relational operators (`%` on `Int`; `- * / < <= > >=` on `Int | Float`; `+` on `Int | Float | Str`).
+- **`P0.3` (`src/ir/lir.rs`, `src/vm.rs`, `src/codegen.rs`)**: Top-level `assert` declarations are lowered into LIR and enforced by the bytecode VM and native AOT binaries, not only by `bil run`.
+
+### Added
+- **`P1.1` (`src/expr_utils.rs`)**: Extracted `free_vars`, `subst_expr`, `format_expr_concise` and `extract_int_constants` from `wp.rs`, removing the `smt`/`model_check`/`verus` → `wp` dependency.
+- **`P1.2` (`src/smt.rs`, `src/wp.rs`)**: Multi-obligation `if..fi` and `do..od` functions are discharged in one incremental `(push 1)`/`(pop 1)` solver session.
+- **`P1.3` (`src/runtime_prelude.rs`, `src/codegen.rs`)**: A runtime concept instance store in native AOT binaries, with `is_a` and `choose` support.
+- **`P2.1` (`src/driver.rs`, `src/cli.rs`)**: `bil model-check --bmc <k>` / `--bmc=<k>` runs symbolic bounded model checking, with text and `--json` output.
+- **Fuzzing (`fuzz/`)**: `cargo-fuzz` targets `lex`, `parse` and `check`. Run them with `cargo +nightly fuzz run <target>`.
+- **Tests**: `tests/cli.rs` runs the `bil` binary end to end (exit codes, JSON output, fake solvers that error, crash, print garbage or time out). `tests/soundness.rs` now covers every outcome of `decide_status`. There are now 53 tests, up from 37.
+
+### Changed
+- `Cargo.lock` is now committed for reproducible builds and `cargo audit`.
+- `graphify-out/` is ignored.
+
+### Documentation
+- `docs/TEST_COVERAGE.md`: a `cargo-llvm-cov` baseline (74.2% lines) and a prioritized list of gaps.
+- `.security-reports/scan-2026-10-17.md` and `docs/DEPENDENCY_AUDIT.md`: security scan (grade A) and dependency audit (0 advisories).
+
 ## [v0.4.0] - 2026-10-17
 
 ### Added (P2 Verification Depth & P3 Performance/Architecture)
