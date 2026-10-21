@@ -36,6 +36,18 @@ cargo run -- all <file.bil> [--seed N] [--trace] # Run check + verify + model-ch
 cargo run -- repl                                # Interactive REPL
 ```
 
+## Local CI
+
+There is no hosted CI. Run the gate before pushing:
+
+```bash
+scripts/ci.sh              # clippy -D warnings, tests under coverage (75% line floor), cargo audit
+scripts/ci.sh --fuzz 300   # also fuzz lex/parse/check for 300 s each (nightly + cargo-fuzz)
+git config core.hooksPath .githooks   # optional: run scripts/ci.sh automatically on git push
+```
+
+Requires `cargo-llvm-cov`, `cargo-audit` and z3 (on `PATH` or in `~/.local/bin`).
+
 ## Practical Application Examples (`examples/`)
 
 - [`examples/smart_grid.bil`](examples/smart_grid.bil) — **Industrial IoT & Smart Energy**: BFO `concept` hierarchy, FOL `axiom`s, WP-verified nondeterministic pressure-bleed `do ... od` controller, and `|>` telemetry pipelines.

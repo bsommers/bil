@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Runs the local CI gate before every push. Enable with: git config core.hooksPath .githooks
+# Skip once with: git push --no-verify
+exec "$(git rev-parse --show-toplevel)/scripts/ci.sh"

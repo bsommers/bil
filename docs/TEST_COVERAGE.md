@@ -134,7 +134,7 @@ In priority order. Each item names the file it belongs in.
 
 ---
 
-## 7. CI Wiring (proposed, not yet added)
+## 7. CI Wiring (added 2026-10-21 in `.github/workflows/ci.yml`; original proposal below)
 
 The repo has no CI. A minimal `.github/workflows/ci.yml` would:
 
@@ -146,7 +146,8 @@ To reproduce this report locally:
 
 ```bash
 cargo llvm-cov --summary-only                              # line/function/region
-cargo +nightly llvm-cov --branch --summary-only            # branch
+CARGO_LLVM_COV_TARGET_DIR=target/llvm-cov-nightly \
+  cargo +nightly llvm-cov --branch --summary-only          # branch (separate dir: see §9)
 cargo llvm-cov --html && xdg-open target/llvm-cov/html/index.html
 ```
 
@@ -171,3 +172,21 @@ Totals are from `cargo llvm-cov` on stable. The line count rose from 9303 to 937
 - `ecdb71a`: every subcommand now rejects unknown options, missing values and unparseable values with `error: …` and exit 1.
 - `01f4e4c` (**breaking**): `bil verify` / `bil all` exit 1 when any obligation is `BoundedOnly`; `--allow-bounded` opts out. `examples/gcd_refinement.bil` (8 obligations) and `examples/smart_grid.bil` (3) need it.
 - `tests/cli.rs` has 15 tests and none are ignored.
+
+---
+
+## 9. Correction and CI baseline — 2026-10-21
+
+**The §8 total of 74.2% was wrong.** The nightly `--branch` run had written its profiles into the same `target/llvm-cov-target` directory as the stable runs, and the stable reports merged them in. The result was double-counted lines (9376 lines total instead of about 9300). After deleting that directory, a clean stable run gives:
+
+| Metric | Clean baseline (`066bb88`) |
+|---|---|
+| Lines | **76.2%** (7136 / 9366) |
+| Functions | 77.2% (390 / 505) |
+| Regions | 75.8% |
+
+The result is the same with only z3 and cvc5 installed, which is what CI has. **To avoid this happening again**, give nightly its own target directory with `CARGO_LLVM_COV_TARGET_DIR` (see §7), or run `rm -rf target/llvm-cov-target` before each stable run.
+
+CI (`.github/workflows/ci.yml`) has two jobs:
+- **`test`** runs on every push to `main` and every pull request. It pins z3 4.13.0 and cvc5 1.3.4, then runs `clippy -D warnings` and `cargo llvm-cov --fail-under-lines 75` (the full suite with a 75% floor), uploads `lcov.info`, and runs `cargo audit`.
+- **`fuzz`** runs nightly at 06:17 UTC and on manual dispatch. It fuzzes `lex`, `parse` and `check` for 5 minutes each and uploads any crash artifacts.
