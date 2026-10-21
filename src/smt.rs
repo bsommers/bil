@@ -353,8 +353,13 @@ fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverR
         }
     };
 
+    // Write stdin on its own thread so a solver that stops reading cannot block us
+    // before the wall-clock timeout below starts. Killing the child unblocks it (EPIPE).
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(smt2_input.as_bytes());
+        let input = smt2_input.to_owned();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
     }
 
     let stdout_handle = child.stdout.take().map(|mut s| {
