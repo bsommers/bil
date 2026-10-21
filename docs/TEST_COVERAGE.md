@@ -134,7 +134,7 @@ In priority order. Each item names the file it belongs in.
 
 ---
 
-## 7. CI Wiring (added 2026-10-21 in `.github/workflows/ci.yml`; original proposal below)
+## 7. CI Wiring (original proposal; superseded by local CI, see §9)
 
 The repo has no CI. A minimal `.github/workflows/ci.yml` would:
 
@@ -187,6 +187,8 @@ Totals are from `cargo llvm-cov` on stable. The line count rose from 9303 to 937
 
 The result is the same with only z3 and cvc5 installed, which is what CI has. **To avoid this happening again**, give nightly its own target directory with `CARGO_LLVM_COV_TARGET_DIR` (see §7), or run `rm -rf target/llvm-cov-target` before each stable run.
 
-CI (`.github/workflows/ci.yml`) has two jobs:
-- **`test`** runs on every push to `main` and every pull request. It pins z3 4.13.0 and cvc5 1.3.4, then runs `clippy -D warnings` and `cargo llvm-cov --fail-under-lines 75` (the full suite with a 75% floor), uploads `lcov.info`, and runs `cargo audit`.
-- **`fuzz`** runs nightly at 06:17 UTC and on manual dispatch. It fuzzes `lex`, `parse` and `check` for 5 minutes each and uploads any crash artifacts.
+**CI is local only.** There is deliberately no hosted CI; GitHub Actions is not used. Instead:
+
+- `scripts/ci.sh` runs `clippy -D warnings`, then the full suite under `cargo llvm-cov --fail-under-lines 75`, then `cargo audit`. It uses its own `target/ci-cov` directory, so stray nightly profiles can't skew the totals. It takes about 20 s with a warm cache.
+- `scripts/ci.sh --fuzz [SECS]` also fuzzes `lex`, `parse` and `check` for SECS seconds each (default 300).
+- `.githooks/pre-push` runs `scripts/ci.sh` before every push. Enable it once per clone with `git config core.hooksPath .githooks`.
