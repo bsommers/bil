@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Counterexamples found only by the SMT solver now show concrete values**, for example `Counterexample: { x = 37 }`, in the same form as bounded counterexamples. Before, they printed just `SMT model: sat`. When a refutation comes back `sat`, `bil` runs the same script again with `(get-model)` on the same solver and renders the constants. If no model is available (Vampire, for example), the old text is kept.
 
+### Fixed
+- **Substitution no longer captures variables bound by `match` patterns or `do … od` loops.** For example, `match s { Some(y) -> x + y }` with `x := y` used to become `Some(y) -> y + y`, which silently changed the verification condition. Those binders are now renamed to a fresh name first, as quantifier and `let` binders already were.
+
 ## [v0.5.0] - 2026-10-19
 
 ### ⚠️ Breaking
