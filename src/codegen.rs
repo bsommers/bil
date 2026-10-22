@@ -133,6 +133,7 @@ pub fn emit_native_rust_aot(lir: &LirProgram, hir: &HirProgram) -> String {
             "fn bil_fn_{}(args: Vec<BilVal>, globals: &BTreeMap<String, BilVal>) -> BilVal {{",
             fn_id
         );
+        let _ = writeln!(out, "    let _depth = enter_bil_call({:?});", func.name);
         let _ = writeln!(out, "    let mut env = globals.clone();");
         for (idx, (pname, _)) in func.params.iter().enumerate() {
             let _ = writeln!(
@@ -340,6 +341,7 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
                 let is = try_emit_direct_expr(ie)?;
                 let _ = writeln!(s, "        let mut {} = {};", sanitize_rust_ident(v), is);
             }
+            let _ = writeln!(s, "        let mut _steps = 0usize;");
             let _ = writeln!(s, "        loop {{");
             for (idx, (g, act)) in branches.iter().enumerate() {
                 let gs = try_emit_direct_expr(g)?;
@@ -374,6 +376,7 @@ fn try_emit_direct_expr(expr: &LirExpr) -> Option<String> {
                 let _ = writeln!(s, "            }}");
             }
             let _ = writeln!(s, "            else {{ break; }}");
+            let _ = writeln!(s, "            bil_loop_step(&mut _steps);");
             let _ = writeln!(s, "        }}");
             let ts = try_emit_direct_expr(then_expr)?;
             let _ = writeln!(s, "        {}\n    }}", ts);
@@ -606,6 +609,7 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                     v
                 );
             }
+            let _ = writeln!(s, "{}    let mut _steps = 0usize;", pad);
             let _ = writeln!(s, "{}    loop {{", pad);
             let _ = writeln!(s, "{}        let mut _enabled: Vec<usize> = Vec::new();", pad);
             for (idx, (g, _)) in branches.iter().enumerate() {
@@ -617,6 +621,7 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
                 );
             }
             let _ = writeln!(s, "{}        if _enabled.is_empty() {{ break; }}", pad);
+            let _ = writeln!(s, "{}        bil_loop_step(&mut _steps);", pad);
             let _ = writeln!(
                 s,
                 "{}        let _chosen = _enabled[next_rand_index(_enabled.len())];",

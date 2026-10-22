@@ -174,3 +174,100 @@ fn test_sec_5_solver_binary_env_override_resolution() {
     let _ = fs::remove_file(&dummy_bin);
     assert_eq!(resolved.as_deref(), Some(dummy_bin.as_path()));
 }
+
+/// Builds `src` natively and runs it with a wall-clock limit, returning (exit code, stderr).
+/// A `None` exit code means the binary was killed by a signal (e.g. stack overflow) or hung.
+fn run_native_bounded(name: &str, src: &str) -> (Option<i32>, String) {
+    use std::time::{Duration, Instant};
+    let bin_path = std::env::temp_dir().join(format!("bil_sec_{}_{}", name, std::process::id()));
+    build_native_source(src, &bin_path).expect("native AOT build");
+    let mut child = Command::new(&bin_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run native binary");
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if start.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut err = String::new();
+    use std::io::Read as _;
+    let _ = child.stderr.take().unwrap().read_to_string(&mut err);
+    let _ = fs::remove_file(&bin_path);
+    (status.and_then(|s| s.code()), err)
+}
+
+#[test]
+fn test_sec_6_native_aot_bounds_recursion_like_eval_and_vm() {
+    let rec_src = r#"
+fn inf(n: Int) -> Int =
+  inf(n + 1)
+
+let boom: Int = inf(0)
+"#;
+    let (code, err) = run_native_bounded("recursion", rec_src);
+    assert_eq!(
+        code,
+        Some(101),
+        "expected a clean panic exit, got {code:?}: {err}"
+    );
+    assert!(
+        err.contains("Call stack depth exceeded maximum (64)"),
+        "Unexpected native error: {err}"
+    );
+
+    // Recursion within the limit still works.
+    let ok_src = r#"
+fn down(n: Int) -> Int =
+  if n <= 0 -> 0 [] n > 0 -> down(n - 1) fi
+
+let fine: Int = down(50)
+"#;
+    let (code, err) = run_native_bounded("recursion_ok", ok_src);
+    assert_eq!(code, Some(0), "{err}");
+}
+
+#[test]
+fn test_sec_7_native_aot_bounds_do_od_steps_like_eval() {
+    let loop_src = r#"
+fn spin(n: Int) -> Int =
+  do i = n : i >= 0 -> i := i + 1 od then i
+
+let forever: Int = spin(0)
+"#;
+    let eval_err = run_source(loop_src, 0, false).expect_err("eval must stop the loop");
+    assert!(
+        eval_err.contains("exceeded maximum step bound (100,000)"),
+        "{eval_err}"
+    );
+
+    let (code, err) = run_native_bounded("loop", loop_src);
+    assert_eq!(
+        code,
+        Some(101),
+        "expected a clean panic exit, got {code:?}: {err}"
+    );
+    assert!(
+        err.contains("exceeded maximum step bound (100,000)"),
+        "Unexpected native error: {err}"
+    );
+
+    // A loop that runs exactly 100,000 steps is still allowed, as in eval.
+    let edge_src = r#"
+fn count_to(n: Int) -> Int =
+  do i = 0 : i < n -> i := i + 1 od then i
+
+let edge: Int = count_to(100000)
+"#;
+    assert!(run_source(edge_src, 0, false).is_ok());
+    let (code, err) = run_native_bounded("loop_edge", edge_src);
+    assert_eq!(code, Some(0), "{err}");
+}

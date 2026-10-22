@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - **Source files over 16 MiB are rejected** (`error: … exceeds maximum size`, exit `1`) instead of being read into memory whole. Before, `bil check /dev/zero` or a multi-gigabyte file kept allocating until it ran out of memory.
+- **Native binaries from `bil build` now limit recursion depth and loop steps**, the same way `eval` does: at most 64 nested calls and 100,000 steps per `do … od` loop. Before, runaway recursion crashed the binary with a stack overflow, and a loop that never ended hung it. Both now stop with the same error message as `eval` (Rust panic, exit code `101`).
 
 ## [v0.5.0] - 2026-10-19
 

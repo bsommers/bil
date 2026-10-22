@@ -196,3 +196,42 @@ fn register_instance(val: &BilVal) {
         _ => {}
     }
 }
+
+/// Call-depth and loop-step limits, matching `eval` (`MAX_CALL_DEPTH`) and its `do ... od` bound,
+/// so a runaway native program stops with a clean panic instead of overflowing the OS stack or hanging.
+pub const MAX_NATIVE_CALL_DEPTH: usize = 64;
+pub const MAX_NATIVE_LOOP_STEPS: usize = 100_000;
+
+thread_local! {
+    static NATIVE_CALL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Decrements the call depth when a `bil_fn_*` frame returns (or unwinds).
+pub struct CallDepthGuard;
+
+impl Drop for CallDepthGuard {
+    fn drop(&mut self) {
+        NATIVE_CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+pub fn enter_bil_call(name: &str) -> CallDepthGuard {
+    NATIVE_CALL_DEPTH.with(|d| {
+        if d.get() >= MAX_NATIVE_CALL_DEPTH {
+            panic!(
+                "Call stack depth exceeded maximum ({}) calling '{}'",
+                MAX_NATIVE_CALL_DEPTH, name
+            );
+        }
+        d.set(d.get() + 1);
+    });
+    CallDepthGuard
+}
+
+/// Counts one executed `do ... od` step; call it after a guard fired.
+pub fn bil_loop_step(steps: &mut usize) {
+    *steps += 1;
+    if *steps > MAX_NATIVE_LOOP_STEPS {
+        panic!("GCL 'do ... od' exceeded maximum step bound (100,000)");
+    }
+}
