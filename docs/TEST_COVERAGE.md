@@ -192,3 +192,19 @@ The result is the same with only z3 and cvc5 installed, which is what CI has. **
 - `scripts/ci.sh` runs `clippy -D warnings`, then the full suite under `cargo llvm-cov --fail-under-lines 75`, then `cargo audit`. It uses its own `target/ci-cov` directory, so stray nightly profiles can't skew the totals. It takes about 20 s with a warm cache.
 - `scripts/ci.sh --fuzz [SECS]` also fuzzes `lex`, `parse` and `check` for SECS seconds each (default 300).
 - `.githooks/pre-push` runs `scripts/ci.sh` before every push. Enable it once per clone with `git config core.hooksPath .githooks`.
+
+## 10. Update — 2026-10-21, after action items 4–7
+
+| Metric | Before (§9, `066bb88`) | Now (`a4aa9c4`) |
+|---|---|---|
+| Lines | 76.2% (7136 / 9366) | **80.2%** (7794 / 9716) |
+| Functions | 77.2% (390 / 505) | 80.9% (433 / 535) |
+| Regions | 75.8% | 80.5% |
+| Tests | 54 | 69, all passing |
+
+- **Item 4 (free variables and substitution)** found a real soundness bug. `subst_expr` renamed quantifier and `let` binders to avoid capture, but not `match` pattern binders or `do … od` loop variables, so `match s { Some(y) -> x + y }[x := y]` became `Some(y) -> y + y`. This is fixed in `49c12b3`. `tests/expr_utils.rs` checks the law `fv(e[x:=r]) = fv(e) \ {x} ∪ fv(r)` over every `Expr` variant and binder form.
+- **Item 5 (differential suite)** now covers floats, `=>`/`<=>`, `in`, ranges (including the 100k cap error in all three backends), string `+` and every pipeline built-in. All three backends already agreed. One cosmetic issue: a `Float` with no fractional part prints like an `Int` (`-3.0` shows as `-3`).
+- **Item 6 (canonical state keys)** adds unit tests in `src/model_check.rs` asserting that structurally different values never share a key, plus an end-to-end model check over `List` state. A mutation (removing the list length prefix and closing bracket) makes the test fail, so it can catch real collisions.
+- **Item 7 (IR snapshots)** adds golden files in `tests/snapshots/` for `dump-ir --level all` and `vm --dump-bytecode` on two examples, with no new dependency. Regenerate them with `BIL_UPDATE_SNAPSHOTS=1 cargo test --test ir_snapshots`.
+
+The CI floor is still `--fail-under-lines 75`. Item 8 (raising it) has not been done.
