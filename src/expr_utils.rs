@@ -131,6 +131,149 @@ fn pattern_bound_vars(pat: &Pattern) -> Vec<String> {
     }
 }
 
+/// Free variables of the replacements for those mapped names that occur free in `scope`.
+fn replacement_free_vars(
+    mapping: &BTreeMap<String, Expr>,
+    scope: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    mapping
+        .iter()
+        .filter(|(k, _)| scope.contains(*k))
+        .flat_map(|(_, v)| free_vars(v))
+        .collect()
+}
+
+/// Every variable name in `expr`, bound or free, so a fresh name collides with none of them.
+fn all_vars(expr: &Expr) -> BTreeSet<String> {
+    let mut names = free_vars(expr);
+    match expr {
+        Expr::Quantifier {
+            var, domain, body, ..
+        } => {
+            names.insert(var.clone());
+            names.extend(all_vars(domain));
+            names.extend(all_vars(body));
+        }
+        Expr::LetIn { name, value, body } => {
+            names.insert(name.clone());
+            names.extend(all_vars(value));
+            names.extend(all_vars(body));
+        }
+        Expr::DoOd {
+            inits,
+            invariant,
+            variant,
+            branches,
+            then_expr,
+        } => {
+            for (n, e) in inits {
+                names.insert(n.clone());
+                names.extend(all_vars(e));
+            }
+            for e in invariant.iter().chain(variant.iter()) {
+                names.extend(all_vars(e));
+            }
+            for br in branches {
+                names.extend(all_vars(&br.guard));
+                match &br.body {
+                    GclBody::Expr(e) => names.extend(all_vars(e)),
+                    GclBody::Updates(ups) => {
+                        for (n, e) in ups {
+                            names.insert(n.clone());
+                            names.extend(all_vars(e));
+                        }
+                    }
+                    GclBody::Skip | GclBody::Abort => {}
+                }
+            }
+            names.extend(all_vars(then_expr));
+        }
+        Expr::Match { scrutinee, arms } => {
+            names.extend(all_vars(scrutinee));
+            for arm in arms {
+                names.extend(pattern_bound_vars(&arm.pattern));
+                names.extend(all_vars(&arm.body));
+            }
+        }
+        _ => {}
+    }
+    names
+}
+
+fn rename_pattern_var(pat: &Pattern, old: &str, new: &str) -> Pattern {
+    match pat {
+        Pattern::Var(v) if v == old => Pattern::Var(new.to_string()),
+        Pattern::Variant(ctor, bindings) => Pattern::Variant(
+            ctor.clone(),
+            bindings
+                .iter()
+                .map(|b| if b == old { new.to_string() } else { b.clone() })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Renames loop variable `old` to `new` in a `DoOd`: its init binding, every later use, and
+/// `x := …` update targets. Init expressions before the binding still see the outer `old`.
+fn rename_do_od_var(expr: &Expr, old: &str, new: &str) -> Expr {
+    let Expr::DoOd {
+        inits,
+        invariant,
+        variant,
+        branches,
+        then_expr,
+    } = expr
+    else {
+        return expr.clone();
+    };
+    let mut rename_map = BTreeMap::new();
+    rename_map.insert(old.to_string(), Expr::Var(new.to_string()));
+    let mut bound = false;
+    let new_inits = inits
+        .iter()
+        .map(|(n, e)| {
+            let e = if bound {
+                subst_expr(e, &rename_map)
+            } else {
+                e.clone()
+            };
+            if n == old {
+                bound = true;
+                (new.to_string(), e)
+            } else {
+                (n.clone(), e)
+            }
+        })
+        .collect();
+    let rename_target = |t: &String| if t == old { new.to_string() } else { t.clone() };
+    Expr::DoOd {
+        inits: new_inits,
+        invariant: invariant
+            .as_ref()
+            .map(|i| Box::new(subst_expr(i, &rename_map))),
+        variant: variant
+            .as_ref()
+            .map(|v| Box::new(subst_expr(v, &rename_map))),
+        branches: branches
+            .iter()
+            .map(|br| GuardedBranch {
+                guard: subst_expr(&br.guard, &rename_map),
+                body: match &br.body {
+                    GclBody::Expr(e) => GclBody::Expr(subst_expr(e, &rename_map)),
+                    GclBody::Updates(ups) => GclBody::Updates(
+                        ups.iter()
+                            .map(|(t, e)| (rename_target(t), subst_expr(e, &rename_map)))
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                },
+            })
+            .collect(),
+        then_expr: Box::new(subst_expr(then_expr, &rename_map)),
+    }
+}
+
 fn fresh_var_name(base: &str, avoid: &BTreeSet<String>) -> String {
     let mut idx = 0usize;
     loop {
@@ -225,6 +368,17 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
             branches,
             then_expr,
         } => {
+            // Alpha-rename loop variables that a replacement would otherwise capture.
+            let fvs = free_vars(expr);
+            let repl_fvs = replacement_free_vars(mapping, &fvs);
+            let loop_vars: Vec<String> = inits.iter().map(|(n, _)| n.clone()).collect();
+            if let Some(clash) = loop_vars.iter().find(|n| repl_fvs.contains(*n)) {
+                let mut avoid = repl_fvs;
+                avoid.extend(all_vars(expr));
+                avoid.extend(mapping.keys().cloned());
+                let fresh = fresh_var_name(clash, &avoid);
+                return subst_expr(&rename_do_od_var(expr, clash, &fresh), mapping);
+            }
             let mut sub_inits = Vec::new();
             let mut inner_map = mapping.clone();
             for (v, ie) in inits {
@@ -252,12 +406,28 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
                 .iter()
                 .map(|arm| {
                     let mut arm_map = mapping.clone();
-                    for pv in pattern_bound_vars(&arm.pattern) {
-                        arm_map.remove(&pv);
+                    let binders = pattern_bound_vars(&arm.pattern);
+                    for pv in &binders {
+                        arm_map.remove(pv);
+                    }
+                    // Alpha-rename pattern binders that a replacement would otherwise capture.
+                    let repl_fvs = replacement_free_vars(&arm_map, &free_vars(&arm.body));
+                    let mut pattern = arm.pattern.clone();
+                    let mut body = arm.body.clone();
+                    for pv in binders.iter().filter(|pv| repl_fvs.contains(*pv)) {
+                        let mut avoid = repl_fvs.clone();
+                        avoid.extend(all_vars(&arm.body));
+                        avoid.extend(arm_map.keys().cloned());
+                        avoid.extend(binders.iter().cloned());
+                        let fresh = fresh_var_name(pv, &avoid);
+                        pattern = rename_pattern_var(&pattern, pv, &fresh);
+                        let mut rename_map = BTreeMap::new();
+                        rename_map.insert(pv.clone(), Expr::Var(fresh));
+                        body = subst_expr(&body, &rename_map);
                     }
                     MatchArm {
-                        pattern: arm.pattern.clone(),
-                        body: subst_expr(&arm.body, &arm_map),
+                        pattern,
+                        body: subst_expr(&body, &arm_map),
                     }
                 })
                 .collect(),
