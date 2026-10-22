@@ -302,3 +302,85 @@ fn test_v050_p1_1_p1_2_p2_1_expr_utils_incremental_vc_and_cli_bmc() {
     assert_eq!(exit_code_json, 0);
 }
 
+
+#[test]
+fn test_differential_floats_logic_ranges_strings_and_pipelines() {
+    // Beyond Int/Bool arithmetic: Float ops and comparisons, => / <=>, `in` over ranges and
+    // lists, exclusive/inclusive/empty ranges, string +, and every pipeline built-in.
+    let src = r#"
+        concept Item {
+            id: String
+            w: Int
+            on: Bool
+        }
+
+        let f_add = 1.5 + 2.25
+        let f_mul = 1.5 * -2.0
+        let f_div = 7.0 / 2.0
+        let f_sub = 0.1 - 0.3
+        let f_lt = 1.5 < 2.5
+        let f_eq = 0.5 == 0.5
+        let imp_ff = false => false
+        let imp_tf = true => false
+        let iff_tt = true <=> true
+        let iff_tf = true <=> false
+        let in_range = 3 in 1..5
+        let in_excl = 5 in 1..5
+        let in_incl = 5 in 1..=5
+        let in_list = 4 in [1, 2, 3]
+        let r_excl = 2..6
+        let r_incl = 2..=6
+        let r_empty = 5..2
+        let s_cat = "ab" + "cd"
+        let s_eq = "x" + "y" == "xy"
+        let p_sum = 1..=10 |> where(_ % 2 == 0) |> map(_ * 3) |> sum()
+        let p_count = [5, 1, 4] |> count()
+        let p_all = [2, 4, 6] |> all(_ % 2 == 0)
+        let p_any = [1, 3, 5] |> any(_ > 4)
+        let p_sorted = [Item { id: "b", w: 3, on: true }, Item { id: "a", w: 1, on: false }, Item { id: "c", w: 2, on: true }] |> sort_by(_.w) |> map(_.id)
+        let p_where = [Item { id: "b", w: 3, on: true }, Item { id: "a", w: 1, on: false }] |> where(_.on) |> map(_.w) |> sum()
+    "#;
+    assert_three_way_equivalence("floats_logic_ranges_pipelines", src, 7);
+
+    // Spot-check values so the three backends cannot agree on a wrong answer.
+    let (out, _) = run_source(src, 7, false).expect("eval");
+    let get = |k: &str| {
+        out.iter()
+            .find(|(name, _)| name == k)
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_else(|| panic!("missing {k}"))
+    };
+    assert_eq!(get("f_add"), "3.75");
+    assert_eq!(get("imp_ff"), "true");
+    assert_eq!(get("imp_tf"), "false");
+    assert_eq!(get("in_excl"), "false");
+    assert_eq!(get("in_incl"), "true");
+    assert_eq!(get("r_empty"), "[]");
+    assert_eq!(get("s_cat"), "\"abcd\"");
+    assert_eq!(get("p_sum"), "90");
+    assert_eq!(get("p_sorted"), "[\"a\", \"c\", \"b\"]");
+    assert_eq!(get("p_where"), "3");
+}
+
+#[test]
+fn test_differential_range_cap_is_an_error_in_every_backend() {
+    let src = "let big = 0..200001\nlet n = big |> count()\n";
+    let cap = "exceeds maximum materialized length (100000)";
+
+    let eval_err = run_source(src, 0, false).expect_err("eval must reject the range");
+    assert!(eval_err.to_string().contains(cap), "{eval_err}");
+    let vm_err = run_vm_source(src, 0).expect_err("vm must reject the range");
+    assert!(vm_err.to_string().contains(cap), "{vm_err}");
+
+    let bin_path =
+        std::env::temp_dir().join(format!("bil_diff_test_range_cap_{}", std::process::id()));
+    build_native_source(src, &bin_path).expect("native AOT build");
+    let output = Command::new(&bin_path).output().expect("run native binary");
+    let _ = fs::remove_file(&bin_path);
+    assert!(!output.status.success(), "native binary must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(cap),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
