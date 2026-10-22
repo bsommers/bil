@@ -1,0 +1,60 @@
+=== BIL Bytecode VM Image (2 functions, 4 globals, 58 instructions, 8 ghost items erased) ===
+  .fn classify_pipeline(p):
+    0000: GuardedSelect { branches: [([LoadVar("p"), GetField("pressure"), PushInt(800), Binary(Le)], ReturnExpr([LoadVar("Normal")])), ([LoadVar("p"), GetField("pressure"), PushInt(800), Binary(Gt), LoadVar("p"), GetField("pressure"), PushInt(1200), Binary(Le), Binary(And)], ReturnExpr([LoadVar("p"), GetField("pressure"), PushInt(800), Binary(Sub), Call { func: "ReliefRequired", argc: 1 }])), ([LoadVar("p"), GetField("pressure"), PushInt(1200), Binary(Gt)], ReturnExpr([LoadVar("p"), GetField("id"), Call { func: "EmergencyShutdown", argc: 1 }]))] }
+    0001: Return
+  .fn stabilize_pipeline(p0):
+    0000: GuardedLoop { inits: [("cur", [LoadVar("p0")])], branches: [([LoadVar("cur"), GetField("pressure"), PushInt(800), Binary(Gt)], AssignState([("cur", [LoadVar("cur"), PushInt(0), LoadVar("cur"), GetField("pressure"), PushInt(150), Binary(Sub), Call { func: "max", argc: 2 }, UpdateStruct { fields: ["pressure"] }])])), ([LoadVar("cur"), GetField("pressure"), PushInt(950), Binary(Gt)], AssignState([("cur", [LoadVar("cur"), PushInt(0), LoadVar("cur"), GetField("pressure"), PushInt(250), Binary(Sub), Call { func: "max", argc: 2 }, UpdateStruct { fields: ["pressure"] }])]))], then_code: [LoadVar("cur")] }
+    0001: Return
+  .global valves:
+    0000: PushStr("V-01")
+    0001: PushBool(true)
+    0002: PushInt(100)
+    0003: MakeStruct { concept: "Valve", fields: ["id", "active", "position"] }
+    0004: PushStr("V-02")
+    0005: PushBool(true)
+    0006: PushInt(45)
+    0007: MakeStruct { concept: "Valve", fields: ["id", "active", "position"] }
+    0008: PushStr("V-03")
+    0009: PushBool(false)
+    0010: PushInt(0)
+    0011: MakeStruct { concept: "Valve", fields: ["id", "active", "position"] }
+    0012: MakeList(3)
+    0013: Return
+  .global raw_fleet:
+    0000: PushStr("P-101")
+    0001: PushBool(true)
+    0002: PushInt(1350)
+    0003: PushInt(55)
+    0004: MakeStruct { concept: "Pipeline", fields: ["id", "active", "pressure", "flow_rate"] }
+    0005: PushStr("P-102")
+    0006: PushBool(true)
+    0007: PushInt(650)
+    0008: PushInt(30)
+    0009: MakeStruct { concept: "Pipeline", fields: ["id", "active", "pressure", "flow_rate"] }
+    0010: PushStr("P-103")
+    0011: PushBool(true)
+    0012: PushInt(980)
+    0013: PushInt(40)
+    0014: MakeStruct { concept: "Pipeline", fields: ["id", "active", "pressure", "flow_rate"] }
+    0015: PushStr("P-104")
+    0016: PushBool(false)
+    0017: PushInt(200)
+    0018: PushInt(0)
+    0019: MakeStruct { concept: "Pipeline", fields: ["id", "active", "pressure", "flow_rate"] }
+    0020: MakeList(4)
+    0021: Return
+  .global stabilized_fleet:
+    0000: LoadVar("raw_fleet")
+    0001: PipeStage { stage: "where", arg: Some(Field { base: Placeholder, field: "active" }) }
+    0002: PipeStage { stage: "map", arg: Some(Call { func: "stabilize_pipeline", args: [Placeholder] }) }
+    0003: PipeStage { stage: "sort_by", arg: Some(Field { base: Placeholder, field: "pressure" }) }
+    0004: Return
+  .global total_stabilized_pressure:
+    0000: LoadVar("stabilized_fleet")
+    0001: PipeStage { stage: "map", arg: Some(Field { base: Placeholder, field: "pressure" }) }
+    0002: PipeStage { stage: "sum", arg: None }
+    0003: Return
+valves = [Valve { active: true, id: "V-01", position: 100 }, Valve { active: true, id: "V-02", position: 45 }, Valve { active: false, id: "V-03", position: 0 }]
+raw_fleet = [Pipeline { active: true, flow_rate: 55, id: "P-101", pressure: 1350 }, Pipeline { active: true, flow_rate: 30, id: "P-102", pressure: 650 }, Pipeline { active: true, flow_rate: 40, id: "P-103", pressure: 980 }, Pipeline { active: false, flow_rate: 0, id: "P-104", pressure: 200 }]
+stabilized_fleet = [Pipeline { active: true, flow_rate: 30, id: "P-102", pressure: 650 }, Pipeline { active: true, flow_rate: 40, id: "P-103", pressure: 730 }, Pipeline { active: true, flow_rate: 55, id: "P-101", pressure: 750 }]
+total_stabilized_pressure = 2130

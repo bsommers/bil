@@ -1,0 +1,28 @@
+=== BIL Bytecode VM Image (3 functions, 3 globals, 30 instructions, 9 ghost items erased) ===
+  .fn gcd(a, b):
+    0000: GuardedLoop { inits: [("x", [LoadVar("a")]), ("y", [LoadVar("b")])], branches: [([LoadVar("x"), LoadVar("y"), Binary(Gt)], AssignState([("x", [LoadVar("x"), LoadVar("y"), Binary(Sub)])])), ([LoadVar("y"), LoadVar("x"), Binary(Gt)], AssignState([("y", [LoadVar("y"), LoadVar("x"), Binary(Sub)])]))], then_code: [LoadVar("x")] }
+    0001: Return
+  .fn gcd_val(u, v):
+    0000: GuardedSelect { branches: [([LoadVar("u"), PushInt(0), Binary(Le), LoadVar("v"), PushInt(0), Binary(Lt), Binary(Or)], ReturnExpr([PushInt(0)])), ([LoadVar("u"), PushInt(0), Binary(Gt), LoadVar("v"), PushInt(0), Binary(Eq), Binary(And)], ReturnExpr([LoadVar("u")])), ([LoadVar("u"), PushInt(0), Binary(Gt), LoadVar("v"), PushInt(0), Binary(Gt), Binary(And)], ReturnExpr([LoadVar("v"), LoadVar("u"), LoadVar("v"), Binary(Mod), Call { func: "gcd_val", argc: 2 }]))] }
+    0001: Return
+  .fn min_gcl(a, b):
+    0000: GuardedSelect { branches: [([LoadVar("a"), LoadVar("b"), Binary(Le)], ReturnExpr([LoadVar("a")])), ([LoadVar("b"), LoadVar("a"), Binary(Le)], ReturnExpr([LoadVar("b")]))] }
+    0001: Return
+  .global g1:
+    0000: PushInt(48)
+    0001: PushInt(18)
+    0002: Call { func: "gcd", argc: 2 }
+    0003: Return
+  .global g2:
+    0000: PushInt(1071)
+    0001: PushInt(462)
+    0002: Call { func: "gcd", argc: 2 }
+    0003: Return
+  .global m1:
+    0000: PushInt(42)
+    0001: PushInt(42)
+    0002: Call { func: "min_gcl", argc: 2 }
+    0003: Return
+g1 = 6
+g2 = 21
+m1 = 42

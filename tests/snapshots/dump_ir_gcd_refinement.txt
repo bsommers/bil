@@ -1,0 +1,41 @@
+=== Level 1: HIR (Ontology & Typed Logic IR) ===
+  spec gcd_spec(a: Int, b: Int) -> Int
+  proof gcd_variant_step(x: Int, y: Int) [ghost lemma]
+  fn gcd_val(u: Int, v: Int) -> Int [body: Int]
+  fn gcd(a: Int, b: Int) -> Int refines gcd_spec [body: Int]
+  fn min_gcl(a: Int, b: Int) -> Int [body: Int]
+  let g1: Int
+  let g2: Int
+  let m1: Int
+
+=== Level 2: VIR (Verification & Guarded Transition IR — Spec / Proof / Exec) ===
+  [ghost(spec)] spec gcd_spec -> Int
+  [ghost(proof)] fn `gcd_val` :: if..fi Guard Totality (BB = ∨ Gi) [BOUNDED (81 samples)] => (true => ((((u <= 0) || (v < 0)) || ((u > 0) && (v == 0))) || ((u > 0) && (v > 0))))
+  [ghost(proof)] fn `gcd_val` :: if..fi Branch #1 Postcondition (G1 => wp(S1, Q)) [BOUNDED (81 samples)] => true
+  [ghost(proof)] fn `gcd_val` :: if..fi Branch #2 Postcondition (G2 => wp(S2, Q)) [BOUNDED (81 samples)] => true
+  [ghost(proof)] fn `gcd_val` :: if..fi Branch #3 Postcondition (G3 => wp(S3, Q)) [BOUNDED (81 samples)] => true
+  [ghost(proof)] fn `gcd_variant_step` :: Verus Ghost Proof Lemma ((Requires ∧ Body) => Ensures) [BOUNDED (81 samples)] => (((((x > 0) && (y > 0)) && (x > y)) && (((x - y) + y) == x)) => (((x - y) > 0) && (((x - y) + y) < (x + y))))
+  [ghost(proof)] fn `gcd` :: Refinement Weakened Precondition (Pre_gcd_spec => Pre_impl) [BOUNDED (81 samples)] => (((a > 0) && (b > 0)) => ((a > 0) && (b > 0)))
+  [ghost(proof)] fn `gcd` :: Refinement Strengthened Postcondition (Post_impl => Post_gcd_spec) [BOUNDED (81 samples)] => (((a > 0) && (b > 0)) && ((((result > 0) && ((a % result) == 0)) && ((b % result) == 0)) && (forall d in (1 ..= min(a, b)) : ((((a % d) == 0) && ((b % d) == 0)) => (d <= result))))) => ((((result > 0) && ((a % result) == 0)) && ((b % result) == 0)) && (forall d in (1 ..= min(a, b)) : ((((a % d) == 0) && ((b % d) == 0)) => (d <= result))))
+  [ghost(proof)] fn `gcd` :: do..od Invariant Initialization (Pre => I) [BOUNDED (81 samples)] => (((a > 0) && (b > 0)) => (((a > 0) && (b > 0)) && (gcd_val(a, b) == gcd_val(a, b))))
+  [ghost(proof)] fn `gcd` :: do..od Invariant Preservation Branch #1 (I ∧ G1 => wp(S1, I)) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (x > y))) => ((((x - y) > 0) && (y > 0)) && (gcd_val((x - y), y) == gcd_val(a, b))))
+  [ghost(proof)] fn `gcd` :: do..od Variant Non-Negativity Branch #1 (I ∧ G1 => V >= 0) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (x > y))) => ((x + y) >= 0))
+  [ghost(proof)] fn `gcd` :: do..od Variant Strict Decrease Branch #1 (I ∧ G1 => wp(S1, V < V0)) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (x > y))) => (((x - y) + y) < (x + y)))
+  [ghost(proof)] fn `gcd` :: do..od Invariant Preservation Branch #2 (I ∧ G2 => wp(S2, I)) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (y > x))) => (((x > 0) && ((y - x) > 0)) && (gcd_val(x, (y - x)) == gcd_val(a, b))))
+  [ghost(proof)] fn `gcd` :: do..od Variant Non-Negativity Branch #2 (I ∧ G2 => V >= 0) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (y > x))) => ((x + y) >= 0))
+  [ghost(proof)] fn `gcd` :: do..od Variant Strict Decrease Branch #2 (I ∧ G2 => wp(S2, V < V0)) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && (y > x))) => ((x + (y - x)) < (x + y)))
+  [ghost(proof)] fn `gcd` :: do..od Exit Correctness (I ∧ ¬BB => Post) [BOUNDED (6561 samples)] => ((((a > 0) && (b > 0)) && ((((x > 0) && (y > 0)) && (gcd_val(x, y) == gcd_val(a, b))) && !(((x > y) || (y > x))))) => ((((x > 0) && ((a % x) == 0)) && ((b % x) == 0)) && (forall d in (1 ..= min(a, b)) : ((((a % d) == 0) && ((b % d) == 0)) => (d <= x)))))
+  [ghost(proof)] fn `min_gcl` :: if..fi Guard Totality (BB = ∨ Gi) [BOUNDED (81 samples)] => (true => ((a <= b) || (b <= a)))
+  [ghost(proof)] fn `min_gcl` :: if..fi Branch #1 Postcondition (G1 => wp(S1, Q)) [BOUNDED (81 samples)] => ((a <= b) => (((a <= a) && (a <= b)) && ((a == a) || (a == b))))
+  [ghost(proof)] fn `min_gcl` :: if..fi Branch #2 Postcondition (G2 => wp(S2, Q)) [BOUNDED (81 samples)] => ((b <= a) => (((b <= a) && (b <= b)) && ((b == a) || (b == b))))
+  [exec] fn gcd_val -> Int
+  [exec] fn gcd -> Int
+  [exec] fn min_gcl -> Int
+
+=== Level 3: LIR (Ghost-Erased Executable Control & Dataflow IR — 9 ghost items erased) ===
+  exec_fn gcd_val(u: Int, v: Int) -> Int
+  exec_fn gcd(a: Int, b: Int) -> Int
+  exec_fn min_gcl(a: Int, b: Int) -> Int
+  global g1: Int
+  global g2: Int
+  global m1: Int

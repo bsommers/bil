@@ -1,0 +1,41 @@
+=== Level 1: HIR (Ontology & Typed Logic IR) ===
+  concept Continuant <: Entity {  }
+  concept Entity {  }
+  concept Equipment <: MaterialEntity <: Continuant <: Entity { active: Bool, id: String }
+  concept MaterialEntity <: Continuant <: Entity {  }
+  concept Pipeline <: Equipment <: MaterialEntity <: Continuant <: Entity { active: Bool, flow_rate: Int, id: String, pressure: Int }
+  concept Valve <: Equipment <: MaterialEntity <: Continuant <: Entity { active: Bool, id: String, position: Int }
+  axiom ValveBounds : Bool
+  axiom ActivePipelineSafety : Bool
+  fn classify_pipeline(p: Pipeline) -> SafetyStatus [body: SafetyStatus]
+  fn stabilize_pipeline(p0: Pipeline) -> Pipeline [body: Pipeline]
+  let valves: List<Valve>
+  let raw_fleet: List<Pipeline>
+  let stabilized_fleet: List<Pipeline>
+  let total_stabilized_pressure: Int
+
+=== Level 2: VIR (Verification & Guarded Transition IR — Spec / Proof / Exec) ===
+  [ghost(spec)] axiom ValveBounds : Bool
+  [ghost(spec)] axiom ActivePipelineSafety : Bool
+  [ghost(proof)] fn `classify_pipeline` :: if..fi Guard Totality (BB = ∨ Gi) [BOUNDED (18 samples)] => ((p.pressure >= 0) => (((p.pressure <= 800) || ((p.pressure > 800) && (p.pressure <= 1200))) || (p.pressure > 1200)))
+  [ghost(proof)] fn `classify_pipeline` :: if..fi Branch #1 Postcondition (G1 => wp(S1, Q)) [BOUNDED (18 samples)] => (((p.pressure >= 0) && (p.pressure <= 800)) => ((p.pressure > 1200) => (Normal == EmergencyShutdown(p.id))))
+  [ghost(proof)] fn `classify_pipeline` :: if..fi Branch #2 Postcondition (G2 => wp(S2, Q)) [BOUNDED (18 samples)] => (((p.pressure >= 0) && ((p.pressure > 800) && (p.pressure <= 1200))) => ((p.pressure > 1200) => (ReliefRequired((p.pressure - 800)) == EmergencyShutdown(p.id))))
+  [ghost(proof)] fn `classify_pipeline` :: if..fi Branch #3 Postcondition (G3 => wp(S3, Q)) [BOUNDED (18 samples)] => (((p.pressure >= 0) && (p.pressure > 1200)) => ((p.pressure > 1200) => (EmergencyShutdown(p.id) == EmergencyShutdown(p.id))))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Invariant Initialization (Pre => I) [BOUNDED (16 samples)] => ((p0.pressure >= 0) => (p0.pressure >= 0))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Invariant Preservation Branch #1 (I ∧ G1 => wp(S1, I)) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 800))) => (max(0, (cur.pressure - 150)) >= 0))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Variant Non-Negativity Branch #1 (I ∧ G1 => V >= 0) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 800))) => (cur.pressure >= 0))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Variant Strict Decrease Branch #1 (I ∧ G1 => wp(S1, V < V0)) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 800))) => (max(0, (cur.pressure - 150)) < cur.pressure))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Invariant Preservation Branch #2 (I ∧ G2 => wp(S2, I)) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 950))) => (max(0, (cur.pressure - 250)) >= 0))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Variant Non-Negativity Branch #2 (I ∧ G2 => V >= 0) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 950))) => (cur.pressure >= 0))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Variant Strict Decrease Branch #2 (I ∧ G2 => wp(S2, V < V0)) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && (cur.pressure > 950))) => (max(0, (cur.pressure - 250)) < cur.pressure))
+  [ghost(proof)] fn `stabilize_pipeline` :: do..od Exit Correctness (I ∧ ¬BB => Post) [BOUNDED (324 samples)] => (((p0.pressure >= 0) && ((cur.pressure >= 0) && !(((cur.pressure > 800) || (cur.pressure > 950))))) => ((cur.pressure <= 800) && (cur.pressure >= 0)))
+  [exec] fn classify_pipeline -> SafetyStatus
+  [exec] fn stabilize_pipeline -> Pipeline
+
+=== Level 3: LIR (Ghost-Erased Executable Control & Dataflow IR — 8 ghost items erased) ===
+  exec_fn classify_pipeline(p: Pipeline) -> SafetyStatus
+  exec_fn stabilize_pipeline(p0: Pipeline) -> Pipeline
+  global valves: List<Valve>
+  global raw_fleet: List<Pipeline>
+  global stabilized_fleet: List<Pipeline>
+  global total_stabilized_pressure: Int
