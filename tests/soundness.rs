@@ -548,6 +548,19 @@ fn test_decide_status_covers_every_verdict_arm() {
         }
     );
 
+    // A sat answer that carries a model is reported as concrete assignments.
+    let sat_model = prover_result(
+        Verdict::Consistent,
+        "sat\n(\n  (define-fun x () Int\n    (- 37))\n)\n",
+        "sat",
+    );
+    assert_eq!(
+        decide_status(None, 4, Some(&sat_model)),
+        Status::Refuted {
+            counterexample: "{ x = -37 }".into()
+        }
+    );
+
     // Inconclusive or missing solver with samples is bounded evidence only.
     for smt in [Some(&unknown), Some(&skipped), None] {
         assert_eq!(
@@ -575,4 +588,25 @@ fn test_decide_status_covers_every_verdict_arm() {
             reason: "no solver and no samples".into()
         }
     );
+}
+
+#[test]
+fn test_parse_smt_model_renders_constants_like_bounded_counterexamples() {
+    use bil::smt::parse_smt_model;
+
+    // z3 layout: values on their own line, negatives as (- n), reals as (/ a b).
+    let z3 = "sat\n(\n  (define-fun x () Int\n    (- 37))\n  (define-fun r () Real\n    (/ 3.0 4.0))\n  (define-fun b () Bool\n    false)\n)\n";
+    assert_eq!(
+        parse_smt_model(z3).as_deref(),
+        Some("{ b = false, r = 3.0/4.0, x = -37 }")
+    );
+
+    // cvc5 layout, plus uninterpreted predicates with arguments, which are not inputs.
+    let cvc5 = "sat\n(\n(define-fun is_Person ((_arg_1 Entity)) Bool false)\n(define-fun y () Int 5)\n)\n";
+    assert_eq!(parse_smt_model(cvc5).as_deref(), Some("{ y = 5 }"));
+
+    // No model at all (plain sat, unknown, or garbage) yields None.
+    assert_eq!(parse_smt_model("sat\n"), None);
+    assert_eq!(parse_smt_model("sat\n(model)\n"), None);
+    assert_eq!(parse_smt_model("(error \"model is not available\")"), None);
 }

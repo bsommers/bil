@@ -3,9 +3,9 @@ use crate::eval::{Interpreter, Value};
 pub use crate::expr_utils::{extract_int_constants, format_expr_concise, free_vars, subst_expr};
 use crate::ontology::OntologyRegistry;
 use crate::smt::{
-    emit_vc_smt2, emit_vc_smt2_header, evaluate_vc_agreement, expr_to_smt,
-    run_smt_incremental_batch_with_prover, run_smt_prover, AgreementOutcome, Prover, ProverResult,
-    Verdict,
+    attach_model, emit_vc_smt2, emit_vc_smt2_header, evaluate_vc_agreement, expr_to_smt,
+    parse_smt_model, run_smt_incremental_batch_with_prover, run_smt_prover, AgreementOutcome,
+    Prover, ProverResult, Verdict,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,7 +43,8 @@ pub fn decide_status(
             by: prover.to_string(),
         },
         Some((Verdict::Consistent, _, stdout, _)) => Status::Refuted {
-            counterexample: format!("SMT model: {}", stdout.trim()),
+            counterexample: parse_smt_model(stdout)
+                .unwrap_or_else(|| format!("SMT model: {}", stdout.trim())),
         },
         Some((Verdict::Skipped, _, _, _)) | Some((Verdict::Unknown, _, _, _)) | None
             if samples > 0 =>
@@ -244,7 +245,7 @@ fn build_vc_obligation(
     let smt_res = if run_smt {
         smt2_script
             .as_ref()
-            .map(|script| run_smt_prover(Prover::Auto, script))
+            .map(|script| attach_model(run_smt_prover(Prover::Auto, script), script))
     } else {
         None
     };
@@ -396,6 +397,10 @@ fn build_vc_obligations_batch(
                 elapsed_ms: 0,
                 detail: format!("{} incremental batch ({})", prover_name, verdict),
             };
+            let smt_res = match &smt2_script {
+                Some(script) => attach_model(smt_res, script),
+                None => smt_res,
+            };
             let agr = evaluate_vc_agreement(bounded_ok, smt_res.verdict);
             let status = decide_status(ce.clone(), samples, Some(&smt_res));
             let verified = matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
@@ -538,7 +543,9 @@ fn verify_program_inner(
                         let smt_res = if run_smt {
                             smt2_script
                                 .as_ref()
-                                .map(|script| run_smt_prover(Prover::Auto, script))
+                                .map(|script| {
+                                    attach_model(run_smt_prover(Prover::Auto, script), script)
+                                })
                         } else {
                             None
                         };
@@ -732,7 +739,9 @@ fn verify_program_inner(
                             let smt_res = if run_smt {
                                 smt2_script
                                     .as_ref()
-                                    .map(|script| run_smt_prover(Prover::Auto, script))
+                                    .map(|script| {
+                                    attach_model(run_smt_prover(Prover::Auto, script), script)
+                                })
                             } else {
                                 None
                             };

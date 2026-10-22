@@ -154,6 +154,13 @@ fn verify_exits_nonzero_when_only_smt_finds_the_counterexample() {
         "{}",
         text
     );
+    // The solver's model is shown as concrete values, not just "sat".
+    assert!(
+        text.contains("x = 37") || text.contains("x = -37"),
+        "{}",
+        text
+    );
+    assert!(!text.contains("SMT model: sat"), "{}", text);
 }
 
 #[test]

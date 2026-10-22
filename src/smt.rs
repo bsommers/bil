@@ -284,6 +284,129 @@ pub fn run_smt_incremental_batch_with_prover(
     }
 }
 
+/// Re-runs a refutation script that came back `sat` with `(get-model)` appended, on the same solver,
+/// and replaces `res.stdout` with the model so `decide_status` can show concrete values.
+/// The original script is left untouched (`(get-model)` after `unsat` is an error on z3).
+pub fn attach_model(mut res: ProverResult, script: &str) -> ProverResult {
+    if res.verdict != Verdict::Consistent {
+        return res;
+    }
+    let with_model = format!("{}(get-model)\n", script);
+    let model_res = run_smt_prover(Prover::parse(&res.prover), &with_model);
+    if model_res.verdict == Verdict::Consistent && parse_smt_model(&model_res.stdout).is_some() {
+        res.stdout = model_res.stdout;
+    }
+    res
+}
+
+/// Renders the constants of an SMT-LIB2 `(get-model)` answer as `{ a = 1, b = -2 }`, the same shape as
+/// bounded counterexamples. Functions with arguments (ontology predicates, fields) are skipped.
+/// Returns `None` when the output holds no constant definitions.
+pub fn parse_smt_model(output: &str) -> Option<String> {
+    let tokens = tokenize_sexpr(output);
+    let mut pos = 0;
+    let mut assignments = std::collections::BTreeMap::new();
+    while pos < tokens.len() {
+        if tokens[pos] == "(" && tokens.get(pos + 1).map(String::as_str) == Some("define-fun") {
+            let (form, next) = read_sexpr(&tokens, pos);
+            pos = next;
+            if let SExpr::List(items) = form {
+                // (define-fun NAME () SORT VALUE)
+                if let [_, SExpr::Atom(name), SExpr::List(args), _, value] = items.as_slice() {
+                    if args.is_empty() {
+                        assignments
+                            .insert(name.trim_matches('|').to_string(), render_smt_value(value));
+                    }
+                }
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    if assignments.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = assignments
+        .iter()
+        .map(|(k, v)| format!("{} = {}", k, v))
+        .collect();
+    Some(format!("{{ {} }}", parts.join(", ")))
+}
+
+enum SExpr {
+    Atom(String),
+    List(Vec<SExpr>),
+}
+
+fn tokenize_sexpr(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c == '(' || c == ')' {
+            tokens.push(c.to_string());
+            chars.next();
+        } else if c.is_whitespace() {
+            chars.next();
+        } else if c == '"' || c == '|' {
+            let mut tok = String::new();
+            tok.push(c);
+            chars.next();
+            for d in chars.by_ref() {
+                tok.push(d);
+                if d == c {
+                    break;
+                }
+            }
+            tokens.push(tok);
+        } else {
+            let mut tok = String::new();
+            while let Some(&d) = chars.peek() {
+                if d == '(' || d == ')' || d.is_whitespace() {
+                    break;
+                }
+                tok.push(d);
+                chars.next();
+            }
+            tokens.push(tok);
+        }
+    }
+    tokens
+}
+
+fn read_sexpr(tokens: &[String], pos: usize) -> (SExpr, usize) {
+    if tokens[pos] != "(" {
+        return (SExpr::Atom(tokens[pos].clone()), pos + 1);
+    }
+    let mut items = Vec::new();
+    let mut i = pos + 1;
+    while i < tokens.len() && tokens[i] != ")" {
+        let (item, next) = read_sexpr(tokens, i);
+        items.push(item);
+        i = next;
+    }
+    (SExpr::List(items), i + 1)
+}
+
+fn render_smt_value(v: &SExpr) -> String {
+    match v {
+        SExpr::Atom(a) => a.clone(),
+        SExpr::List(items) => match items.as_slice() {
+            [SExpr::Atom(op), x] if op == "-" => format!("-{}", render_smt_value(x)),
+            [SExpr::Atom(op), a, b] if op == "/" => {
+                format!("{}/{}", render_smt_value(a), render_smt_value(b))
+            }
+            _ => format!(
+                "({})",
+                items
+                    .iter()
+                    .map(render_smt_value)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        },
+    }
+}
+
 fn run_single_binary(bin_name: &str, args: &[&str], smt2_input: &str) -> ProverResult {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
