@@ -352,3 +352,45 @@ fn valid_flags_are_still_accepted() {
         );
     }
 }
+
+#[test]
+fn oversized_source_file_is_rejected_before_reading_it_all() {
+    let dir = scratch_dir("oversized");
+    let path = dir.join("huge.bil");
+    // 16 MiB of comment plus one byte: just over the cap.
+    let mut src = String::from("// ");
+    src.push_str(&"a".repeat(16 * 1024 * 1024 - 2));
+    fs::write(&path, src).unwrap();
+    let out = bil(&["check", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("exceeds maximum size"), "{err}");
+}
+
+#[test]
+fn endless_input_stream_is_rejected_instead_of_exhausting_memory() {
+    let out = Command::new(BIL)
+        .args(["check", "/dev/zero"])
+        .output()
+        .expect("spawn bil");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("exceeds maximum size"), "{err}");
+}
+
+#[test]
+fn source_at_the_size_cap_is_still_accepted() {
+    let dir = scratch_dir("at-cap");
+    let path = dir.join("big.bil");
+    let mut src = String::from("let x = 1\n// ");
+    src.push_str(&"a".repeat(16 * 1024 * 1024 - src.len()));
+    assert_eq!(src.len(), 16 * 1024 * 1024);
+    fs::write(&path, src).unwrap();
+    let out = bil(&["check", path.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

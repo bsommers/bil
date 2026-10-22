@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Substitution no longer captures variables bound by `match` patterns or `do … od` loops.** For example, `match s { Some(y) -> x + y }` with `x := y` used to become `Some(y) -> y + y`, which silently changed the verification condition. Those binders are now renamed to a fresh name first, as quantifier and `let` binders already were.
 
+### Security
+- **Source files over 16 MiB are rejected** (`error: … exceeds maximum size`, exit `1`) instead of being read into memory whole. Before, `bil check /dev/zero` or a multi-gigabyte file kept allocating until it ran out of memory.
+
 ## [v0.5.0] - 2026-10-19
 
 ### ⚠️ Breaking

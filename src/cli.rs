@@ -34,11 +34,30 @@ pub fn print_usage() {
     eprintln!("  bil repl                               Start interactive bil shell");
 }
 
+/// Largest source file `bil` will read. Reading stops one byte past it, so a huge file or an
+/// endless stream such as `/dev/zero` is rejected without exhausting memory.
+const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+
 fn read_source_file(path: &str) -> Result<String, i32> {
-    fs::read_to_string(path).map_err(|e| {
+    use std::io::Read as _;
+    let fail = |e: std::io::Error| {
         eprintln!("Failed to read {}: {}", path, e);
         1
-    })
+    };
+    let file = fs::File::open(path).map_err(fail)?;
+    let mut buf = String::new();
+    let n = file
+        .take(MAX_SOURCE_BYTES + 1)
+        .read_to_string(&mut buf)
+        .map_err(fail)?;
+    if n as u64 > MAX_SOURCE_BYTES {
+        eprintln!(
+            "Failed to read {}: file exceeds maximum size ({} bytes)",
+            path, MAX_SOURCE_BYTES
+        );
+        return Err(1);
+    }
+    Ok(buf)
 }
 
 /// Returns the value after the flag at `args[*i]`, advancing `i` onto it.
