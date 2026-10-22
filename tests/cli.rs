@@ -394,3 +394,73 @@ fn source_at_the_size_cap_is_still_accepted() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+const TRIVIAL_PROGRAM: &str = "let x: Int = 1\n";
+
+#[test]
+fn build_rejects_a_rustc_override_that_is_not_a_file() {
+    let dir = scratch_dir("rustc-missing");
+    let src = write_source(&dir, TRIVIAL_PROGRAM);
+    let out_bin = dir.join("out");
+    for (var, value) in [
+        ("BIL_RUSTC_PATH", dir.join("no-such-rustc")),
+        ("RUSTC", dir.clone()), // a directory is not a compiler
+    ] {
+        let out = Command::new(BIL)
+            .args([
+                "build",
+                src.to_str().unwrap(),
+                "-o",
+                out_bin.to_str().unwrap(),
+            ])
+            .env_remove("BIL_RUSTC_PATH")
+            .env_remove("RUSTC")
+            .env(var, &value)
+            .output()
+            .expect("spawn bil");
+        assert_eq!(out.status.code(), Some(1), "{var}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(var) && err.contains("is not a file"),
+            "{var}: {err}"
+        );
+        assert!(!out_bin.exists(), "{var}: no binary may be produced");
+    }
+}
+
+#[test]
+fn build_trims_whitespace_around_the_rustc_override() {
+    let dir = scratch_dir("rustc-trim");
+    let src = write_source(&dir, TRIVIAL_PROGRAM);
+    let marker = dir.join("invoked");
+    let fake = fake_rustc(&dir, &marker);
+    let out = Command::new(BIL)
+        .args([
+            "build",
+            src.to_str().unwrap(),
+            "-o",
+            dir.join("out").to_str().unwrap(),
+        ])
+        .env_remove("RUSTC")
+        .env("BIL_RUSTC_PATH", format!("  {}\n", fake.display()))
+        .output()
+        .expect("spawn bil");
+    assert!(
+        marker.exists(),
+        "padded override must still run the fake rustc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A stand-in compiler that records it ran and then fails.
+fn fake_rustc(dir: &Path, marker: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-rustc");
+    fs::write(
+        &path,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - **Source files over 16 MiB are rejected** (`error: … exceeds maximum size`, exit `1`) instead of being read into memory whole. Before, `bil check /dev/zero` or a multi-gigabyte file kept allocating until it ran out of memory.
 - **Native binaries from `bil build` now limit recursion depth and loop steps**, the same way `eval` does: at most 64 nested calls and 100,000 steps per `do … od` loop. Before, runaway recursion crashed the binary with a stack overflow, and a loop that never ended hung it. Both now stop with the same error message as `eval` (Rust panic, exit code `101`).
+- **`BIL_RUSTC_PATH` and `RUSTC` overrides are validated.** Surrounding whitespace is trimmed, and a value that names a path must be an existing file. Otherwise `bil build` stops with `BIL_RUSTC_PATH=… is not a file` before writing anything, instead of trying to run it. A bare command name such as `RUSTC=rustc` is still looked up on `PATH`.
 
 ## [v0.5.0] - 2026-10-19
 

@@ -779,6 +779,27 @@ fn emit_lir_val_expr(expr: &LirExpr, indent: usize) -> String {
 }
 
 /// Compiles a Ghost-Erased [`LirProgram`] to a native ELF executable via `rustc -O`.
+/// Picks the compiler for native builds: `BIL_RUSTC_PATH`, then `RUSTC`, then `rustc` on `PATH`.
+/// An override is trimmed; one that names a path (contains `/`) must be an existing file, or the
+/// build fails rather than silently running a different compiler. A bare name such as
+/// `RUSTC=rustc` is still looked up on `PATH`.
+fn resolve_rustc() -> Result<String, String> {
+    for var in ["BIL_RUSTC_PATH", "RUSTC"] {
+        let Ok(raw) = std::env::var(var) else {
+            continue;
+        };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if value.contains('/') && !Path::new(value).is_file() {
+            return Err(format!("{}={} is not a file", var, value));
+        }
+        return Ok(value.to_string());
+    }
+    Ok("rustc".to_string())
+}
+
 pub fn compile_native_binary(
     lir: &LirProgram,
     hir: &HirProgram,
@@ -789,6 +810,7 @@ pub fn compile_native_binary(
 
     static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    let rustc_bin = resolve_rustc()?;
     let start = Instant::now();
     let rust_src = emit_native_rust_aot(lir, hir);
     let seq = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -824,9 +846,6 @@ pub fn compile_native_binary(
         })?;
     }
 
-    let rustc_bin = std::env::var("BIL_RUSTC_PATH")
-        .or_else(|_| std::env::var("RUSTC"))
-        .unwrap_or_else(|_| "rustc".to_string());
     let status = Command::new(&rustc_bin)
         .arg("-O")
         .arg("--edition")
