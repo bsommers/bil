@@ -902,3 +902,121 @@ pub fn symbolic_bmc_program(
     reports
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    fn key(v: &Value) -> String {
+        let mut out = String::new();
+        encode_value_canonical(v, &mut out);
+        out
+    }
+
+    fn list(items: Vec<Value>) -> Value {
+        Value::List(Rc::new(items))
+    }
+
+    fn record(concept: &str, fields: &[(&str, Value)]) -> Value {
+        Value::ConceptInstance {
+            concept: concept.into(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        }
+    }
+
+    /// Structurally different values must never share a state key, or BFS would treat an
+    /// unexplored state as visited and report VERIFIED without checking it.
+    #[test]
+    fn canonical_keys_are_distinct_for_distinct_values() {
+        let values = vec![
+            Value::Int(1),
+            Value::Int(12),
+            Value::Float(1.0),
+            Value::Float(0.0),
+            Value::Float(-0.0),
+            Value::Bool(true),
+            Value::Str("1".into()),
+            Value::Str("1;".into()),
+            Value::Str("".into()),
+            Value::Unit,
+            list(vec![]),
+            list(vec![Value::Int(1), Value::Int(2)]),
+            list(vec![Value::Int(12)]),
+            list(vec![Value::Int(1), list(vec![Value::Int(2)])]),
+            list(vec![list(vec![Value::Int(1)]), Value::Int(2)]),
+            list(vec![list(vec![Value::Int(1), Value::Int(2)])]),
+            list(vec![list(vec![]), list(vec![])]),
+            list(vec![list(vec![list(vec![])])]),
+            record("P", &[("a", Value::Int(1)), ("b", Value::Int(2))]),
+            record("P", &[("a", Value::Int(2)), ("b", Value::Int(1))]),
+            record("P", &[("ab", Value::Int(1))]),
+            record("Q", &[("a", Value::Int(1)), ("b", Value::Int(2))]),
+            record("P", &[]),
+            Value::AdtVariant {
+                variant: "Some".into(),
+                fields: vec![Value::Int(1)],
+            },
+            Value::AdtVariant {
+                variant: "Some".into(),
+                fields: vec![],
+            },
+            Value::AdtVariant {
+                variant: "S".into(),
+                fields: vec![Value::Str("ome".into())],
+            },
+            Value::PartialCall {
+                func: "f".into(),
+                args: vec![Some(Value::Int(1)), None],
+            },
+            Value::PartialCall {
+                func: "f".into(),
+                args: vec![None, Some(Value::Int(1))],
+            },
+            Value::PartialCall {
+                func: "f".into(),
+                args: vec![None],
+            },
+        ];
+        for (i, a) in values.iter().enumerate() {
+            assert_eq!(
+                key(a),
+                key(&a.clone()),
+                "key must be deterministic for {a:?}"
+            );
+            for b in &values[i + 1..] {
+                assert_ne!(key(a), key(b), "collision between {a:?} and {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn state_keys_separate_variable_boundaries() {
+        // { a = "x;b=1", } vs { a = "x", b = 1 } and similar splits must stay distinct.
+        let mut s1 = BTreeMap::new();
+        s1.insert("a".to_string(), Value::Str("x; b=1".into()));
+        let mut s2 = BTreeMap::new();
+        s2.insert("a".to_string(), Value::Str("x".into()));
+        s2.insert("b".to_string(), Value::Int(1));
+        let mut s3 = BTreeMap::new();
+        s3.insert("ab".to_string(), Value::Int(1));
+        let mut s4 = BTreeMap::new();
+        s4.insert("a".to_string(), list(vec![Value::Int(1)]));
+        s4.insert("b".to_string(), list(vec![]));
+        let mut s5 = BTreeMap::new();
+        s5.insert("a".to_string(), list(vec![]));
+        s5.insert("b".to_string(), list(vec![Value::Int(1)]));
+        let keys: Vec<String> = [&s1, &s2, &s3, &s4, &s5]
+            .iter()
+            .map(|s| collision_free_state_key(s))
+            .collect();
+        for i in 0..keys.len() {
+            for j in i + 1..keys.len() {
+                assert_ne!(keys[i], keys[j], "states {i} and {j} collide");
+            }
+        }
+    }
+}

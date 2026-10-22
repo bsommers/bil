@@ -610,3 +610,34 @@ fn test_parse_smt_model_renders_constants_like_bounded_counterexamples() {
     assert_eq!(parse_smt_model("sat\n(model)\n"), None);
     assert_eq!(parse_smt_model("(error \"model is not available\")"), None);
 }
+
+#[test]
+fn test_model_check_explores_every_list_valued_state() {
+    // [1, 2] and [12] are different states; both branches must be explored and the
+    // invariant checked in each. The display form would also differ, but the dedup key is
+    // what decides whether a state is skipped.
+    let src = r#"
+        system Lists {
+          state xs: List<Int> = [0]
+          state n: Int = 0
+          invariant small: count(xs) <= 2
+          terminal: n == 2
+          transition
+             n == 0 -> xs := [1, 2], n := 1
+          [] n == 0 -> xs := [12], n := 1
+          [] n == 1 -> n := 2
+        }
+    "#;
+    let reports = model_check_source(src, 100).expect("model_check lists");
+    let rep = &reports[0];
+    assert!(rep.complete);
+    assert_eq!(rep.states_explored, 5, "init + two branches x two steps");
+    assert!(rep.violations.is_empty(), "{:?}", rep.violations);
+
+    // Tightening the invariant must be caught on the [1, 2] branch only.
+    let tight = src.replace("count(xs) <= 2", "count(xs) <= 1");
+    let reports = model_check_source(&tight, 100).expect("model_check tight");
+    let v = &reports[0].violations;
+    assert!(!v.is_empty(), "invariant violation on [1, 2] was missed");
+    assert!(v[0].state_str.contains("[1, 2]"), "{:?}", v[0]);
+}
