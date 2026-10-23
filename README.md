@@ -41,7 +41,7 @@ cargo run -- repl                                # Interactive REPL
 There is no hosted CI. Run the gate before pushing:
 
 ```bash
-scripts/ci.sh              # clippy -D warnings, tests under coverage (75% line floor), cargo audit
+scripts/ci.sh              # clippy -D warnings, tests under coverage (78% line floor), cargo audit
 scripts/ci.sh --fuzz 300   # also fuzz lex/parse/check for 300 s each (nightly + cargo-fuzz)
 git config core.hooksPath .githooks   # optional: run scripts/ci.sh automatically on git push
 ```

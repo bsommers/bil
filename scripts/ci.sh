@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-COVERAGE_FLOOR=75 # clean baseline 76.2% lines on 2026-10-21; raise as coverage improves
+COVERAGE_FLOOR=78 # 80.7% lines on 2026-10-23 (76.2% on 2026-10-21); raise as coverage improves
 fuzz_secs=0
 while (($#)); do
   case "$1" in

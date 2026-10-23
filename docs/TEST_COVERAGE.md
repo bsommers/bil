@@ -207,4 +207,4 @@ The result is the same with only z3 and cvc5 installed, which is what CI has. **
 - **Item 6 (canonical state keys)** adds unit tests in `src/model_check.rs` asserting that structurally different values never share a key, plus an end-to-end model check over `List` state. A mutation (removing the list length prefix and closing bracket) makes the test fail, so it can catch real collisions.
 - **Item 7 (IR snapshots)** adds golden files in `tests/snapshots/` for `dump-ir --level all` and `vm --dump-bytecode` on two examples, with no new dependency. Regenerate them with `BIL_UPDATE_SNAPSHOTS=1 cargo test --test ir_snapshots`.
 
-The CI floor is still `--fail-under-lines 75`. Item 8 (raising it) has not been done.
+Item 8 is done. On 2026-10-23, after the span work brought coverage to 80.7% lines, the CI floor in `scripts/ci.sh` went from 75% to **78%** (`COVERAGE_FLOOR`). That leaves about 2.7 points of headroom for normal variation, such as solver-dependent paths.
