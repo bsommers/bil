@@ -823,6 +823,7 @@ fn check_vc_bounded(
 
     let mut interp = Interpreter::new(ontology.clone(), 42, false);
     let _ = interp.run_program(&Program {
+        expr_spans: Vec::new(),
         items: program
             .items
             .iter()
@@ -866,6 +867,7 @@ fn check_refinement_execution(
 
     let mut interp = Interpreter::new(ontology.clone(), 42, false);
     let _ = interp.run_program(&Program {
+        expr_spans: Vec::new(),
         items: program
             .items
             .iter()

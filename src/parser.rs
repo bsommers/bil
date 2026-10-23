@@ -21,6 +21,9 @@ pub struct Parser {
     pos: usize,
     in_let_value: bool,
     depth: usize,
+    /// Span of each finished expression node, in completion (post-order) order.
+    /// See `Program::for_each_expr_postorder`.
+    node_spans: Vec<Span>,
 }
 
 impl Parser {
@@ -30,6 +33,7 @@ impl Parser {
             pos: 0,
             in_let_value: false,
             depth: 0,
+            node_spans: Vec::new(),
         }
     }
 
@@ -40,6 +44,20 @@ impl Parser {
     fn peek_at(&self, offset: usize) -> &Token {
         let idx = (self.pos + offset).min(self.tokens.len() - 1);
         &self.tokens[idx].token
+    }
+
+    /// Records `span` for a just-finished expression node. Children finish before parents,
+    /// so spans accumulate in post-order.
+    fn node(&mut self, span: Span, expr: Expr) -> Expr {
+        self.node_spans.push(span);
+        expr
+    }
+
+    /// Parses one top-level expression and returns it with the spans its nodes recorded.
+    fn parse_root_expr(&mut self) -> Result<(Expr, Vec<Span>), ParseError> {
+        let mark = self.node_spans.len();
+        let e = self.parse_expr(0)?;
+        Ok((e, self.node_spans.split_off(mark)))
     }
 
     fn span(&self) -> Span {
@@ -83,7 +101,10 @@ impl Parser {
         while self.peek() != &Token::Eof {
             items.push(self.parse_item()?);
         }
-        Ok(Program { items })
+        Ok(Program {
+            items,
+            expr_spans: std::mem::take(&mut self.node_spans),
+        })
     }
 
     fn parse_item(&mut self) -> Result<Item, ParseError> {
@@ -315,6 +336,12 @@ impl Parser {
         let mut variant = None;
         let mut terminal = None;
         let mut transitions = Vec::new();
+        // Members are parsed in source order but stored grouped by kind, so collect each
+        // group's expression spans separately and lay them out in field order at the end
+        // (see `Program::for_each_expr_postorder`).
+        let base = self.node_spans.len();
+        let (mut state_sp, mut inv_sp, mut temp_sp) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut variant_sp, mut terminal_sp, mut trans_sp) = (Vec::new(), Vec::new(), Vec::new());
 
         while self.peek() != &Token::RBrace && self.peek() != &Token::Eof {
             match self.peek() {
@@ -324,7 +351,8 @@ impl Parser {
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type_expr()?;
                     self.expect(&Token::Eq)?;
-                    let init = self.parse_expr(0)?;
+                    let (init, sp) = self.parse_root_expr()?;
+                    state_sp.extend(sp);
                     states.push(StateVarDecl {
                         name: sname,
                         ty,
@@ -335,7 +363,8 @@ impl Parser {
                     self.advance();
                     let iname = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
-                    let formula = self.parse_expr(0)?;
+                    let (formula, sp) = self.parse_root_expr()?;
+                    inv_sp.extend(sp);
                     invariants.push(NamedInvariant {
                         name: iname,
                         formula,
@@ -345,7 +374,9 @@ impl Parser {
                     self.advance();
                     let tname = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
+                    let mark = self.node_spans.len();
                     let formula = self.parse_temporal_formula()?;
+                    temp_sp.extend(self.node_spans.split_off(mark));
                     temporals.push(NamedTemporal {
                         name: tname,
                         formula,
@@ -356,14 +387,18 @@ impl Parser {
                     if self.peek() == &Token::Colon {
                         self.advance();
                     }
-                    variant = Some(self.parse_expr(0)?);
+                    let (e, sp) = self.parse_root_expr()?;
+                    variant = Some(e);
+                    variant_sp = sp; // a later `variant` replaces an earlier one
                 }
                 Token::Terminal => {
                     self.advance();
                     if self.peek() == &Token::Colon {
                         self.advance();
                     }
-                    terminal = Some(self.parse_expr(0)?);
+                    let (e, sp) = self.parse_root_expr()?;
+                    terminal = Some(e);
+                    terminal_sp = sp;
                 }
                 Token::Transition => {
                     self.advance();
@@ -374,9 +409,11 @@ impl Parser {
                         self.advance();
                     }
                     loop {
+                        let mark = self.node_spans.len();
                         let guard = self.parse_expr(0)?;
                         self.expect(&Token::Arrow)?;
                         let updates = self.parse_updates()?;
+                        trans_sp.extend(self.node_spans.split_off(mark));
                         transitions.push(GuardedTransition { guard, updates });
                         if self.peek() == &Token::GuardSep {
                             self.advance();
@@ -395,6 +432,10 @@ impl Parser {
         }
 
         self.expect(&Token::RBrace)?;
+        self.node_spans.truncate(base);
+        for group in [state_sp, inv_sp, temp_sp, variant_sp, terminal_sp, trans_sp] {
+            self.node_spans.extend(group);
+        }
         Ok(SystemDecl {
             name,
             states,
@@ -530,19 +571,22 @@ impl Parser {
                 if 20 < min_bp {
                     break;
                 }
-                self.advance();
+                let dot = self.advance().span;
                 let field = self.expect_ident()?;
-                lhs = Expr::FieldAccess {
-                    base: Box::new(lhs),
-                    field,
-                };
+                lhs = self.node(
+                    dot,
+                    Expr::FieldAccess {
+                        base: Box::new(lhs),
+                        field,
+                    },
+                );
                 continue;
             }
             if self.peek() == &Token::With {
                 if 18 < min_bp {
                     break;
                 }
-                self.advance();
+                let with = self.advance().span;
                 self.expect(&Token::LBrace)?;
                 let mut updates = Vec::new();
                 while self.peek() != &Token::RBrace && self.peek() != &Token::Eof {
@@ -555,10 +599,13 @@ impl Parser {
                     }
                 }
                 self.expect(&Token::RBrace)?;
-                lhs = Expr::RecordWith {
-                    base: Box::new(lhs),
-                    updates,
-                };
+                lhs = self.node(
+                    with,
+                    Expr::RecordWith {
+                        base: Box::new(lhs),
+                        updates,
+                    },
+                );
                 continue;
             }
 
@@ -589,55 +636,65 @@ impl Parser {
             if l_bp < min_bp {
                 break;
             }
-            self.advance();
+            let op_span = self.advance().span;
             let rhs = self.parse_expr(r_bp)?;
-            lhs = Expr::Binary {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            };
+            lhs = self.node(
+                op_span,
+                Expr::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            );
         }
 
         Ok(lhs)
     }
 
     fn parse_prefix(&mut self) -> Result<Expr, ParseError> {
+        let start = self.span();
         match self.peek().clone() {
             Token::Int(v) => {
                 self.advance();
-                Ok(Expr::Int(v))
+                Ok(self.node(start, Expr::Int(v)))
             }
             Token::Float(v) => {
                 self.advance();
-                Ok(Expr::Float(v))
+                Ok(self.node(start, Expr::Float(v)))
             }
             Token::Bool(v) => {
                 self.advance();
-                Ok(Expr::Bool(v))
+                Ok(self.node(start, Expr::Bool(v)))
             }
             Token::Str(v) => {
                 self.advance();
-                Ok(Expr::Str(v))
+                Ok(self.node(start, Expr::Str(v)))
             }
             Token::Underscore => {
                 self.advance();
-                Ok(Expr::Placeholder)
+                Ok(self.node(start, Expr::Placeholder))
             }
             Token::Not => {
                 self.advance();
                 let expr = self.parse_expr(17)?;
-                Ok(Expr::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(expr),
-                })
+                Ok(self.node(
+                    start,
+                    Expr::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(expr),
+                    },
+                ))
             }
             Token::Minus => {
                 self.advance();
                 let expr = self.parse_expr(17)?;
-                Ok(Expr::Unary {
-                    op: UnaryOp::Neg,
-                    expr: Box::new(expr),
-                })
+                Ok(self.node(
+                    start,
+                    Expr::Unary {
+                        op: UnaryOp::Neg,
+                        expr: Box::new(expr),
+                    },
+                ))
             }
             Token::LParen => {
                 self.advance();
@@ -662,7 +719,7 @@ impl Parser {
                 }
                 self.in_let_value = saved;
                 self.expect(&Token::RBracket)?;
-                Ok(Expr::List(items))
+                Ok(self.node(start, Expr::List(items)))
             }
             Token::Forall | Token::Exists | Token::Choose => {
                 let kind = match self.advance().token {
@@ -676,12 +733,15 @@ impl Parser {
                 let domain = self.parse_expr(5)?;
                 self.expect(&Token::Colon)?;
                 let body = self.parse_expr(0)?;
-                Ok(Expr::Quantifier {
-                    kind,
-                    var,
-                    domain: Box::new(domain),
-                    body: Box::new(body),
-                })
+                Ok(self.node(
+                    start,
+                    Expr::Quantifier {
+                        kind,
+                        var,
+                        domain: Box::new(domain),
+                        body: Box::new(body),
+                    },
+                ))
             }
             Token::If => self.parse_if_fi(),
             Token::Do => self.parse_do_od(),
@@ -697,11 +757,14 @@ impl Parser {
                 let value = value?;
                 self.expect(&Token::In)?;
                 let body = self.parse_expr(0)?;
-                Ok(Expr::LetIn {
-                    name,
-                    value: Box::new(value),
-                    body: Box::new(body),
-                })
+                Ok(self.node(
+                    start,
+                    Expr::LetIn {
+                        name,
+                        value: Box::new(value),
+                        body: Box::new(body),
+                    },
+                ))
             }
             Token::Ident(name) => {
                 self.advance();
@@ -716,7 +779,7 @@ impl Parser {
                         }
                     }
                     self.expect(&Token::RParen)?;
-                    Ok(Expr::Call { func: name, args })
+                    Ok(self.node(start, Expr::Call { func: name, args }))
                 } else if self.peek() == &Token::LBrace && self.is_record_init() {
                     self.advance();
                     let mut fields = Vec::new();
@@ -730,12 +793,15 @@ impl Parser {
                         }
                     }
                     self.expect(&Token::RBrace)?;
-                    Ok(Expr::RecordInit {
-                        concept: name,
-                        fields,
-                    })
+                    Ok(self.node(
+                        start,
+                        Expr::RecordInit {
+                            concept: name,
+                            fields,
+                        },
+                    ))
                 } else {
-                    Ok(Expr::Var(name))
+                    Ok(self.node(start, Expr::Var(name)))
                 }
             }
             other => Err(ParseError {
@@ -757,7 +823,7 @@ impl Parser {
     }
 
     fn parse_if_fi(&mut self) -> Result<Expr, ParseError> {
-        self.expect(&Token::If)?;
+        let start = self.expect(&Token::If)?;
         if self.peek() == &Token::GuardSep {
             self.advance();
         }
@@ -774,11 +840,11 @@ impl Parser {
             }
         }
         self.expect(&Token::Fi)?;
-        Ok(Expr::IfFi { branches })
+        Ok(self.node(start, Expr::IfFi { branches }))
     }
 
     fn parse_do_od(&mut self) -> Result<Expr, ParseError> {
-        self.expect(&Token::Do)?;
+        let start = self.expect(&Token::Do)?;
         let mut inits = Vec::new();
         loop {
             let vname = self.expect_ident()?;
@@ -826,21 +892,25 @@ impl Parser {
             }
         }
 
-        self.expect(&Token::Od)?;
+        let od = self.expect(&Token::Od)?;
         let then_expr = if self.peek() == &Token::Then {
             self.advance();
             Box::new(self.parse_expr(0)?)
         } else {
-            Box::new(Expr::Var(inits[0].0.clone()))
+            // No `then`: the loop yields its first variable, spanned at `od`.
+            Box::new(self.node(od, Expr::Var(inits[0].0.clone())))
         };
 
-        Ok(Expr::DoOd {
-            inits,
-            invariant,
-            variant,
-            branches,
-            then_expr,
-        })
+        Ok(self.node(
+            start,
+            Expr::DoOd {
+                inits,
+                invariant,
+                variant,
+                branches,
+                then_expr,
+            },
+        ))
     }
 
     fn parse_gcl_body(&mut self) -> Result<GclBody, ParseError> {
@@ -862,7 +932,7 @@ impl Parser {
     }
 
     fn parse_match(&mut self) -> Result<Expr, ParseError> {
-        self.expect(&Token::Match)?;
+        let start = self.expect(&Token::Match)?;
         let scrutinee = self.parse_expr(0)?;
         self.expect(&Token::LBrace)?;
         if self.peek() == &Token::Bar {
@@ -879,10 +949,13 @@ impl Parser {
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Expr::Match {
-            scrutinee: Box::new(scrutinee),
-            arms,
-        })
+        Ok(self.node(
+            start,
+            Expr::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+        ))
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {

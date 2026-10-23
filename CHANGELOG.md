@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Type errors point at the offending subexpression.** Before, every error inside a function body, contract or system member was reported at the enclosing declaration's header (for example `1:1`). It now gives that expression's own line and column: the operator of a binary expression, otherwise the first token. The parser records a span for every expression node in `Program::expr_spans`, in the order of `Program::for_each_expr_postorder`. The `Expr` type itself is unchanged.
 - **Counterexamples found only by the SMT solver now show concrete values**, for example `Counterexample: { x = 37 }`, in the same form as bounded counterexamples. Before, they printed just `SMT model: sat`. When a refutation comes back `sat`, `bil` runs the same script again with `(get-model)` on the same solver and renders the constants. If no model is available (Vampire, for example), the old text is kept.
 
 ### Fixed

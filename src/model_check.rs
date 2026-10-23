@@ -186,6 +186,7 @@ fn model_check_system(
     let mut interp = Interpreter::new(ontology.clone(), 1, false);
     interp
         .run_program(&Program {
+            expr_spans: Vec::new(),
             items: program
                 .items
                 .iter()

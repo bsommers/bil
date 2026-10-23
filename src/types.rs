@@ -67,6 +67,10 @@ pub struct TypeEnv {
     pub bindings: BTreeMap<String, Type>,
     next_var: usize,
     subst: BTreeMap<usize, Type>,
+    /// Source span of each expression node in the program being checked, keyed by node
+    /// address. Only populated for the duration of `check_program`, while the program is
+    /// borrowed, so the addresses stay valid.
+    expr_spans: std::collections::HashMap<usize, Span>,
 }
 
 impl TypeEnv {
@@ -79,6 +83,7 @@ impl TypeEnv {
             bindings: BTreeMap::new(),
             next_var: 0,
             subst: BTreeMap::new(),
+            expr_spans: std::collections::HashMap::new(),
         };
         // Register standard math & query builtins from centralized BuiltinFn registry
         for b in crate::builtins::BuiltinFn::ALL {
@@ -257,6 +262,22 @@ impl TypeEnv {
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
+        // Map each expression node to its parsed span so errors point at the subexpression.
+        // A program built in code has no span table; errors then use item spans as before.
+        let mut nodes: Vec<usize> = Vec::new();
+        program.for_each_expr_postorder(&mut |e| nodes.push(e as *const Expr as usize));
+        if nodes.len() == program.expr_spans.len() {
+            self.expr_spans = nodes
+                .into_iter()
+                .zip(program.expr_spans.iter().copied())
+                .collect();
+        }
+        let result = self.check_program_items(program);
+        self.expr_spans.clear();
+        result
+    }
+
+    fn check_program_items(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
         let mut errors = Vec::new();
 
         // Pass 1: Register ADTs
@@ -526,6 +547,12 @@ impl TypeEnv {
         local: &mut BTreeMap<String, Type>,
         span: Span,
     ) -> Result<Type, TypeError> {
+        // Prefer the node's own span; the caller's span is the fallback.
+        let span = self
+            .expr_spans
+            .get(&(expr as *const Expr as usize))
+            .copied()
+            .unwrap_or(span);
         match expr {
             Expr::Int(_) => Ok(Type::Int),
             Expr::Float(_) => Ok(Type::Float),

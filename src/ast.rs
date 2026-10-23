@@ -1,9 +1,128 @@
 use crate::lexer::Span;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
     pub items: Vec<Item>,
+    /// Source span of every expression node, in [`Program::for_each_expr_postorder`] order.
+    /// Filled by the parser; empty for programs built in code, which then fall back to
+    /// item-level spans in diagnostics.
+    pub expr_spans: Vec<Span>,
+}
+
+impl Program {
+    /// Visits every expression node, item by item, in post-order (children before parents).
+    /// This order is the contract for `expr_spans`: the parser records spans in exactly
+    /// this order, so change both together.
+    pub fn for_each_expr_postorder(&self, f: &mut dyn FnMut(&Expr)) {
+        for item in &self.items {
+            match item {
+                Item::Concept(_) | Item::TypeDecl(_) => {}
+                Item::Axiom(ax) => ax.formula.walk_postorder(f),
+                Item::Spec(sp) => {
+                    sp.requires.iter().for_each(|e| e.walk_postorder(f));
+                    sp.ensures.iter().for_each(|e| e.walk_postorder(f));
+                }
+                Item::Proof(pr) => {
+                    pr.requires.iter().for_each(|e| e.walk_postorder(f));
+                    pr.ensures.walk_postorder(f);
+                    pr.body.iter().for_each(|e| e.walk_postorder(f));
+                }
+                Item::FnDecl(fd) => {
+                    fd.requires.iter().for_each(|e| e.walk_postorder(f));
+                    fd.ensures.iter().for_each(|e| e.walk_postorder(f));
+                    fd.body.walk_postorder(f);
+                }
+                Item::System(sys) => {
+                    sys.states.iter().for_each(|s| s.init.walk_postorder(f));
+                    sys.invariants
+                        .iter()
+                        .for_each(|i| i.formula.walk_postorder(f));
+                    for t in &sys.temporals {
+                        match &t.formula {
+                            TemporalFormula::Always(e) | TemporalFormula::Eventually(e) => {
+                                e.walk_postorder(f)
+                            }
+                            TemporalFormula::LeadsTo(p, q) => {
+                                p.walk_postorder(f);
+                                q.walk_postorder(f);
+                            }
+                        }
+                    }
+                    sys.variant.iter().for_each(|e| e.walk_postorder(f));
+                    sys.terminal.iter().for_each(|e| e.walk_postorder(f));
+                    for tr in &sys.transitions {
+                        tr.guard.walk_postorder(f);
+                        tr.updates.iter().for_each(|(_, e)| e.walk_postorder(f));
+                    }
+                }
+                Item::Let(l) => l.value.walk_postorder(f),
+                Item::Assert(a) => a.formula.walk_postorder(f),
+            }
+        }
+    }
+}
+
+impl Expr {
+    /// Post-order walk over this expression; children are visited in source order.
+    pub fn walk_postorder(&self, f: &mut dyn FnMut(&Expr)) {
+        let gcl = |br: &GuardedBranch, f: &mut dyn FnMut(&Expr)| {
+            br.guard.walk_postorder(f);
+            match &br.body {
+                GclBody::Expr(e) => e.walk_postorder(f),
+                GclBody::Updates(ups) => ups.iter().for_each(|(_, e)| e.walk_postorder(f)),
+                GclBody::Skip | GclBody::Abort => {}
+            }
+        };
+        match self {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Var(_)
+            | Expr::Placeholder => {}
+            Expr::Unary { expr, .. } => expr.walk_postorder(f),
+            Expr::Binary { left, right, .. } => {
+                left.walk_postorder(f);
+                right.walk_postorder(f);
+            }
+            Expr::Quantifier { domain, body, .. } => {
+                domain.walk_postorder(f);
+                body.walk_postorder(f);
+            }
+            Expr::IfFi { branches } => branches.iter().for_each(|br| gcl(br, f)),
+            Expr::DoOd {
+                inits,
+                invariant,
+                variant,
+                branches,
+                then_expr,
+            } => {
+                inits.iter().for_each(|(_, e)| e.walk_postorder(f));
+                invariant.iter().for_each(|e| e.walk_postorder(f));
+                variant.iter().for_each(|e| e.walk_postorder(f));
+                branches.iter().for_each(|br| gcl(br, f));
+                then_expr.walk_postorder(f);
+            }
+            Expr::Match { scrutinee, arms } => {
+                scrutinee.walk_postorder(f);
+                arms.iter().for_each(|a| a.body.walk_postorder(f));
+            }
+            Expr::RecordInit { fields, .. } => fields.iter().for_each(|(_, e)| e.walk_postorder(f)),
+            Expr::RecordWith { base, updates } => {
+                base.walk_postorder(f);
+                updates.iter().for_each(|(_, e)| e.walk_postorder(f));
+            }
+            Expr::FieldAccess { base, .. } => base.walk_postorder(f),
+            Expr::Call { args, .. } => args.iter().for_each(|e| e.walk_postorder(f)),
+            Expr::List(items) => items.iter().for_each(|e| e.walk_postorder(f)),
+            Expr::LetIn { value, body, .. } => {
+                value.walk_postorder(f);
+                body.walk_postorder(f);
+            }
+        }
+        f(self);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
