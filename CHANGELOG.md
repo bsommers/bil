@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-10-23
+
+### Added
+- **Local CI gate, `scripts/ci.sh`.** It runs clippy with `-D warnings`, the full test suite under `cargo llvm-cov` with a 78% line-coverage floor (80.7% today), and `cargo audit`. An optional pre-push hook lives in `.githooks/pre-push`. Hosted CI is disabled; this script is the gate.
+
 ### Changed
 - **Type errors point at the offending subexpression.** Before, every error inside a function body, contract or system member was reported at the enclosing declaration's header (for example `1:1`). It now gives that expression's own line and column: the operator of a binary expression, otherwise the first token. The parser records a span for every expression node in `Program::expr_spans`, in the order of `Program::for_each_expr_postorder`. The `Expr` type itself is unchanged.
 - **Counterexamples found only by the SMT solver now show concrete values**, for example `Counterexample: { x = 37 }`, in the same form as bounded counterexamples. Before, they printed just `SMT model: sat`. When a refutation comes back `sat`, `bil` runs the same script again with `(get-model)` on the same solver and renders the constants. If no model is available (Vampire, for example), the old text is kept.
 
 ### Fixed
+- **The solver timeout now always applies.** `bil` wrote the whole SMT-LIB script to the solver's stdin before starting the timeout clock, so a solver that stopped reading (or any script larger than the 64 KiB pipe buffer sent to one) made `bil` hang forever. The script is now written on a separate thread, and a timed-out solver is killed and reported as Unknown.
 - **Substitution no longer captures variables bound by `match` patterns or `do … od` loops.** For example, `match s { Some(y) -> x + y }` with `x := y` used to become `Some(y) -> y + y`, which silently changed the verification condition. Those binders are now renamed to a fresh name first, as quantifier and `let` binders already were.
 - **Whole-valued Floats keep their decimal point.** `run`, `vm` and native binaries printed `-3.0` as `-3`, so a Float result could not be told apart from an Int. They now print `-3.0`, as do expression messages and `emit-verus` (where `0.0` used to come out as the integer literal `0`).
 
