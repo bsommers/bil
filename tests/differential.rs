@@ -318,6 +318,8 @@ fn test_differential_floats_logic_ranges_strings_and_pipelines() {
         let f_mul = 1.5 * -2.0
         let f_div = 7.0 / 2.0
         let f_sub = 0.1 - 0.3
+        let f_whole = 1.5 * -2.0
+        let f_list = [1.0, 2.5, 0.0]
         let f_lt = 1.5 < 2.5
         let f_eq = 0.5 == 0.5
         let imp_ff = false => false
@@ -351,6 +353,9 @@ fn test_differential_floats_logic_ranges_strings_and_pipelines() {
             .unwrap_or_else(|| panic!("missing {k}"))
     };
     assert_eq!(get("f_add"), "3.75");
+    // A whole-valued Float keeps its decimal point so it is not mistaken for an Int.
+    assert_eq!(get("f_whole"), "-3.0");
+    assert_eq!(get("f_list"), "[1.0, 2.5, 0.0]");
     assert_eq!(get("imp_ff"), "true");
     assert_eq!(get("imp_tf"), "false");
     assert_eq!(get("in_excl"), "false");

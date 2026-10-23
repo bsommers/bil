@@ -20,6 +20,8 @@ impl fmt::Display for BilVal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BilVal::Int(v) => write!(f, "{}", v),
+            // Keep the decimal point on whole values (`-3.0`) to match the interpreter.
+            BilVal::Float(v) if v.is_finite() && v.fract() == 0.0 => write!(f, "{:.1}", v),
             BilVal::Float(v) => write!(f, "{}", v),
             BilVal::Bool(v) => write!(f, "{}", v),
             BilVal::Str(v) => write!(f, "\"{}\"", v),

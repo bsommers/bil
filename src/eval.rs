@@ -30,7 +30,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(v) => write!(f, "{}", v),
-            Value::Float(v) => write!(f, "{}", v),
+            Value::Float(v) => write!(f, "{}", crate::expr_utils::format_float(*v)),
             Value::Bool(v) => write!(f, "{}", v),
             Value::Str(v) => write!(f, "\"{}\"", v),
             Value::Unit => write!(f, "()"),

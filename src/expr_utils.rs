@@ -513,11 +513,21 @@ pub fn subst_expr(expr: &Expr, mapping: &BTreeMap<String, Expr>) -> Expr {
     }
 }
 
+/// Formats a Float so that a whole value keeps its decimal point (`-3.0`, not `-3`),
+/// keeping it distinguishable from an Int.
+pub fn format_float(v: f64) -> String {
+    if v.is_finite() && v.fract() == 0.0 {
+        format!("{:.1}", v)
+    } else {
+        v.to_string()
+    }
+}
+
 /// Concise human-readable single-line formatting of an [`Expr`].
 pub fn format_expr_concise(expr: &Expr) -> String {
     match expr {
         Expr::Int(v) => v.to_string(),
-        Expr::Float(v) => v.to_string(),
+        Expr::Float(v) => format_float(*v),
         Expr::Bool(v) => v.to_string(),
         Expr::Str(s) => format!("\"{}\"", s),
         Expr::Var(v) => v.clone(),

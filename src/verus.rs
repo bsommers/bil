@@ -350,7 +350,7 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
 fn verus_expr(expr: &Expr, in_spec: bool) -> String {
     match expr {
         Expr::Int(v) => v.to_string(),
-        Expr::Float(v) => v.to_string(),
+        Expr::Float(v) => crate::expr_utils::format_float(*v),
         Expr::Bool(v) => v.to_string(),
         Expr::Str(s) => format!("{:?}.to_string()", s),
         Expr::Var(v) => v.clone(),
