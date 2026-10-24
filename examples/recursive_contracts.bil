@@ -1,0 +1,41 @@
+// ============================================================================
+// Recursive functions proved by induction
+// A `variant` on a recursive `fn` is a non-negative Int that every recursive call strictly
+// decreases. With it, `bil verify` uses the function's own `ensures` at each recursive call
+// (the induction hypothesis) and checks the call's `requires` and the variant decrease there.
+// Without a `variant`, recursive calls are only checked by bounded sampling.
+// ============================================================================
+
+// Gauss: 0 + 1 + ... + n
+fn sum_to(n: Int) -> Int
+  requires n >= 0
+  ensures  2 * result == n * (n + 1)
+  variant  n
+=
+  if n == 0 -> 0
+  [] n > 0  -> n + sum_to(n - 1)
+  fi
+
+// Powers of two outgrow their exponent
+fn pow2(k: Int) -> Int
+  requires k >= 0
+  ensures  result >= k + 1
+  variant  k
+=
+  if k == 0 -> 1
+  [] k > 0  -> 2 * pow2(k - 1)
+  fi
+
+// A caller: the recursive callee is unfolded once, and its inner recursive call uses the contract
+fn triangle_area_twice(n: Int) -> Int
+  requires n >= 1
+  ensures  result >= 2
+= 2 * sum_to(n)
+
+let s = sum_to(10)
+let p = pow2(10)
+let t = triangle_area_twice(4)
+
+assert s == 55
+assert p == 1024
+assert t == 20

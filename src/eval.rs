@@ -70,6 +70,8 @@ impl fmt::Display for RuntimeError {
 }
 
 pub const MAX_CALL_DEPTH: usize = 64;
+/// Start of the error raised when a call would exceed [`MAX_CALL_DEPTH`].
+pub const CALL_DEPTH_EXCEEDED: &str = "Call stack depth exceeded";
 
 #[derive(Debug, Clone)]
 pub struct Interpreter {
@@ -641,8 +643,8 @@ impl Interpreter {
         if self.call_depth >= MAX_CALL_DEPTH {
             return Err(RuntimeError {
                 message: format!(
-                    "Call stack depth exceeded maximum ({}) calling '{}'",
-                    MAX_CALL_DEPTH, func
+                    "{} maximum ({}) calling '{}'",
+                    CALL_DEPTH_EXCEEDED, MAX_CALL_DEPTH, func
                 ),
             });
         }

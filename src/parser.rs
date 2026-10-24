@@ -311,6 +311,12 @@ impl Parser {
         } else {
             None
         };
+        let variant = if self.peek() == &Token::Variant {
+            self.advance();
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
         self.expect(&Token::Eq)?;
         let body = self.parse_expr(0)?;
         Ok(FnDecl {
@@ -320,6 +326,7 @@ impl Parser {
             refines,
             requires,
             ensures,
+            variant,
             body,
             span,
         })

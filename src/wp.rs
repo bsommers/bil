@@ -878,12 +878,12 @@ fn plan_samples(sizes: &[usize], budget: usize) -> (Vec<Vec<usize>>, usize) {
 /// Evaluates `check` on each planned assignment of `domains` until it reports a counterexample.
 fn search_samples(
     domains: &[(String, Vec<Value>)],
-    mut check: impl FnMut(&BTreeMap<String, Value>) -> Option<String>,
+    mut check: impl FnMut(&BTreeMap<String, Value>) -> Sample,
 ) -> (bool, Option<String>, Samples) {
     let sizes: Vec<usize> = domains.iter().map(|(_, vals)| vals.len()).collect();
     let (plan, space) = plan_samples(&sizes, SAMPLE_BUDGET);
-    let samples = Samples {
-        evaluated: plan.len(),
+    let mut samples = Samples {
+        evaluated: 0,
         space,
     };
     let mut env = BTreeMap::new();
@@ -891,11 +891,34 @@ fn search_samples(
         for ((name, vals), &i) in domains.iter().zip(assignment) {
             env.insert(name.clone(), vals[i].clone());
         }
-        if let Some(ce) = check(&env) {
-            return (false, Some(ce), samples);
+        match check(&env) {
+            Sample::Pass => samples.evaluated += 1,
+            Sample::Skip => {}
+            Sample::Fail(ce) => {
+                samples.evaluated += 1;
+                return (false, Some(ce), samples);
+            }
         }
     }
     (true, None, samples)
+}
+
+/// Outcome of evaluating one sampled assignment.
+enum Sample {
+    Pass,
+    Fail(String),
+    /// The interpreter ran out of call depth, which says nothing about the obligation.
+    Skip,
+}
+
+impl Sample {
+    fn from_error(env: &BTreeMap<String, Value>, e: &crate::eval::RuntimeError) -> Sample {
+        if e.message.starts_with(crate::eval::CALL_DEPTH_EXCEEDED) {
+            Sample::Skip
+        } else {
+            Sample::Fail(format!("{} -> {}", format_env_assignment(env), e))
+        }
+    }
 }
 
 /// Loads the program's types, functions and specs into a fresh interpreter for bounded checks.
@@ -944,14 +967,14 @@ fn check_vc_bounded(
 
     let mut interp = bounded_interpreter(program, ontology);
     search_samples(&domains, |env| match interp.eval_expr(vc, env) {
-        Ok(Value::Bool(true)) => None,
-        Ok(Value::Bool(false)) => Some(format_env_assignment(env)),
-        Ok(other) => Some(format!(
+        Ok(Value::Bool(true)) => Sample::Pass,
+        Ok(Value::Bool(false)) => Sample::Fail(format_env_assignment(env)),
+        Ok(other) => Sample::Fail(format!(
             "{} -> non-boolean VC: {}",
             format_env_assignment(env),
             other
         )),
-        Err(e) => Some(format!("{} -> {}", format_env_assignment(env), e)),
+        Err(e) => Sample::from_error(env, &e),
     })
 }
 
@@ -983,18 +1006,19 @@ fn check_refinement_execution(
     let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
     search_samples(&domains, |env| {
         if interp.eval_expr(&pre, env).unwrap_or(Value::Bool(false)) != Value::Bool(true) {
-            return None;
+            return Sample::Pass;
         }
         match interp.eval_expr(&f.body, env) {
             Ok(res) => {
                 let mut post_env = env.clone();
                 post_env.insert("result".into(), res);
                 match interp.eval_expr(post, &post_env) {
-                    Ok(Value::Bool(true)) => None,
-                    _ => Some(format_env_assignment(&post_env)),
+                    Ok(Value::Bool(true)) => Sample::Pass,
+                    Err(e) => Sample::from_error(&post_env, &e),
+                    _ => Sample::Fail(format_env_assignment(&post_env)),
                 }
             }
-            Err(e) => Some(format!("{} -> {}", format_env_assignment(env), e)),
+            Err(e) => Sample::from_error(env, &e),
         }
     })
 }

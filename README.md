@@ -7,7 +7,7 @@
 `bil` is a mathematically grounded, statically typed formal verification, ontology, and functional data language written in Rust. It unifies:
 
 1. **Correctness by Construction (Dijkstra GCL & Refinement Calculus)**:
-   - Guarded Command Language (`if ... fi`, `do ... od`) with loop `invariant` and termination `variant` (bound function).
+   - Guarded Command Language (`if ... fi`, `do ... od`) with loop `invariant` and termination `variant` (bound function). A recursive `fn` with a `variant` is proved by induction on it.
    - Weakest Precondition (`wp`) verification condition generator & bounded solver (`bil verify`).
    - Formal Refinement (`spec` and `refines` / `⊑`), proving concrete implementations satisfy abstract First-Order Logic specifications.
 2. **True Nondeterminism (`[]` / `▯` & `choose`)**:

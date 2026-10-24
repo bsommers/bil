@@ -31,6 +31,7 @@ impl Program {
                 Item::FnDecl(fd) => {
                     fd.requires.iter().for_each(|e| e.walk_postorder(f));
                     fd.ensures.iter().for_each(|e| e.walk_postorder(f));
+                    fd.variant.iter().for_each(|e| e.walk_postorder(f));
                     fd.body.walk_postorder(f);
                 }
                 Item::System(sys) => {
@@ -206,6 +207,9 @@ pub struct FnDecl {
     pub refines: Option<String>,
     pub requires: Option<Expr>,
     pub ensures: Option<Expr>,
+    /// Termination measure for recursive calls: a non-negative Int that every recursive call
+    /// must strictly decrease. Lets the verifier use the function's own contract at those calls.
+    pub variant: Option<Expr>,
     pub body: Expr,
     pub span: Span,
 }

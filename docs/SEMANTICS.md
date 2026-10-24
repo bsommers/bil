@@ -62,6 +62,14 @@ Given loop state initializers $\vec{v} := \vec{e}_0$, invariant $I$, variant $V$
   4. **Variant Strict Decrease**: $\forall i.\; (I \wedge G_i) \Rightarrow \text{wp}(S_i, V < V_0)$
   5. **Exit Postcondition**: $(I \wedge \neg BB) \Rightarrow \text{Post}[\texttt{result} \mapsto e_{\text{then}}]$
 
+
+### 3.3 Recursive Functions (`fn … variant V`)
+A function $f$ with precondition $P$, postcondition $Q$ and variant $V$ is verified modularly. In a Verification Condition, a call $f(\vec{a})$ outside any activation of $f$ is unfolded into $f$'s body. A call $f(\vec{b})$ inside an unfolded activation $f(\vec{a})$ is replaced by a fresh value $r$, with:
+- **Checked at the call**: $P[\vec{x} \mapsto \vec{b}] \wedge 0 \le V[\vec{x} \mapsto \vec{a}] \wedge V[\vec{x} \mapsto \vec{b}] < V[\vec{x} \mapsto \vec{a}]$
+- **Assumed for $r$**: that check $\Rightarrow Q[\vec{x} \mapsto \vec{b}, \texttt{result} \mapsto r]$
+
+The variant bounds every chain of recursive calls, so the assumption is the induction hypothesis that $f$'s own contract obligation discharges. Without a `variant`, a recursive call is not encoded and its obligation is only bounded-checked. An `if … fi` in a function body gets a fresh value $r$ with $\bigvee_i G_i$ checked and $\bigvee_i G_i \Rightarrow \bigvee_i (G_i \wedge r = E_i)$ assumed, so the obligation must hold for every enabled branch. Every assumption is guarded by the check that makes it satisfiable, so a failed check cannot be hidden by a false hypothesis.
+
 ---
 
 ## 4. Explicit-State & LTL Model Checking (`src/model_check.rs`)

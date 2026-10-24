@@ -864,9 +864,20 @@ pub fn emit_vc_smt2(
 }
 
 /// Translates a Verification Condition to SMT-LIB2, unfolding calls to user-defined functions first.
+/// The fresh values that unfolding introduces (results of recursive calls and of `if..fi`) are
+/// universally quantified.
 pub fn vc_to_smt(program: &Program, ontology: &OntologyRegistry, vc: &Expr) -> Option<String> {
     let unfolded = crate::unfold::unfold_user_calls(program, vc)?;
-    expr_to_smt(&unfolded, ontology, None)
+    let body = expr_to_smt(&unfolded.expr, ontology, None)?;
+    if unfolded.fresh.is_empty() {
+        return Some(body);
+    }
+    let mut binders = Vec::with_capacity(unfolded.fresh.len());
+    for (name, ty) in &unfolded.fresh {
+        let sort = map_type_to_smt_opt(ty, ontology, program)?;
+        binders.push(format!("({} {})", sanitize_smt_ident(name), sort));
+    }
+    Some(format!("(forall ({}) {})", binders.join(" "), body))
 }
 
 fn map_type_to_smt(ty: &TypeExpr, ontology: &OntologyRegistry) -> String {

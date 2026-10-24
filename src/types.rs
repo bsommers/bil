@@ -459,6 +459,11 @@ impl TypeEnv {
                     self.unify(&rt, &Type::Bool, f.span)?;
                 }
 
+                if let Some(var) = &f.variant {
+                    let vt = self.infer_expr(var, &mut local, f.span)?;
+                    self.unify(&vt, &Type::Int, f.span)?;
+                }
+
                 let body_ty = self.infer_expr(&f.body, &mut local, f.span)?;
                 self.unify(&body_ty, &ret_ty, f.span)?;
 

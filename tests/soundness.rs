@@ -674,3 +674,83 @@ fn bounded_check_samples_large_spaces_within_budget_and_says_so() {
     let bug = obs.iter().find(|o| o.fn_name == "bug").unwrap();
     assert!(matches!(bug.status, Status::Refuted { .. }), "{:?}", bug.status);
 }
+
+#[test]
+fn recursion_with_a_variant_is_proved_by_induction_and_bad_variants_are_refuted() {
+    use bil::wp::Status;
+    let src = r#"
+        fn sum_to(n: Int) -> Int
+          requires n >= 0
+          ensures  2 * result == n * (n + 1)
+          variant  n
+        =
+          if n == 0 -> 0
+          [] n > 0  -> n + sum_to(n - 1)
+          fi
+
+        fn caller(k: Int) -> Int
+          requires k >= 1
+          ensures  result >= 1
+        = sum_to(k)
+
+        fn no_variant(n: Int) -> Int
+          requires n >= 0
+          ensures  result >= 0
+        =
+          if n == 0 -> 0
+          [] n > 0  -> no_variant(n - 1)
+          fi
+
+        fn spin(n: Int) -> Int
+          requires n >= 0
+          ensures  result == 0
+          variant  n
+        =
+          if n == 0 -> 0
+          [] n > 0  -> spin(n)
+          fi
+
+        fn loopy(n: Int) -> Int
+          ensures false
+          variant n
+        = loopy(n + 1)
+
+        fn req_bad(n: Int) -> Int
+          requires n >= 1
+          ensures  result >= 1
+          variant  n
+        =
+          if n == 1 -> 1
+          [] n > 1  -> req_bad(n - 2) + 1
+          fi
+    "#;
+    // Sampling drives the interpreter to its 64-call depth limit, which needs more than a test
+    // thread's default stack in a debug build.
+    let obs = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || verify_source(src).expect("should typecheck"))
+        .unwrap()
+        .join()
+        .unwrap();
+    let of = |name: &'static str| obs.iter().filter(move |o| o.fn_name == name);
+    for name in ["sum_to", "caller"] {
+        for o in of(name) {
+            assert!(
+                matches!(o.status, Status::Proved { .. }),
+                "{name}: {:?}",
+                o.status
+            );
+        }
+    }
+    // Without a variant the recursive call is not assumed to meet its contract.
+    assert!(of("no_variant").any(|o| matches!(o.status, Status::BoundedOnly { .. })));
+    // A variant that does not decrease, an unprovable non-terminating contract, and a recursive
+    // call outside the precondition must all be refuted rather than proved by the hypothesis.
+    for name in ["spin", "loopy", "req_bad"] {
+        assert!(
+            of(name).any(|o| matches!(o.status, Status::Refuted { .. })),
+            "{name}: {:?}",
+            of(name).map(|o| &o.status).collect::<Vec<_>>()
+        );
+    }
+}

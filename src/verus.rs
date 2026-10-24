@@ -157,6 +157,12 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                     out.push_str(&format!("        {},\n", c));
                 }
             }
+            if let Some(var) = &f.variant {
+                out.push_str(&format!(
+                    "    decreases\n        {},\n",
+                    verus_expr(var, true)
+                ));
+            }
             out.push_str("{\n");
             out.push_str(&verus_fn_body(&f.body, 1));
             out.push_str("}\n\n");
