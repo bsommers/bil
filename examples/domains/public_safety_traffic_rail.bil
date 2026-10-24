@@ -1,0 +1,81 @@
+// ============================================================================
+// Domain: Public Safety — Signalized intersection with emergency-vehicle
+// preemption, a railway level crossing, and incident triage for dispatch.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [mutcd4d26] MUTCD §4D.26 — a steady yellow follows every green (3–6 s), red clearance by
+//       engineering practice; https://dot.nj.gov/transportation/about/publicat/lmreports/pdf/2013rlrtechnicalappendix.pdf
+//   [mmu] conflict monitor / malfunction management unit forces flash on conflicting greens:
+//       `NoConflictingGreens` is that property, proved at design time
+//   [heitmeyer1994] https://groups.csail.mit.edu/tds/grc.html — Generalized Railroad Crossing:
+//       gate down whenever occupied (safety), up otherwise (utility)
+// ============================================================================
+
+type Light = Red | Yellow | Green
+type Gate = Up | Lowering | Down
+
+// Two-phase intersection with an all-red clearance interval and emergency
+// preemption that can arrive at any moment.
+system Intersection {
+  state ns: Light = Green
+  state ew: Light = Red
+  state preempt: Bool = false
+
+  invariant NoConflictingGreens: ns == Red || ew == Red
+  invariant PreemptionClears:    preempt => (ns != Green && ew != Green)
+
+  temporal PreemptionEnds:  preempt ~> !preempt
+  temporal NorthSouthServed: (ns == Red && !preempt) ~> (ns == Green || preempt)
+
+  transition
+     !preempt && ns == Green                -> ns := Yellow
+  [] !preempt && ns == Yellow               -> ns := Red
+  [] !preempt && ns == Red && ew == Red     -> ew := Green
+  [] !preempt && ew == Green                -> ew := Yellow
+  [] !preempt && ew == Yellow               -> ew := Red, ns := Green
+  [] !preempt && ns != Yellow && ew != Yellow -> preempt := true, ns := Red, ew := Red
+  [] preempt                                -> preempt := false, ns := Green
+}
+
+// Level crossing. train: 0 = far, 1 = approaching (strike-in passed), 2 = on crossing.
+// The strike-in point is placed so the gate is down before the train can arrive;
+// that siting rule is the assumption the model makes explicit (`gate == Down` guard).
+system LevelCrossing {
+  state train: Int = 0
+  state gate: Gate = Up
+
+  invariant GateDownWhenOccupied: train == 2 => gate == Down
+  invariant TrainRange:           train >= 0 && train <= 2
+
+  temporal GateReopens: (train == 0 && gate == Down) ~> (gate == Up || train == 1)
+
+  transition
+     train == 0                    -> train := 1, gate := Lowering
+  [] gate == Lowering              -> gate := Down
+  [] train == 1 && gate == Down    -> train := 2
+  [] train == 2                    -> train := 0
+  [] train == 0 && gate == Down    -> gate := Up
+}
+
+concept Incident {
+  id: String,
+  severity: Int,
+  minutes_waiting: Int
+}
+
+// Triage score: severity dominates, waiting time breaks ties (and prevents starvation).
+fn triage_score(i: Incident) -> Int
+  requires i.severity >= 1 && i.severity <= 5 && i.minutes_waiting >= 0 && i.minutes_waiting < 1000
+  ensures  result >= 1000 && result < 6000
+=
+  i.severity * 1000 + i.minutes_waiting
+
+let queue = [
+  Incident { id: "fire-12",    severity: 5, minutes_waiting: 2 },
+  Incident { id: "noise-7",    severity: 1, minutes_waiting: 95 },
+  Incident { id: "crash-3",    severity: 4, minutes_waiting: 11 },
+  Incident { id: "medical-9",  severity: 5, minutes_waiting: 6 }
+]
+
+let dispatch_order = queue |> sort_by(0 - triage_score(_)) |> map(_.id)
+assert dispatch_order == ["medical-9", "fire-12", "crash-3", "noise-7"]

@@ -1,0 +1,75 @@
+// SEEDED BUG — variant of ../medical_infusion_pump.bil
+// Claims every alarm is eventually cleared. Expected: LTL lasso of recurring hazards.
+// ============================================================================
+// Domain: Medical Devices — Patient-controlled analgesia (PCA) infusion pump:
+// bolus lockout and hourly dose cap, volume-to-be-infused delivery, and the
+// pumping interlocks (door, occlusion, air-in-line).
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [fda_ipii] https://www.fda.gov/medical-devices/infusion-pumps/white-paper-infusion-pump-improvement-initiative
+//       — ~56,000 adverse-event reports (2005–2009) and 87 recalls; defects included failures
+//       of built-in safety alarms
+//   [kim2011gpca] https://repository.upenn.edu/cis_papers/475 — FDA Generic PCA pump model
+//       verified in UPPAAL against FDA's generic safety requirements
+//   [gpca_umn] https://crisys.cs.umn.edu/gpca.shtml — GPCA requirements documents
+// ============================================================================
+
+// A bolus is granted only after the lockout interval and only if it keeps the
+// rolling one-hour total under the prescribed cap (µg).
+fn bolus_allowed(min_since_last: Int, lockout_min: Int, given_hr: Int, bolus: Int, hourly_max: Int) -> Bool
+  requires min_since_last >= 0 && lockout_min > 0 && given_hr >= 0 && bolus > 0 && hourly_max > 0
+  ensures  result <=> (min_since_last >= lockout_min && given_hr + bolus <= hourly_max)
+=
+  min_since_last >= lockout_min && given_hr + bolus <= hourly_max
+
+// Deliver a volume-to-be-infused (µL) in pump strokes of at most `stroke` µL.
+// Proved: never delivers more than the VTBI, and stops exactly at it.
+fn infuse(vtbi: Int, stroke: Int) -> Int
+  requires vtbi >= 0 && stroke > 0
+  ensures  result == vtbi
+=
+  do v = 0
+    invariant v >= 0 && v <= vtbi
+    variant   vtbi - v
+  :
+     vtbi - v >= stroke             -> v := v + stroke
+  [] vtbi - v < stroke && v < vtbi  -> v := vtbi
+  od
+  then v
+
+// Pump interlocks: any hazard stops the motor in the same step, and an alarm must be
+// acknowledged by a clinician before pumping resumes.
+system PumpInterlocks {
+  state pumping: Bool = false
+  state door_closed: Bool = true
+  state occlusion: Bool = false
+  state air: Bool = false
+  state alarm: Bool = false
+
+  invariant NoFreeFlow:          pumping => door_closed
+  invariant StopOnHazard:        pumping => (!occlusion && !air)
+  invariant AlarmLatchesStopped: alarm => !pumping
+
+  // `alarm ~> !alarm` does NOT hold: hazards may keep recurring, and the model checker
+  // returns a fair lasso of alternating occlusion / air / door faults. Clearing an alarm
+  // is a clinical action, not something the pump can guarantee. What it can guarantee
+  // is that a clear pump is always able to restart:
+  temporal AlarmsAreAcknowledged: alarm ~> !alarm
+
+  transition
+     !pumping && door_closed && !occlusion && !air && !alarm -> pumping := true
+  [] pumping                                                 -> pumping := false
+  [] !occlusion                                              -> occlusion := true, pumping := false, alarm := true
+  [] !air                                                    -> air := true, pumping := false, alarm := true
+  [] door_closed && !pumping                                 -> door_closed := false
+  [] door_closed && pumping                                  -> door_closed := false, pumping := false, alarm := true
+  [] !door_closed                                            -> door_closed := true
+  [] alarm && !occlusion && !air && door_closed              -> alarm := false
+  [] occlusion                                               -> occlusion := false
+  [] air                                                     -> air := false
+}
+
+assert bolus_allowed(12, 10, 300, 100, 500)
+assert !bolus_allowed(8, 10, 300, 100, 500)
+assert !bolus_allowed(12, 10, 450, 100, 500)
+assert infuse(1250, 40) == 1250

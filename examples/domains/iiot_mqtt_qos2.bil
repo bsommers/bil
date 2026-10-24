@@ -1,0 +1,102 @@
+// ============================================================================
+// Domain: Industrial IoT — MQTT QoS 2 ("exactly once") over a lossy network,
+// plus NAMUR NE 43 fault classification of 4–20 mA transmitter telemetry.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [mqtt311] https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+//       §4.2: MQTT "requires an underlying transport that provides an ordered, lossless,
+//       stream of bytes"; §4.3.3 [MQTT-4.3.3-2]: until PUBREL the receiver acknowledges
+//       re-sent PUBLISHes and "MUST NOT cause duplicate messages to be delivered"
+//   [namur_ne43] https://www.namur.net/en/publications/news-archive/ne-43-has-been-revised.html
+//       — 3.8–20.5 mA carries the measurement; ≤ 3.6 mA or ≥ 21 mA signals a failure
+// ============================================================================
+
+type Sender = SendPub | WaitRec | WaitComp | Done
+
+// One PUBLISH from a gateway to a broker. Every packet in flight may be lost; the
+// sender retransmits on timeout (DUP=1); the broker keeps the packet id until PUBREL.
+// The network is lossy but in-order, as MQTT requires of its transport (§4.2): PUBREL
+// is not processed while an older PUBLISH is still in flight. Remove the `!net_pub`
+// guard on the PUBREL handler and the model checker finds a double delivery, which
+// is exactly the duplicate [MQTT-4.3.3-2] forbids.
+system MqttQos2 {
+  state s: Sender = SendPub
+  state net_pub: Bool = false
+  state net_rec: Bool = false
+  state net_rel: Bool = false
+  state net_comp: Bool = false
+  state stored: Bool = false
+  state delivered: Int = 0
+
+  invariant ExactlyOnceSafety: delivered <= 1
+  invariant DoneMeansDelivered: s == Done => delivered == 1
+
+  terminal s == Done && !net_pub && !net_rec && !net_rel && !net_comp
+
+  transition
+     s == SendPub                                    -> net_pub := true, s := WaitRec
+  [] s == WaitRec && !net_pub                       -> net_pub := true
+  [] net_pub                                         -> net_pub := false
+  [] net_pub && !stored                              -> net_pub := false, stored := true, delivered := delivered + 1, net_rec := true
+  [] net_pub && stored                               -> net_pub := false, net_rec := true
+  [] net_rec                                         -> net_rec := false
+  [] net_rec && s == WaitRec                         -> net_rec := false, net_rel := true, s := WaitComp
+  [] net_rec && s != WaitRec                         -> net_rec := false
+  [] s == WaitComp && !net_rel && !net_comp          -> net_rel := true
+  [] net_rel                                         -> net_rel := false
+  [] net_rel && !net_pub                             -> net_rel := false, stored := false, net_comp := true
+  [] net_comp && s == WaitComp                       -> net_comp := false, s := Done
+  [] net_comp && s != WaitComp                       -> net_comp := false
+  [] net_comp                                        -> net_comp := false
+}
+
+concept Reading {
+  sensor: String,
+  loop_ua: Int,   // loop current in µA
+  ts: Int
+}
+
+type Ne43 = Measurement | Warning | Failure
+
+// NAMUR NE 43 [namur_ne43]: 3.8–20.5 mA is a measurement (including the small
+// under/over-range around 4–20 mA); ≤ 3.6 mA or ≥ 21.0 mA means the transmitter is
+// signalling a failure (or the loop is broken); the gaps in between are suspect.
+fn ne43_class(ua: Int) -> Ne43
+  requires true
+  ensures  (ua >= 3800 && ua <= 20500 => result == Measurement)
+           && ((ua <= 3600 || ua >= 21000) => result == Failure)
+           && ((ua > 3600 && ua < 3800) || (ua > 20500 && ua < 21000) => result == Warning)
+=
+  if ua >= 3800 && ua <= 20500                              -> Measurement
+  [] ua <= 3600 || ua >= 21000                              -> Failure
+  [] (ua > 3600 && ua < 3800) || (ua > 20500 && ua < 21000) -> Warning
+  fi
+
+// Scale a measurement to 0..10000 counts over the 4–20 mA span (clamped to the span).
+fn scale_counts(ua: Int) -> Int
+  requires ua >= 3800 && ua <= 20500
+  ensures  result >= 0 && result <= 10000
+=
+  if ua < 4000                  -> 0
+  [] ua > 20000                 -> 10000
+  [] ua >= 4000 && ua <= 20000  -> (ua - 4000) * 10000 / 16000
+  fi
+
+let batch = [
+  Reading { sensor: "PT-101", loop_ua: 13920, ts: 1 },
+  Reading { sensor: "PT-101", loop_ua: 13936, ts: 2 },
+  Reading { sensor: "PT-102", loop_ua: 3500,  ts: 2 },
+  Reading { sensor: "PT-103", loop_ua: 21600, ts: 3 },
+  Reading { sensor: "PT-104", loop_ua: 3700,  ts: 3 },
+  Reading { sensor: "PT-101", loop_ua: 13912, ts: 3 }
+]
+
+let good     = batch |> where(ne43_class(_.loop_ua) == Measurement)
+let failed   = batch |> where(ne43_class(_.loop_ua) == Failure) |> map(_.sensor)
+let suspect  = batch |> where(ne43_class(_.loop_ua) == Warning) |> map(_.sensor)
+let pt101    = good |> map(scale_counts(_.loop_ua))
+
+assert count(good) == 3
+assert failed == ["PT-102", "PT-103"]
+assert suspect == ["PT-104"]
+assert ∀ c ∈ pt101 : c >= 0 && c <= 10000

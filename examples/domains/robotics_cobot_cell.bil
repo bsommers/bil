@@ -1,0 +1,73 @@
+// ============================================================================
+// Domain: Collaborative Robotics — Speed & Separation Monitoring (ISO/TS 15066)
+// A cobot cell where a human may walk into the shared workspace at any moment.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [isots15066] ISO/TS 15066 — speed & separation monitoring (SSM) is one of four
+//       collaborative modes; https://www.automate.org/tech-papers/iso-ts-15066-explained
+//   [marvel2017] https://doi.org/10.1016/j.rcim.2016.08.001 — NIST guidance on implementing the
+//       SSM protective separation distance
+//   [iso10218] 250 mm/s reduced speed (secondary sources; check the current ISO 10218 edition)
+// ============================================================================
+
+type RobotMode = Auto | Reduced | ProtectiveStop
+
+// Speed tiers (mm/s) from the measured human–robot separation (mm).
+// Inside the protective separation distance [marvel2017] the robot must stand still;
+// inside a 500 mm collaborative band it is capped at the 250 mm/s reduced speed
+// [iso10218]. Real SSM computes the protective distance from speeds, reaction and
+// braking times; here it is an input.
+fn ssm_speed_limit(sep_mm: Int, protective_mm: Int, vmax: Int) -> Int
+  requires protective_mm > 0 && vmax >= 250 && sep_mm >= 0
+  ensures  result >= 0 && result <= vmax
+           && (sep_mm <= protective_mm => result == 0)
+           && (sep_mm < protective_mm + 500 => result <= 250)
+=
+  if sep_mm <= protective_mm                                  -> 0
+  [] sep_mm > protective_mm && sep_mm < protective_mm + 500   -> 250
+  [] sep_mm >= protective_mm + 500                            -> vmax
+  fi
+
+// The commanded speed is always clipped to the SSM limit, whatever the planner asked for.
+fn command_speed(planned: Int, limit: Int) -> Int
+  requires limit >= 0
+  ensures  result >= 0 && result <= limit && (planned >= 0 && planned <= limit => result == planned)
+=
+  if planned < 0                      -> 0
+  [] planned > limit                  -> limit
+  [] planned >= 0 && planned <= limit -> planned
+  fi
+
+// Cell supervisor. zone: 0 = clear, 1 = collaborative band, 2 = protective zone.
+// The human moves nondeterministically; the laser scanner's safety output acts in
+// the same step the human crosses into a zone (a safety-rated monitored stop).
+system CobotCell {
+  state zone: Int = 0
+  state mode: RobotMode = Auto
+  state speed: Int = 1000
+  state estop: Bool = false
+
+  invariant StandstillWhenHumanIsClose: zone == 2 => speed == 0
+  invariant ReducedSpeedInSharedSpace:  zone == 1 => speed <= 250
+  invariant EStopMeansStop:             estop => (speed == 0 && mode == ProtectiveStop)
+  invariant ZoneRange:                  zone >= 0 && zone <= 2
+
+  // "The protective stop always clears" is NOT provable: the human may stay in the
+  // protective zone forever (the model checker returns a fair lasso). What the
+  // controller can promise is that a latched E-stop is always releasable.
+  temporal EStopIsReleasable: estop ~> !estop
+
+  transition
+     zone == 0 && !estop -> zone := 1, mode := Reduced, speed := 250
+  [] zone == 1 && !estop -> zone := 2, mode := ProtectiveStop, speed := 0
+  [] zone == 2 && !estop -> zone := 1, mode := Reduced, speed := 250
+  [] zone == 1 && !estop -> zone := 0, mode := Auto, speed := 1000
+  [] !estop              -> estop := true, mode := ProtectiveStop, speed := 0
+  [] estop               -> estop := false, zone := 2
+}
+
+let far   = ssm_speed_limit(2400, 800, 1500)
+let close = ssm_speed_limit(1000, 800, 1500)
+let touch = ssm_speed_limit(600, 800, 1500)
+assert far == 1500 && close == 250 && touch == 0
+assert command_speed(900, close) == 250

@@ -1,0 +1,79 @@
+// ============================================================================
+// Domain: Manufacturing — Hydraulic press guarding (two-hand control, light
+// curtain, interlocked door) and coarse/fine gravimetric dosing.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [iso13851] ISO 13851:2019 two-hand control — type III: both actuators within 0.5 s,
+//       release both before re-triggering (secondary sources; Phoenix Contact type IIIA
+//       relay: "synchronous activation monitoring < 0.5 s",
+//       https://www.phoenixcontact.com/us/products/2700571/pdf)
+//   [iso13855] ISO 13855 safety distance S = K·T + C (secondary sources, e.g.
+//       https://www.issa.int/sites/default/files/documents/prevention/2Light_Curtain_2011_en-36159.pdf)
+// ============================================================================
+
+type Ram = Up | Descending | Returning
+
+// Two-hand control with anti-tie-down: both buttons must be pressed within 500 ms
+// of each other [iso13851].
+fn two_hand_ok(t_left_ms: Int, t_right_ms: Int) -> Bool
+  requires t_left_ms >= 0 && t_right_ms >= 0
+  ensures  result <=> (abs(t_left_ms - t_right_ms) <= 500)
+=
+  abs(t_left_ms - t_right_ms) <= 500
+
+// Light-curtain mounting distance [iso13855]: S = K·T + C with K = 2000 mm/s and,
+// for a curtain resolution d ≤ 40 mm, C = 8·(d − 14). T is the total stopping time
+// (curtain + relay + press), in ms, so K·T = 2·T mm. Sources disagree on when K may
+// be reduced to 1600 mm/s, so this always uses K = 2000 (the larger distance).
+fn light_curtain_distance(t_stop_ms: Int, d_mm: Int) -> Int
+  requires t_stop_ms > 0 && d_mm >= 14 && d_mm <= 40
+  ensures  result == 2 * t_stop_ms + 8 * (d_mm - 14) && result >= 2 * t_stop_ms
+=
+  2 * t_stop_ms + 8 * (d_mm - 14)
+
+// The safety relay acts in the same step as the hazard: any hand release, curtain
+// break or door opening during the down-stroke reverses the ram.
+system PressCell {
+  state ram: Ram = Up
+  state hands: Bool = false
+  state curtain_clear: Bool = true
+  state door_closed: Bool = true
+
+  invariant DownstrokeIsGuarded:
+    ram == Descending => (hands && curtain_clear && door_closed)
+
+  temporal NoStuckDownstroke: (ram == Descending) ~> (ram == Up)
+
+  transition
+     ram == Up && !hands                                 -> hands := true
+  [] ram == Up && hands && curtain_clear && door_closed  -> ram := Descending
+  [] ram == Descending                                   -> ram := Returning, hands := false
+  [] ram == Descending                                   -> ram := Returning, hands := false, curtain_clear := false
+  [] ram == Descending                                   -> ram := Returning, door_closed := false
+  [] ram != Descending && hands                          -> hands := false
+  [] ram == Returning                                    -> ram := Up
+  [] !curtain_clear                                      -> curtain_clear := true
+  [] !door_closed && ram == Up                           -> door_closed := true
+  [] ram == Up && curtain_clear                          -> curtain_clear := false
+}
+
+// Gravimetric dosing: coarse feed in 100 g steps, then fine feed in 1 g steps.
+// Proved: never overfills, and ends exactly on target.
+fn dose(target: Int) -> Int
+  requires target >= 0
+  ensures  result == target
+=
+  do q = 0
+    invariant q >= 0 && q <= target
+    variant   target - q
+  :
+     target - q >= 100                -> q := q + 100
+  [] target - q < 100 && q < target   -> q := q + 1
+  od
+  then q
+
+let batch_g = dose(2537)
+assert batch_g == 2537
+assert two_hand_ok(1000, 1320) && !two_hand_ok(1000, 1600)
+assert light_curtain_distance(110, 14) == 220
+assert light_curtain_distance(180, 30) == 488

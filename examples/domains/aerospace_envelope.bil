@@ -1,0 +1,79 @@
+// ============================================================================
+// Domain: Aerospace — Fly-by-wire flight-envelope protection (angle of attack and
+// bank) and autopilot engagement logic.
+// Units: angles in centidegrees.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [airbus_laws] secondary sources only (verify against the type's FCOM):
+//       https://code7700.com/airbus_control_laws.htm — bank beyond 33° needs continuous
+//       sidestick input, release returns to 33°, 67° limit; between α-prot and α-max the
+//       stick commands AoA and α-max is never exceeded; α-prot disengages the autopilot
+// ============================================================================
+
+// Pitch command shaping with alpha protection: the stick may always command
+// nose-down; inside the protection range nose-up authority is limited, and at
+// alpha_max no further nose-up is commanded [airbus_laws].
+fn pitch_cmd(stick: Int, alpha: Int, alpha_prot: Int, alpha_max: Int) -> Int
+  requires alpha_prot < alpha_max && stick >= 0 - 1000 && stick <= 1000
+  ensures  result >= 0 - 1000 && result <= 1000
+           && (alpha >= alpha_max => result <= 0)
+           && (stick <= 0 => result == stick)
+           && (alpha < alpha_prot => result == stick)
+=
+  if stick <= 0                                        -> stick
+  [] stick > 0 && alpha < alpha_prot                   -> stick
+  [] stick > 0 && alpha >= alpha_prot && alpha < alpha_max -> min(stick, 300)
+  [] stick > 0 && alpha >= alpha_max                   -> 0
+  fi
+
+// Bank-angle protection [airbus_laws]: beyond 33° the pilot must hold the sidestick;
+// releasing it rolls the aircraft back toward 33°; 67° is never exceeded by command.
+// (An earlier draft of this model forced a roll-back even with the stick held, which
+// is not how normal law behaves; the sources corrected it.)
+fn roll_cmd(stick: Int, bank: Int) -> Int
+  requires stick >= 0 - 1000 && stick <= 1000 && bank >= 0 - 6700 && bank <= 6700
+  ensures  result >= 0 - 1000 && result <= 1000
+           && (bank >= 6700 => result <= 0)
+           && (bank <= 0 - 6700 => result >= 0)
+           && (bank > 3300 && bank < 6700 && stick == 0 => result < 0)
+           && (bank < 0 - 3300 && bank > 0 - 6700 && stick == 0 => result > 0)
+           && (bank > 0 - 6700 && bank < 6700 && stick != 0 => result == stick)
+=
+  if bank >= 6700                                               -> min(stick, 0)
+  [] bank <= 0 - 6700                                           -> max(stick, 0)
+  [] bank > 3300 && bank < 6700 && stick == 0                   -> 0 - 100
+  [] bank < 0 - 3300 && bank > 0 - 6700 && stick == 0           -> 100
+  [] bank > 0 - 6700 && bank < 6700 && stick != 0               -> stick
+  [] bank >= 0 - 3300 && bank <= 3300 && stick == 0             -> 0
+  fi
+
+type ApMode = Manual | ApEngaged | ApDisconnectWarn
+
+// Autopilot: engages only inside the normal envelope; leaving the envelope (for example
+// reaching α-prot [airbus_laws]) or any pilot input on the sidestick disconnects it with
+// a warning that must be cancelled.
+system Autopilot {
+  state ap: ApMode = Manual
+  state in_envelope: Bool = true
+  state stick_input: Bool = false
+
+  invariant ApOnlyInsideEnvelope: ap == ApEngaged => in_envelope
+  invariant NoApWithStickInput:   ap == ApEngaged => !stick_input
+
+  temporal WarningIsCancelled: (ap == ApDisconnectWarn) ~> (ap == Manual)
+
+  transition
+     ap == Manual && in_envelope && !stick_input -> ap := ApEngaged
+  [] ap == ApEngaged                             -> in_envelope := false, ap := ApDisconnectWarn
+  [] ap == ApEngaged                             -> stick_input := true, ap := ApDisconnectWarn
+  [] ap == ApDisconnectWarn                      -> ap := Manual
+  [] ap != ApEngaged && !in_envelope             -> in_envelope := true
+  [] ap != ApEngaged && stick_input              -> stick_input := false
+  [] ap == Manual && in_envelope                 -> in_envelope := false
+}
+
+assert pitch_cmd(800, 1500, 1200, 1500) == 0
+assert pitch_cmd(800, 1300, 1200, 1500) == 300
+assert pitch_cmd(0 - 600, 1600, 1200, 1500) == 0 - 600
+assert roll_cmd(500, 4000) == 500
+assert roll_cmd(0, 4000) == 0 - 100

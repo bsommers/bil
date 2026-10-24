@@ -1,0 +1,75 @@
+// ============================================================================
+// Domain: Control Systems — Fixed-point PI controller with actuator saturation,
+// conditional-integration anti-windup, and a rate-limited setpoint ramp.
+// All arithmetic is integer (fixed-point counts), as on a PLC or MCU.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [scilab_aw] https://scilab.org/pid-anti-windup-schemes — conditional integration and
+//       back-calculation are the two basic anti-windup schemes; `integrate` is the former
+//   [astrom_murray] Åström & Murray, Feedback Systems — integrator windup under saturation
+// ============================================================================
+
+// Actuator saturation: output always within the actuator's physical range.
+fn saturate(u: Int, umin: Int, umax: Int) -> Int
+  requires umin < umax
+  ensures  result >= umin && result <= umax
+           && (u >= umin && u <= umax => result == u)
+=
+  if u < umin               -> umin
+  [] u > umax               -> umax
+  [] u >= umin && u <= umax -> u
+  fi
+
+// Conditional integration (clamping anti-windup): the integrator only accumulates
+// while doing so cannot push it past its bound. The bound holds for every input.
+fn integrate(acc: Int, err: Int, imax: Int) -> Int
+  requires imax > 0 && acc >= 0 - imax && acc <= imax
+  ensures  result >= 0 - imax && result <= imax
+=
+  if acc + err > imax                          -> imax
+  [] acc + err < 0 - imax                      -> 0 - imax
+  [] acc + err >= 0 - imax && acc + err <= imax -> acc + err
+  fi
+
+// Setpoint ramp: move the reference toward the target by at most `rate` per tick.
+// Proved: never overshoots, always terminates, and lands exactly on target.
+fn ramp_to(start: Int, target: Int, rate: Int) -> Int
+  requires rate > 0
+  ensures  result == target
+=
+  do r = start
+    invariant (start <= target => (r >= start && r <= target))
+              && (start > target => (r <= start && r >= target))
+    variant   abs(target - r)
+  :
+     r < target && target - r > rate  -> r := r + rate
+  [] r < target && target - r <= rate -> r := target
+  [] r > target && r - target > rate  -> r := r - rate
+  [] r > target && r - target <= rate -> r := target
+  od
+  then r
+
+// Thermostat with hysteresis (bang-bang). The heater is a nondeterministic plant:
+// temperature drifts up only while heating, down only while off.
+system HysteresisThermostat {
+  state temp: Int = 18
+  state heater: Bool = false
+
+  invariant ComfortBand: temp >= 17 && temp <= 23
+  invariant HeaterLogic: (temp <= 17 => heater) || (temp > 17)
+
+  temporal NoLatchOn:  heater ~> !heater
+  temporal NoLatchOff: !heater ~> heater
+
+  transition
+     heater && temp < 22   -> temp := temp + 1
+  [] heater && temp >= 22  -> heater := false, temp := temp + 1
+  [] !heater && temp > 18  -> temp := temp - 1
+  [] !heater && temp <= 18 -> heater := true, temp := temp - 1
+}
+
+let u1 = saturate(5200, 0, 4095)
+let i1 = integrate(900, 400, 1000)
+let r1 = ramp_to(0, 1000, 64)
+let r2 = ramp_to(500, 120, 100)
+assert u1 == 4095 && i1 == 1000 && r1 == 1000 && r2 == 120

@@ -1,0 +1,70 @@
+// ============================================================================
+// Domain: Automotive — Adaptive cruise control (ACC) with a time-gap policy and
+// an AEB override, plus the driver-override state machine.
+// Units: speed in dm/s, gap in dm, acceleration in cm/s² (integers, as on an ECU).
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [iso15622] https://www.iso.org/standard/89465.html — ACC control strategy, minimum
+//       functionality, driver interface, reaction to failure
+//   [bernsteiner2016] https://austria-forum.org/web-books/driverassistance00en2017isds/000100 —
+//       minimum selectable time gaps of 0.8 s and 1 s in two standards; Fancher et al.
+//       recommend 1–2 s. This model uses 1.5 s.
+// ============================================================================
+
+// Minimum safe gap: a 1.5 s time gap [bernsteiner2016] plus a 50 dm standstill margin,
+// i.e. 2·gap ≥ 3·speed + 100. (The draft used a "2-second rule"; the sources put
+// standard minimum time gaps at 0.8–1 s and recommended settings at 1–2 s.)
+// Written inline in contracts below: the SMT encoding does not unfold user calls.
+fn time_gap_ok(gap: Int, speed: Int) -> Bool
+  requires speed >= 0 && gap >= 0
+  ensures  result <=> (2 * gap >= 3 * speed + 100)
+=
+  2 * gap >= 3 * speed + 100
+
+// ACC acceleration request. Comfort limits are +200 / -350 cm/s²; inside half the
+// safe gap the AEB path commands -900 regardless of the driver's set speed.
+fn acc_command(gap: Int, speed: Int, set_speed: Int) -> Int
+  requires speed >= 0 && gap >= 0 && set_speed >= 0
+  ensures  result >= 0 - 900 && result <= 200
+           && (2 * gap < 3 * speed + 100 => result < 0)
+           && (4 * gap < 3 * speed + 100 => result == 0 - 900)
+           && (speed > set_speed => result <= 0)
+=
+  if 4 * gap < 3 * speed + 100                                         -> 0 - 900
+  [] 4 * gap >= 3 * speed + 100 && 2 * gap < 3 * speed + 100           -> 0 - 350
+  [] 2 * gap >= 3 * speed + 100 && speed > set_speed                   -> 0 - 100
+  [] 2 * gap >= 3 * speed + 100 && speed <= set_speed && speed + 20 <= set_speed -> 200
+  [] 2 * gap >= 3 * speed + 100 && speed <= set_speed && speed + 20 > set_speed  -> 0
+  fi
+
+type AccMode = Off | Standby | Active | Override
+
+// Driver interaction. Brake pedal always cancels to Standby; accelerator pedal is an
+// override during which ACC must not brake; AEB is independent of the ACC mode.
+system AccSupervisor {
+  state mode: AccMode = Off
+  state brake: Bool = false
+  state accel_pedal: Bool = false
+  state acc_braking: Bool = false
+
+  invariant BrakePedalCancels:        brake => (mode == Off || mode == Standby)
+  invariant NoAccBrakingInOverride:   mode == Override => !acc_braking
+  invariant OnlyActiveAccBrakes:      acc_braking => mode == Active
+
+  transition
+     mode == Off                          -> mode := Standby
+  [] mode == Standby && !brake            -> mode := Active
+  [] mode == Active                       -> acc_braking := true
+  [] acc_braking                          -> acc_braking := false
+  [] mode == Active || mode == Override   -> brake := true, mode := Standby, acc_braking := false
+  [] brake                                -> brake := false
+  [] mode == Active && !brake             -> accel_pedal := true, mode := Override, acc_braking := false
+  [] mode == Override                     -> accel_pedal := false, mode := Active
+  [] mode != Off                          -> mode := Off, acc_braking := false, accel_pedal := false
+}
+
+assert acc_command(200, 300, 330) == 0 - 900
+assert acc_command(400, 300, 330) == 0 - 350
+assert acc_command(900, 300, 330) == 200
+assert acc_command(900, 300, 250) == 0 - 100
+assert time_gap_ok(500, 300) && !time_gap_ok(499, 300)

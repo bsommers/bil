@@ -1,0 +1,74 @@
+// ============================================================================
+// Domain: Surgical Robotics — Teleoperated instrument with motion scaling, a
+// virtual fixture (no-fly depth limit), force limiting, and a link watchdog
+// that never lets the instrument resume motion without the surgeon re-engaging.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [rosenberg1993] https://doi.org/10.1117/12.164901 — virtual fixtures in telepresence
+//   [abbott2007] https://doi.org/10.1007/978-3-540-48113-3_5 — forbidden-region virtual fixtures
+//       keep the manipulator out of forbidden regions of the workspace
+//   [iec80601277] IEC 80601-2-77 — basic safety and essential performance of robotically
+//       assisted surgical equipment; https://www.iso.org/standard/68473.html
+// ============================================================================
+
+type TeleMode = Following | Hold
+
+// Virtual fixture: the tool tip may not advance past `limit` (µm) along the
+// approach axis toward a critical structure. Retraction is never restricted.
+fn fixture_step(depth: Int, step: Int, limit: Int) -> Int
+  requires depth <= limit
+  ensures  depth + result <= limit
+           && (step <= 0 => result == step)
+           && (step > 0 => (result >= 0 && result <= step))
+=
+  if step <= 0                             -> step
+  [] step > 0 && depth + step <= limit     -> step
+  [] step > 0 && depth + step > limit      -> limit - depth
+  fi
+
+// 5:1 motion scaling from master to instrument (Euclidean integer division).
+fn scale_motion(master_um: Int) -> Int
+  requires master_um >= 0
+  ensures  result >= 0 && result * 5 <= master_um && master_um < result * 5 + 5
+=
+  master_um / 5
+
+// Tool–tissue force limit (mN), symmetric in both directions.
+fn limit_force(f: Int, fmax: Int) -> Int
+  requires fmax > 0
+  ensures  result >= 0 - fmax && result <= fmax
+=
+  if f > fmax                          -> fmax
+  [] f < 0 - fmax                      -> 0 - fmax
+  [] f >= 0 - fmax && f <= fmax        -> f
+  fi
+
+// Teleoperation supervisor. A dropped console link puts the arm on hold; when the
+// link comes back the arm stays on hold until the surgeon releases and re-presses
+// the clutch. "Recovering the link resumes following" is the classic hazard.
+system Teleoperation {
+  state mode: TeleMode = Hold
+  state clutch: Bool = false
+  state link_ok: Bool = true
+  state moving: Bool = false
+  state needs_reengage: Bool = false
+
+  invariant MotionOnlyWhileFollowing: moving => (clutch && link_ok && mode == Following)
+  invariant NoMotionWithoutReengage:  moving => !needs_reengage
+
+  temporal HoldIsLeftWhenLinkIsUp: (mode == Hold && link_ok && !clutch) ~> (mode == Following || !link_ok)
+
+  transition
+     mode == Hold && !clutch && link_ok    -> clutch := true, mode := Following, needs_reengage := false
+  [] mode == Following && !moving          -> moving := true
+  [] moving                                -> moving := false
+  [] clutch                                -> clutch := false, moving := false, mode := Hold
+  [] link_ok                               -> link_ok := false, moving := false, mode := Hold, needs_reengage := true
+  [] !link_ok                              -> link_ok := true
+}
+
+let s1 = fixture_step(9800, 500, 10000)
+let s2 = fixture_step(9800, 0 - 300, 10000)
+assert s1 == 200 && s2 == 0 - 300
+assert scale_motion(1234) == 246
+assert limit_force(0 - 9000, 4000) == 0 - 4000

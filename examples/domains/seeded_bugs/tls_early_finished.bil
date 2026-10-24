@@ -1,0 +1,116 @@
+// SEEDED BUG — variant of ../cybersecurity_zero_trust.bil
+// Client accepts an injected early Finished (SKIP-TLS class). Expected: NoDataToUnverifiedPeer violated.
+// ============================================================================
+// Domain: Cybersecurity — Rate limiting, brute-force lockout, a handshake that
+// never releases application data early, and separation-of-duties auditing.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [rfc2697] https://www.rfc-editor.org/rfc/rfc2697 — token buckets capped at the burst size
+//   [nist80063b] https://pages.nist.gov/800-63-4/sp800-63b.html §3.2.2 — at most 100 consecutive
+//       failures per authenticator; lower limits are allowed (this model uses 5)
+//   [beurdouche2015] https://doi.org/10.1145/3023357 — SMACK: TLS state-machine bugs let an
+//       attacker skip messages (SKIP-TLS CVE-2014-6593, FREAK CVE-2015-0204 [ncc_smack])
+//   [nist80053ac5] NIST SP 800-53 AC-5 Separation of Duties
+// ============================================================================
+
+// Token-bucket rate limiter: refill then spend. The bucket never overflows its
+// capacity and never goes negative, for every input.
+fn refill(tokens: Int, cap: Int, add: Int) -> Int
+  requires cap > 0 && tokens >= 0 && tokens <= cap && add >= 0
+  ensures  result >= 0 && result <= cap && result >= tokens
+=
+  if tokens + add > cap  -> cap
+  [] tokens + add <= cap -> tokens + add
+  fi
+
+fn spend(tokens: Int, cost: Int) -> Int
+  requires tokens >= 0 && cost > 0
+  ensures  result >= 0 && result <= tokens && (tokens >= cost => result == tokens - cost)
+=
+  if tokens >= cost -> tokens - cost
+  [] tokens < cost  -> tokens
+  fi
+
+// Brute-force protection: five consecutive failures lock the account until the
+// lockout timer expires; a success resets the counter.
+system LoginLockout {
+  state failures: Int = 0
+  state locked: Bool = false
+
+  invariant BoundedFailures: failures >= 0 && failures <= 5
+  invariant LockedAtLimit:   locked <=> failures == 5
+
+  temporal LockoutExpires: locked ~> !locked
+
+  transition
+     !locked && failures < 4   -> failures := failures + 1
+  [] !locked && failures == 4  -> failures := 5, locked := true
+  [] !locked                   -> failures := 0
+  [] locked                    -> locked := false, failures := 0
+}
+
+type Hs = Start | HelloSent | CertVerified | Finished | Aborted
+
+// Client handshake under an active network attacker who may present a bad
+// certificate or inject an early Finished at any point. The client only accepts
+// Finished after it has verified the server certificate.
+system ClientHandshake {
+  state hs: Hs = Start
+  state cert_ok: Bool = false
+  state app_data_sent: Bool = false
+
+  invariant NoDataBeforeFinished:  app_data_sent => hs == Finished
+  invariant NoDataToUnverifiedPeer: app_data_sent => cert_ok
+  terminal hs == Aborted || app_data_sent
+
+  transition
+     hs == Start                        -> hs := HelloSent
+  [] hs == HelloSent                    -> hs := CertVerified, cert_ok := true
+  [] hs == HelloSent                    -> hs := Aborted
+  [] hs == CertVerified                 -> hs := Finished
+  [] hs == CertVerified                 -> hs := Aborted
+  [] hs == HelloSent                    -> hs := Finished
+  [] hs == Finished && !app_data_sent   -> app_data_sent := true
+}
+
+concept Grant {
+  principal: String,
+  approver: String,
+  permission: String,
+  mfa: Bool
+}
+
+// Separation of duties: nobody approves their own production access, and
+// production access always requires MFA.
+axiom SeparationOfDuties:
+  ∀ g ∈ Grant : g.permission == "prod-write" ⇒ (g.approver != g.principal ∧ g.mfa)
+
+// Pending requests are a separate concept: the axiom binds issued grants, not requests.
+// (Materializing a non-compliant `Grant` makes `bil run` stop with
+// "OntoLogic Axiom 'SeparationOfDuties' violated" — closed-world enforcement.)
+concept AccessRequest {
+  principal: String,
+  approver: String,
+  permission: String,
+  mfa: Bool
+}
+
+let requests = [
+  AccessRequest { principal: "alice", approver: "bob",   permission: "prod-write", mfa: true },
+  AccessRequest { principal: "carol", approver: "carol", permission: "prod-write", mfa: true },
+  AccessRequest { principal: "dave",  approver: "bob",   permission: "read",       mfa: false },
+  AccessRequest { principal: "erin",  approver: "alice", permission: "prod-write", mfa: false }
+]
+
+let sod_violations =
+  requests
+  |> where(_.permission == "prod-write" && (_.approver == _.principal || !_.mfa))
+  |> map(_.principal)
+
+let issued = [
+  Grant { principal: "alice", approver: "bob", permission: "prod-write", mfa: true },
+  Grant { principal: "dave",  approver: "bob", permission: "read",       mfa: false }
+]
+
+assert sod_violations == ["carol", "erin"]
+assert refill(9, 10, 5) == 10 && spend(3, 5) == 3

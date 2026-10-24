@@ -1,0 +1,64 @@
+// SEEDED BUG — variant of ../process_safety_reactor.bil
+// Heating is not pre-empted at the trip point (SIS slower than the reaction). Expected: BelowDesignTemperature violated.
+// ============================================================================
+// Domain: Critical Process Systems — Safety Instrumented System (SIS) for an
+// exothermic batch reactor (IEC 61511): 2oo3 voting, trip logic, and the
+// runaway scenario model-checked against the design temperature.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [csb_t2] https://www.csb.gov/csb-finds-t2-laboratories-explosion-caused-by-failure-of-cooling-system-resulting-in-runaway-chemical-reaction-report-notes-company-did-not-recognize-hazards-of-chemical-process/
+//       — T2 Laboratories (2007): cooling failure, runaway reaction, 4 killed
+//   [lundteigen_sis] NTNU SIS book ch. 12 — 2oo3 tolerates one fault against both failure
+//       to trip and spurious trip
+//   [iec61511] IEC 61511 — SIS for the process industry; hardware fault tolerance by SIL
+// ============================================================================
+
+// 2-out-of-3 voting: trips when any two of three transmitters agree.
+fn vote_2oo3(a: Bool, b: Bool, c: Bool) -> Bool
+  requires true
+  ensures  result <=> ((a && b) || (a && c) || (b && c))
+=
+  (a && b) || (a && c) || (b && c)
+
+// High-temperature trip with three redundant transmitters (deci-degrees C).
+// Proved: a single failed-low transmitter cannot block the trip, and a single
+// failed-high transmitter cannot cause a spurious one.
+fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -> Bool
+  requires setpoint > 0
+  ensures  ((t1 >= setpoint && t2 >= setpoint) => result)
+           && ((t1 < setpoint && t2 < setpoint) => !result)
+=
+  (t1 >= setpoint && t2 >= setpoint) || (t1 >= setpoint && t3 >= setpoint)
+  || (t2 >= setpoint && t3 >= setpoint)
+
+// Runaway scenario. Cooling can fail at any time while running; without cooling the
+// reaction heats one step at a time. The SIS trips at temp >= 7 and its response is
+// faster than the thermal time constant (heating is pre-empted at the trip point),
+// but residual heat can still add one step after the trip.
+system ReactorSis {
+  state temp: Int = 5
+  state cooling: Bool = true
+  state feed: Bool = true
+  state tripped: Bool = false
+  state residual: Bool = false
+
+  invariant BelowDesignTemperature: temp <= 8
+  invariant TripStopsFeed:          tripped => !feed
+
+  temporal TripIsReset:  tripped ~> !tripped
+
+  transition
+     feed && !cooling && temp < 10               -> temp := temp + 1
+  [] temp >= 7 && !tripped                       -> tripped := true, feed := false
+  [] tripped && !residual && temp < 10           -> temp := temp + 1, residual := true
+  [] cooling && !tripped                         -> cooling := false
+  [] !cooling                                    -> cooling := true
+  [] cooling && temp > 3 && (tripped || !feed)   -> temp := temp - 1
+  [] tripped && temp <= 3 && cooling && residual -> tripped := false, feed := true, residual := false
+  [] feed && cooling && temp > 5                 -> temp := temp - 1
+  [] feed && cooling && temp <= 5                -> temp := temp + 1
+}
+
+let trip_a = high_temp_trip(1510, 1525, 0, 1500)
+let trip_b = high_temp_trip(1490, 1480, 9999, 1500)
+assert trip_a && !trip_b

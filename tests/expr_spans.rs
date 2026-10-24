@@ -49,11 +49,13 @@ fn assert_spans_align(label: &str, src: &str) {
 
 #[test]
 fn span_table_aligns_with_every_example() {
-    for entry in std::fs::read_dir("examples").unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|x| x == "bil") {
-            let src = std::fs::read_to_string(&path).unwrap();
-            assert_spans_align(&path.display().to_string(), &src);
+    for dir in ["examples", "examples/domains", "examples/domains/seeded_bugs"] {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|x| x == "bil") {
+                let src = std::fs::read_to_string(&path).unwrap();
+                assert_spans_align(&path.display().to_string(), &src);
+            }
         }
     }
 }

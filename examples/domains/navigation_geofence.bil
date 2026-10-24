@@ -1,0 +1,75 @@
+// ============================================================================
+// Domain: Navigation & Autonomy — Geofenced waypoint following and a drone
+// return-to-home battery reserve that is maintained in every reachable state.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [nasa_safeguard] https://technology.nasa.gov/patent/LAR-TOPS-244 — NASA Langley's Safeguard:
+//       stay-in / stay-out geofencing independent of the autopilot, with boundary-violation
+//       detection proved in PVS (https://ntrs.nasa.gov/api/citations/20170009617/downloads/20170009617.pdf)
+// ============================================================================
+
+concept Pose {
+  x: Int,
+  y: Int
+}
+
+fn in_fence(p: Pose, w: Int, h: Int) -> Bool
+  requires w > 0 && h > 0
+  ensures  result <=> (p.x >= 0 && p.x <= w && p.y >= 0 && p.y <= h)
+=
+  p.x >= 0 && p.x <= w && p.y >= 0 && p.y <= h
+
+// Grid waypoint follower: one cell per step along either axis (the planner may pick
+// either axis nondeterministically). The fence is the box [0, fence.x] × [0, fence.y].
+// Proved: the vehicle never leaves the geofence, the Manhattan distance strictly
+// decreases, and it arrives exactly at the waypoint. (Target and fence are records
+// rather than four Ints: bil's bounded cross-check enumerates the product of every
+// parameter's sample domain, which grows exponentially with the parameter count.)
+fn goto_waypoint(start: Pose, target: Pose, fence: Pose) -> Pose
+  requires fence.x > 0 && fence.y > 0
+           && start.x >= 0 && start.x <= fence.x && start.y >= 0 && start.y <= fence.y
+           && target.x >= 0 && target.x <= fence.x && target.y >= 0 && target.y <= fence.y
+  ensures  result.x == target.x && result.y == target.y
+=
+  do cur = start
+    invariant cur.x >= 0 && cur.x <= fence.x && cur.y >= 0 && cur.y <= fence.y
+    variant   abs(target.x - cur.x) + abs(target.y - cur.y)
+  :
+     cur.x < target.x -> cur := cur with { x: cur.x + 1 }
+  [] cur.x > target.x -> cur := cur with { x: cur.x - 1 }
+  [] cur.y < target.y -> cur := cur with { y: cur.y + 1 }
+  [] cur.y > target.y -> cur := cur with { y: cur.y - 1 }
+  od
+  then cur
+
+// Return-to-home decision: 2 battery units per cell of distance plus a fixed reserve.
+fn must_return(battery: Int, dist_home: Int, reserve: Int) -> Bool
+  requires battery >= 0 && dist_home >= 0 && reserve >= 0
+  ensures  result <=> (battery - 2 <= 2 * (dist_home + 1) + reserve)
+=
+  battery - 2 <= 2 * (dist_home + 1) + reserve
+
+// Mission supervisor. Every reachable state keeps enough charge to get home:
+// the outbound leg is only enabled when the RTH rule says it is safe.
+system DroneMission {
+  state dist: Int = 0
+  state battery: Int = 12
+  state returning: Bool = false
+
+  invariant CanAlwaysGetHome: battery >= 2 * dist
+  invariant NonNegative:      battery >= 0 && dist >= 0
+
+  temporal ReturnsHome: returning ~> (dist == 0)
+  terminal dist == 0 && returning
+
+  transition
+     !returning && !must_return(battery, dist, 0) -> dist := dist + 1, battery := battery - 2
+  [] !returning && must_return(battery, dist, 0)  -> returning := true
+  [] !returning && dist > 0                      -> returning := true
+  [] returning && dist > 0                       -> dist := dist - 1, battery := battery - 2
+}
+
+let home = Pose { x: 0, y: 0 }
+let wp1 = goto_waypoint(home, Pose { x: 7, y: 3 }, Pose { x: 10, y: 10 })
+assert wp1.x == 7 && wp1.y == 3
+assert in_fence(wp1, 10, 10)

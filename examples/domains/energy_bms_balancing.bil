@@ -1,0 +1,82 @@
+// ============================================================================
+// Domain: Energy Storage — Battery Management System (BMS) cell balancing,
+// charge-current derating, and a pack contactor state machine.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [uspto10476262] https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10476262 —
+//       precharge before closing the main contactor; welds come from inrush above the
+//       contactor's making capacity
+//   [uspto11592485] https://patents.google.com/patent/US11592485 — weld detection: load-side
+//       voltage fails to decay after the contactor is commanded open
+//   [uspto12077054] https://patents.google.com/patent/US12077054 — inrush-based weld detection
+// ============================================================================
+
+concept CellPair {
+  a: Int,
+  b: Int
+}
+
+// Passive/active balancing between two cells: move one unit of charge from the
+// fuller cell to the emptier one until they are within 1 unit.
+// Proved: total charge is conserved (no charge is invented or lost by the
+// algorithm), neither cell goes negative, and the cells end up balanced.
+fn balance(c0: CellPair) -> CellPair
+  requires c0.a >= 0 && c0.b >= 0
+  ensures  result.a + result.b == c0.a + c0.b
+           && result.a >= 0 && result.b >= 0
+           && abs(result.a - result.b) <= 1
+=
+  do c = c0
+    invariant c.a + c.b == c0.a + c0.b && c.a >= 0 && c.b >= 0
+    variant   abs(c.a - c.b)
+  :
+     c.a > c.b + 1 -> c := c with { a: c.a - 1, b: c.b + 1 }
+  [] c.b > c.a + 1 -> c := c with { a: c.a + 1, b: c.b - 1 }
+  od
+  then c
+
+// Charge-current derating by cell temperature (deci-degrees C) and state of charge (%).
+fn charge_limit(temp_dc: Int, soc: Int, imax: Int) -> Int
+  requires imax > 0 && soc >= 0 && soc <= 100
+  ensures  result >= 0 && result <= imax
+           && (temp_dc < 0 => result == 0)
+           && (temp_dc > 450 => result == 0)
+           && (soc >= 95 => result <= imax / 10)
+=
+  if temp_dc < 0 || temp_dc > 450                     -> 0
+  [] temp_dc >= 0 && temp_dc <= 450 && soc >= 95      -> imax / 10
+  [] temp_dc >= 0 && temp_dc <= 450 && soc < 95       -> imax
+  fi
+
+type Contactor = Open | Precharge | Closed | Welded
+
+// Pack contactor sequencing: the main contactor may only close after precharge,
+// and an isolation fault always forces it open (unless the contacts are welded,
+// which is the hazard the model makes explicit).
+system PackContactor {
+  state k: Contactor = Open
+  state iso_fault: Bool = false
+  state precharged: Bool = false
+
+  invariant ClosedOnlyAfterPrecharge: k == Closed => precharged
+  invariant FaultOpensPack:           (iso_fault && k != Welded) => (k == Open)
+
+  // A welded contactor with an isolation fault is the end state the pack cannot leave by
+  // itself: field service must isolate it. Dropping the `k != Welded` carve-out above makes
+  // the model checker produce exactly that trace, which is the case for a second contactor.
+  terminal k == Welded && iso_fault
+
+  transition
+     k == Open && !iso_fault      -> k := Precharge
+  [] k == Precharge && !iso_fault -> precharged := true, k := Closed
+  [] k == Closed                  -> k := Open, precharged := false
+  [] !iso_fault && k != Welded    -> iso_fault := true, k := Open, precharged := false
+  [] iso_fault && k != Welded      -> iso_fault := false
+  [] k == Closed                  -> k := Welded
+  [] k == Welded && !iso_fault    -> iso_fault := true
+}
+
+let pack = balance(CellPair { a: 40, b: 13 })
+assert pack.a + pack.b == 53 && abs(pack.a - pack.b) <= 1
+assert charge_limit(250, 97, 100) == 10
+assert charge_limit(0 - 50, 40, 100) == 0
