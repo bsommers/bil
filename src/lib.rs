@@ -15,6 +15,7 @@ pub mod semantics;
 pub mod smt;
 pub mod symbol;
 pub mod types;
+pub mod unfold;
 pub mod verus;
 pub mod vm;
 pub mod wp;

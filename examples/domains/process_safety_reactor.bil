@@ -26,8 +26,7 @@ fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -> Bool
   ensures  ((t1 >= setpoint && t2 >= setpoint) => result)
            && ((t1 < setpoint && t2 < setpoint) => !result)
 =
-  (t1 >= setpoint && t2 >= setpoint) || (t1 >= setpoint && t3 >= setpoint)
-  || (t2 >= setpoint && t3 >= setpoint)
+  vote_2oo3(t1 >= setpoint, t2 >= setpoint, t3 >= setpoint)
 
 // Runaway scenario. Cooling can fail at any time while running; without cooling the
 // reaction heats one step at a time. The SIS trips at temp >= 7 and its response is

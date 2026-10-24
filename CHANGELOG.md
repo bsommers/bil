@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SMT proofs see through calls to user-defined functions.** Before, a contract whose body or clauses called another `fn` could not be encoded for the solver, so it was only sampled (`BOUNDED`). Each call is now unfolded into the callee's body. The query also requires the callee's `requires` and `ensures` (and those of a refined `spec`) at the call site, guarded by the `&&`, `||` and `=>` short-circuits around it, because execution checks them on every call. A call that breaks the callee's precondition is therefore refuted even at values the sampler never tries. Recursive calls and calls nested more than 16 deep are not unfolded, and stay bounded. `examples/domains/process_safety_reactor.bil` now calls `vote_2oo3` instead of inlining it. The seeded bug `reactor_trip_via_call.bil`, which only documented the old limitation, is replaced by `reactor_trip_shared_input.bil`, a voter wiring fault caught through the unfolded call.
+
 ## [v0.6.0] - 2026-10-23
 
 ### Added

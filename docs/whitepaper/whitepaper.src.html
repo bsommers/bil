@@ -322,7 +322,7 @@ flowchart LR
 <tr><td><code>robotics_stop_always_clears</code></td><td>Claims the protective stop always clears</td><td><span class="status bad">LTL FAILED</span> fair lasso</td></tr>
 <tr><td><code>infusion_alarm_always_cleared</code></td><td>Claims every alarm is eventually cleared</td><td><span class="status bad">LTL FAILED</span> fair lasso of recurring hazards</td></tr>
 <tr><td><code>cyber_noncompliant_grant</code></td><td>Issues a self-approved production grant</td><td><span class="status bad">RuntimeError</span> axiom SeparationOfDuties</td></tr>
-<tr><td><code>reactor_trip_via_call</code></td><td>Trip logic calls a helper (not a bug)</td><td><span class="status warn">BOUNDED</span> only: a tool limitation, see section 7</td></tr>
+<tr><td><code>reactor_trip_shared_input</code></td><td>Transmitter 3 wired to two voter inputs in place of transmitter 2</td><td><span class="status bad">REFUTED</span> high_temp_trip, through the unfolded call to <code>vote_2oo3</code></td></tr>
 </tbody></table></div>
 
 <h2 id="cases"><span class="secno">5</span>Use cases</h2>
@@ -382,9 +382,9 @@ stateDiagram-v2
 <section class="case" id="process_safety_reactor">
 <div class="prose">
   <div class="case-head"><p class="eyebrow">Critical process systems</p><h3>A safety instrumented system for an exothermic reactor</h3></div>
-  <div class="chips"><span class="chip ok">2 obligations proved</span><span class="chip">23 states</span><span class="chip ok">TripIsReset LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <div class="chips"><span class="chip ok">2 obligations proved</span><span class="chip">23 states</span><span class="chip ok">TripIsReset LTL proved</span><span class="chip bad">2 seeded bugs caught</span></div>
   <p>The T2 Laboratories explosion was a runaway reaction after a cooling failure [[c:csb_t2]]. A safety instrumented system under IEC 61511 [[c:iec61511]] is the independent layer meant to stop that sequence. Three temperature transmitters voted 2-out-of-3 tolerate one fault both against failing to trip and against tripping spuriously [[c:lundteigen_sis]], at a higher cost and complexity than simpler architectures [[c:kenexis_2oo3]]. Both properties are proved for all inputs:</p>
-  [[x:examples/domains/process_safety_reactor.bil|fn high_temp_trip|(t2 >= setpoint && t3 >= setpoint)]]
+  [[x:examples/domains/process_safety_reactor.bil|fn vote_2oo3|vote_2oo3(t1 >= setpoint]]
   <p>The reactor <code>system</code> lets cooling fail at any time. While running, the SIS trips at band 7 and pre-empts further heating, residual heat may add one more step, and the reactor is reset after cooling. The design temperature is never exceeded, and every trip is eventually reset.</p>
   <h4>What the checker found</h4>
   <p>If heating is not pre-empted at the trip point, which is what happens when the SIS responds more slowly than the reaction, the interleaving lets the temperature climb past the design limit before the trip fires:</p>
@@ -538,7 +538,7 @@ stateDiagram-v2
 <h2 id="limits"><span class="secno">7</span>Limitations and threats to validity</h2>
 <ul>
   <li><strong>Abstraction.</strong> Continuous quantities are integer bands and time is discrete steps. Claims are about supervisory logic and per-step bounds. Dense-time and hybrid properties need timed or hybrid automata.</li>
-  <li><strong>SMT encoding.</strong> Calls to user-defined functions inside a contract are not unfolded into the SMT query. The 2oo3 trip written as a call to <code>vote_2oo3</code> is only bounded-checked, so the shipped model inlines it. The seeded file <code>reactor_trip_via_call.bil</code> documents this.</li>
+  <li><strong>SMT encoding.</strong> Calls to user-defined functions are unfolded into the SMT query, together with the callee's <code>requires</code> and <code>ensures</code> checks that execution performs on every call. Recursive calls, and calls inside a quantifier to a function that has a contract, are not unfolded, so those obligations are only bounded-checked.</li>
   <li><strong>Bounded cross-check cost.</strong> The bounded sampler that runs beside SMT enumerates the product of every parameter's sample domain. A function with a record and four integer parameters took 59 seconds to verify in a debug build, so the navigation model passes records instead. A sample cap is on the roadmap.</li>
   <li><strong>Arithmetic.</strong> SMT reasons over unbounded integers, while execution uses checked 64-bit integers that stop on overflow. Proofs therefore cover the intended mathematics, and execution fails loudly outside it.</li>
   <li><strong>Sources.</strong> Several standards were read only through secondary quotations, and those figures are marked in the citations. Parameters in the models are illustrative, not compliance values.</li>
@@ -547,7 +547,7 @@ stateDiagram-v2
 
 <h2 id="roadmap"><span class="secno">8</span>Roadmap</h2>
 <ul>
-  <li>Unfold or inline non-recursive user functions in the SMT encoding, so contracts can call helpers.</li>
+  <li>Use proved callee contracts in place of unfolding, so recursive functions can be proved modularly.</li>
   <li>Cap and randomize the bounded cross-check, with the sample budget reported.</li>
   <li>Clocks and timed guards in <code>system</code> blocks, for response-time properties that are currently encoded as priority.</li>
   <li>A refinement path from banded models to continuous controllers, ending in Verus-checked Rust through <code>bil emit-verus</code>.</li>

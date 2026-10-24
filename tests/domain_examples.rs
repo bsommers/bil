@@ -100,10 +100,10 @@ const SEEDED: &[(&str, &str, i32, &str)] = &[
         "Safety Invariant 'BelowDesignTemperature' violated",
     ),
     (
-        "reactor_trip_via_call.bil",
+        "reactor_trip_shared_input.bil",
         "verify",
         1,
-        "[BOUNDED (6561 samples)] fn `high_temp_trip`",
+        "[REFUTED] fn `high_temp_trip`",
     ),
     (
         "robotics_stop_always_clears.bil",

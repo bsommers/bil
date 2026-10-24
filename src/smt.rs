@@ -833,7 +833,7 @@ pub fn emit_vc_smt2_header(
                 },
                 None => pr.ensures.clone(),
             };
-            if let Some(lemma_smt) = expr_to_smt(&lemma_formula, ontology, None) {
+            if let Some(lemma_smt) = vc_to_smt(program, ontology, &lemma_formula) {
                 lines.push(format!(";; proved lemma {}", pr.name));
                 lines.push(format!("(assert {})", lemma_smt));
             }
@@ -853,7 +853,7 @@ pub fn emit_vc_smt2(
     include_axioms: bool,
     proved_lemmas: &[ProofDecl],
 ) -> Option<String> {
-    let vc_smt = expr_to_smt(vc, ontology, None)?;
+    let vc_smt = vc_to_smt(program, ontology, vc)?;
     let mut s = emit_vc_smt2_header(program, ontology, params, include_axioms, proved_lemmas)?;
     s.push_str(&format!(
         ";; Refutation of VC: {}\n(assert (not {}))\n(check-sat)\n",
@@ -861,6 +861,12 @@ pub fn emit_vc_smt2(
         vc_smt
     ));
     Some(s)
+}
+
+/// Translates a Verification Condition to SMT-LIB2, unfolding calls to user-defined functions first.
+pub fn vc_to_smt(program: &Program, ontology: &OntologyRegistry, vc: &Expr) -> Option<String> {
+    let unfolded = crate::unfold::unfold_user_calls(program, vc)?;
+    expr_to_smt(&unfolded, ontology, None)
 }
 
 fn map_type_to_smt(ty: &TypeExpr, ontology: &OntologyRegistry) -> String {

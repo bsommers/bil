@@ -3,7 +3,7 @@ use crate::eval::{Interpreter, Value};
 pub use crate::expr_utils::{extract_int_constants, format_expr_concise, free_vars, subst_expr};
 use crate::ontology::OntologyRegistry;
 use crate::smt::{
-    attach_model, emit_vc_smt2, emit_vc_smt2_header, evaluate_vc_agreement, expr_to_smt,
+    attach_model, emit_vc_smt2, emit_vc_smt2_header, evaluate_vc_agreement, vc_to_smt,
     parse_smt_model, run_smt_incremental_batch_with_prover, run_smt_prover, AgreementOutcome,
     Prover, ProverResult, Verdict,
 };
@@ -332,7 +332,7 @@ fn build_vc_obligations_batch(
     );
     let refutations_opt: Option<Vec<String>> = specs
         .iter()
-        .map(|(_, _, vc)| expr_to_smt(vc, ontology, None).map(|s| format!("(not {})", s)))
+        .map(|(_, _, vc)| vc_to_smt(program, ontology, vc).map(|s| format!("(not {})", s)))
         .collect();
 
     let batch_smt = match (header_opt, refutations_opt) {

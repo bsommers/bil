@@ -1,5 +1,8 @@
 // SEEDED BUG — variant of ../process_safety_reactor.bil
-// Not a bug: the trip calls vote_2oo3. Expected: obligation only BOUNDED (SMT encoding does not unfold user calls).
+// Transmitter 3 is wired to two voter inputs in place of transmitter 2, so the 2oo3 vote no
+// longer tolerates one fault [lundteigen_sis]: t3 alone decides the vote, so failed high it
+// trips the reactor spuriously and failed low it blocks a genuine trip.
+// Expected: high_temp_trip REFUTED (found through the unfolded call to vote_2oo3).
 // ============================================================================
 // Domain: Critical Process Systems — Safety Instrumented System (SIS) for an
 // exothermic batch reactor (IEC 61511): 2oo3 voting, trip logic, and the
@@ -28,7 +31,7 @@ fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -> Bool
   ensures  ((t1 >= setpoint && t2 >= setpoint) => result)
            && ((t1 < setpoint && t2 < setpoint) => !result)
 =
-  vote_2oo3(t1 >= setpoint, t2 >= setpoint, t3 >= setpoint)
+  vote_2oo3(t1 >= setpoint, t3 >= setpoint, t3 >= setpoint)
 
 // Runaway scenario. Cooling can fail at any time while running; without cooling the
 // reaction heats one step at a time. The SIS trips at temp >= 7 and its response is

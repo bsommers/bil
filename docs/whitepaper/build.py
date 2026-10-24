@@ -114,7 +114,7 @@ def trace(file):
         if code != 0:
             keep = [
                 l for l in text.splitlines()
-                if re.search(r"VIOLATION|LTL FAILED|RuntimeError|BOUNDED \(|Init:|Step \d|Lasso|error:", l)
+                if re.search(r"VIOLATION|LTL FAILED|RuntimeError|REFUTED|Counterexample:|BOUNDED \(|Init:|Step \d|Lasso|error:", l)
                 and "VC:" not in l
             ]
             out.append(f"$ bil {cmd} {path.relative_to(ROOT)}   # exit {code}")
