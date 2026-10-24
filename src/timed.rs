@@ -124,7 +124,7 @@ fn rebuild_spans(old: &[Span], before: &Counts, after: &Counts, fallback: Span) 
             let kept = old_counts.get(i).copied().unwrap_or(0);
             out.extend_from_slice(&old[*at..*at + kept]);
             *at += kept;
-            out.extend(std::iter::repeat(fallback).take(new - kept));
+            out.extend(std::iter::repeat_n(fallback, new - kept));
         }
     };
     list(&before.states, &after.states, &mut out, &mut at);

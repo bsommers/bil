@@ -83,3 +83,13 @@ The variant bounds every chain of recursive calls, so the assumption is the indu
 - **`eventually Q` ($\Diamond Q$) and `P ~> Q` ($\Box(P \Rightarrow \Diamond Q)$)**:
   - Verified via **Tarjan Strongly Connected Component (SCC)** decomposition of the $\neg Q$ reachable subgraph combined with **Weak Fairness (Justice)**.
   - A $\neg Q$ cycle $C$ is a genuine liveness violation (lasso counterexample) if and only if no transition $t$ that exits $C$ is continuously enabled across every state $s \in C$.
+
+### 4.3 Timed Guards (`clock` / `deadline`, `src/timed.rs`)
+Time is discrete: one transition firing is one scan of the controller. `clock scan period P` declares the scan period, and `deadline D: L => R within W [in G]` requires that once the latch `L` is seen (while the phase guard `G` holds, default always), the response `R` holds within `W`. With $n = \lceil W / P \rceil$ scans, the response must hold in the state after the $n$-th scan counted from the first scan that starts with $L$ true. So $W = P$ is achievable (the very next scan may respond), $W < P$ is rejected, and a $W$ that is not a multiple of $P$ rounds up.
+
+The pass runs right after parsing and lowers each deadline $D$ into ordinary state, so every checker sees a plain system. Reading the pre-state of each scan:
+- `__run_D` $\leftarrow (\texttt{run} \vee (G \wedge L)) \wedge \neg R$ — the timer is pending. $G$ is read only to *start* it, so a phase change does not stop a running timer and the bound of the phase that saw the latch keeps applying.
+- `__t_D` $\leftarrow$ `__t_D + 1` if pending, else $0$ — consecutive pending scans.
+- Invariant `Deadline_D`: `__t_D >= n => R`. Invariant `Latch_D`: `__run_D => (L || R)`, so a latch cleared before the response is a violation.
+
+The latch is a `Bool` state variable declared by the user; setting it while already set changes nothing, which models a latched, synchronous signal that is never lost. Both the explicit-state search and `model-check --bmc` check the lowered invariants. For `--bmc`, the two-branch `if g -> a [] !g -> b fi` that the counter uses is encoded as `ite`; any other `if … fi` is still not encoded, and `--bmc` prints nothing for a system it cannot encode.
