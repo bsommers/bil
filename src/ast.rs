@@ -56,6 +56,11 @@ impl Program {
                         tr.guard.walk_postorder(f);
                         tr.updates.iter().for_each(|(_, e)| e.walk_postorder(f));
                     }
+                    for d in &sys.deadlines {
+                        d.latch.walk_postorder(f);
+                        d.response.walk_postorder(f);
+                        d.phase.iter().for_each(|e| e.walk_postorder(f));
+                    }
                 }
                 Item::Let(l) => l.value.walk_postorder(f),
                 Item::Assert(a) => a.formula.walk_postorder(f),
@@ -249,9 +254,33 @@ pub struct GuardedTransition {
     pub updates: Vec<(String, Expr)>,
 }
 
+/// `clock <name> period <n><unit>`: the controller's scan period, in microseconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClockDecl {
+    pub name: String,
+    pub period_us: i64,
+    pub span: Span,
+}
+
+/// `deadline <name>: <latch> => <response> within <n><unit> [in <phase>]`: once `latch`
+/// holds (while `phase` holds, default always), `response` must hold within `within_us`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeadlineDecl {
+    pub name: String,
+    pub latch: Expr,
+    pub response: Expr,
+    pub within_us: i64,
+    pub phase: Option<Expr>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemDecl {
     pub name: String,
+    /// Scan clock (`clock scan period 1ms`); consumed by `timed::lower_program`.
+    pub clocks: Vec<ClockDecl>,
+    /// Response deadlines; consumed by `timed::lower_program`.
+    pub deadlines: Vec<DeadlineDecl>,
     pub states: Vec<StateVarDecl>,
     pub invariants: Vec<NamedInvariant>,
     pub temporals: Vec<NamedTemporal>,
