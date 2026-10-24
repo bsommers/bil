@@ -42,11 +42,11 @@
   <!-- Wordmark: geometric b · i · l -->
   <g fill="none" stroke="url(#ink)" stroke-width="22" stroke-linecap="round">
     <path d="M345 72 V210"/>
-    <circle cx="390" cy="166" r="44"/>
-    <path d="M476 128 V210"/>
-    <path d="M536 72 V184 Q536 210 562 210"/>
+    <circle cx="389" cy="166" r="44"/>
+    <path d="M485 128 V210"/>
+    <path d="M537 72 V210"/>
   </g>
-  <path d="M476 74 L492 90 L476 106 L460 90 Z" fill="url(#accent)" filter="url(#bloom)"/>
+  <path d="M485 74 L501 90 L485 106 L469 90 Z" fill="url(#accent)" filter="url(#bloom)"/>
 
   <text x="336" y="258" fill="#7c8db5" font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="17" letter-spacing="5.5">BOUNDED · INVARIANT · LOGIC</text>
 
