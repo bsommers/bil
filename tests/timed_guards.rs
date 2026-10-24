@@ -193,3 +193,11 @@ fn systems_without_a_clock_are_unchanged() {
     let (code, t) = run("model-check", "plain", &system("", 3));
     assert_eq!(code, Some(0), "{t}");
 }
+
+#[test]
+fn lowered_system_keeps_span_table_aligned() {
+    let program = bil::parse_source(&system(OK, 1)).unwrap();
+    let mut nodes = 0;
+    program.for_each_expr_postorder(&mut |_| nodes += 1);
+    assert_eq!(program.expr_spans.len(), nodes);
+}

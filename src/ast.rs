@@ -16,55 +16,63 @@ impl Program {
     /// this order, so change both together.
     pub fn for_each_expr_postorder(&self, f: &mut dyn FnMut(&Expr)) {
         for item in &self.items {
-            match item {
-                Item::Concept(_) | Item::TypeDecl(_) => {}
-                Item::Axiom(ax) => ax.formula.walk_postorder(f),
-                Item::Spec(sp) => {
-                    sp.requires.iter().for_each(|e| e.walk_postorder(f));
-                    sp.ensures.iter().for_each(|e| e.walk_postorder(f));
-                }
-                Item::Proof(pr) => {
-                    pr.requires.iter().for_each(|e| e.walk_postorder(f));
-                    pr.ensures.walk_postorder(f);
-                    pr.body.iter().for_each(|e| e.walk_postorder(f));
-                }
-                Item::FnDecl(fd) => {
-                    fd.requires.iter().for_each(|e| e.walk_postorder(f));
-                    fd.ensures.iter().for_each(|e| e.walk_postorder(f));
-                    fd.variant.iter().for_each(|e| e.walk_postorder(f));
-                    fd.body.walk_postorder(f);
-                }
-                Item::System(sys) => {
-                    sys.states.iter().for_each(|s| s.init.walk_postorder(f));
-                    sys.invariants
-                        .iter()
-                        .for_each(|i| i.formula.walk_postorder(f));
-                    for t in &sys.temporals {
-                        match &t.formula {
-                            TemporalFormula::Always(e) | TemporalFormula::Eventually(e) => {
-                                e.walk_postorder(f)
-                            }
-                            TemporalFormula::LeadsTo(p, q) => {
-                                p.walk_postorder(f);
-                                q.walk_postorder(f);
-                            }
+            item.for_each_expr_postorder(f);
+        }
+    }
+}
+
+impl Item {
+    /// One item's share of [`Program::for_each_expr_postorder`].
+    pub fn for_each_expr_postorder(&self, f: &mut dyn FnMut(&Expr)) {
+        let item = self;
+        match item {
+            Item::Concept(_) | Item::TypeDecl(_) => {}
+            Item::Axiom(ax) => ax.formula.walk_postorder(f),
+            Item::Spec(sp) => {
+                sp.requires.iter().for_each(|e| e.walk_postorder(f));
+                sp.ensures.iter().for_each(|e| e.walk_postorder(f));
+            }
+            Item::Proof(pr) => {
+                pr.requires.iter().for_each(|e| e.walk_postorder(f));
+                pr.ensures.walk_postorder(f);
+                pr.body.iter().for_each(|e| e.walk_postorder(f));
+            }
+            Item::FnDecl(fd) => {
+                fd.requires.iter().for_each(|e| e.walk_postorder(f));
+                fd.ensures.iter().for_each(|e| e.walk_postorder(f));
+                fd.variant.iter().for_each(|e| e.walk_postorder(f));
+                fd.body.walk_postorder(f);
+            }
+            Item::System(sys) => {
+                sys.states.iter().for_each(|s| s.init.walk_postorder(f));
+                sys.invariants
+                    .iter()
+                    .for_each(|i| i.formula.walk_postorder(f));
+                for t in &sys.temporals {
+                    match &t.formula {
+                        TemporalFormula::Always(e) | TemporalFormula::Eventually(e) => {
+                            e.walk_postorder(f)
+                        }
+                        TemporalFormula::LeadsTo(p, q) => {
+                            p.walk_postorder(f);
+                            q.walk_postorder(f);
                         }
                     }
-                    sys.variant.iter().for_each(|e| e.walk_postorder(f));
-                    sys.terminal.iter().for_each(|e| e.walk_postorder(f));
-                    for tr in &sys.transitions {
-                        tr.guard.walk_postorder(f);
-                        tr.updates.iter().for_each(|(_, e)| e.walk_postorder(f));
-                    }
-                    for d in &sys.deadlines {
-                        d.latch.walk_postorder(f);
-                        d.response.walk_postorder(f);
-                        d.phase.iter().for_each(|e| e.walk_postorder(f));
-                    }
                 }
-                Item::Let(l) => l.value.walk_postorder(f),
-                Item::Assert(a) => a.formula.walk_postorder(f),
+                sys.variant.iter().for_each(|e| e.walk_postorder(f));
+                sys.terminal.iter().for_each(|e| e.walk_postorder(f));
+                for tr in &sys.transitions {
+                    tr.guard.walk_postorder(f);
+                    tr.updates.iter().for_each(|(_, e)| e.walk_postorder(f));
+                }
+                for d in &sys.deadlines {
+                    d.latch.walk_postorder(f);
+                    d.response.walk_postorder(f);
+                    d.phase.iter().for_each(|e| e.walk_postorder(f));
+                }
             }
+            Item::Let(l) => l.value.walk_postorder(f),
+            Item::Assert(a) => a.formula.walk_postorder(f),
         }
     }
 }

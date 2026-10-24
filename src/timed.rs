@@ -37,28 +37,108 @@ fn err(message: String, span: Span) -> ParseError {
     ParseError { message, span }
 }
 
-/// Lowers every system in `program`. Programs without `clock`/`deadline` are untouched.
+fn count(e: &Expr) -> usize {
+    let mut n = 0;
+    e.walk_postorder(&mut |_| n += 1);
+    n
+}
+
+/// Expression-node counts of each group of a system, in `expr_spans` order.
+struct Counts {
+    states: Vec<usize>,
+    invariants: Vec<usize>,
+    /// temporals + variant + terminal: never changed by lowering.
+    middle: usize,
+    transitions: Vec<usize>,
+    deadlines: usize,
+}
+
+fn counts(sys: &SystemDecl) -> Counts {
+    let mut middle = 0;
+    Item::System(SystemDecl {
+        states: vec![],
+        invariants: vec![],
+        transitions: vec![],
+        deadlines: vec![],
+        clocks: vec![],
+        ..sys.clone()
+    })
+    .for_each_expr_postorder(&mut |_| middle += 1);
+    let mut deadlines = 0;
+    for d in &sys.deadlines {
+        deadlines += count(&d.latch) + count(&d.response) + d.phase.as_ref().map_or(0, count);
+    }
+    Counts {
+        states: sys.states.iter().map(|s| count(&s.init)).collect(),
+        invariants: sys.invariants.iter().map(|i| count(&i.formula)).collect(),
+        middle,
+        transitions: sys
+            .transitions
+            .iter()
+            .map(|t| count(&t.guard) + t.updates.iter().map(|(_, e)| count(e)).sum::<usize>())
+            .collect(),
+        deadlines,
+    }
+}
+
+/// Lowers every system in `program`, keeping `expr_spans` aligned with the expression walk:
+/// generated nodes take the span of their system. Programs without `clock`/`deadline` are
+/// untouched.
 pub fn lower_program(program: &mut Program) -> Result<(), ParseError> {
-    let mut lowered = false;
+    let spanned = !program.expr_spans.is_empty();
+    let old = std::mem::take(&mut program.expr_spans);
+    let mut out = Vec::with_capacity(old.len());
+    let mut at = 0;
     for item in &mut program.items {
-        if let Item::System(sys) = item {
-            lowered |= lower_system(sys)?;
+        let mut n = 0;
+        item.for_each_expr_postorder(&mut |_| n += 1);
+        let slice = if spanned { &old[at..at + n] } else { &[][..] };
+        at += n;
+        let Item::System(sys) = item else {
+            out.extend_from_slice(slice);
+            continue;
+        };
+        if sys.clocks.is_empty() && sys.deadlines.is_empty() {
+            out.extend_from_slice(slice);
+            continue;
+        }
+        let before = counts(sys);
+        lower_system(sys)?;
+        if spanned {
+            out.extend(rebuild_spans(slice, &before, &counts(sys), sys.span));
         }
     }
-    if lowered {
-        // Generated expressions have no source span; `expr_spans` is documented to fall
-        // back to item-level spans when empty.
-        program.expr_spans.clear();
+    if spanned {
+        program.expr_spans = out;
     }
     Ok(())
 }
 
-fn lower_system(sys: &mut SystemDecl) -> Result<bool, ParseError> {
+/// The span slice of a lowered system: original nodes keep their spans, nodes added at the end
+/// of a state, invariant or transition take `fallback`, and the consumed deadlines' spans go.
+fn rebuild_spans(old: &[Span], before: &Counts, after: &Counts, fallback: Span) -> Vec<Span> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let list = |old_counts: &[usize], new_counts: &[usize], out: &mut Vec<Span>, at: &mut usize| {
+        for (i, &new) in new_counts.iter().enumerate() {
+            let kept = old_counts.get(i).copied().unwrap_or(0);
+            out.extend_from_slice(&old[*at..*at + kept]);
+            *at += kept;
+            out.extend(std::iter::repeat(fallback).take(new - kept));
+        }
+    };
+    list(&before.states, &after.states, &mut out, &mut at);
+    list(&before.invariants, &after.invariants, &mut out, &mut at);
+    out.extend_from_slice(&old[at..at + before.middle]);
+    at += before.middle;
+    list(&before.transitions, &after.transitions, &mut out, &mut at);
+    debug_assert_eq!(at + before.deadlines, old.len());
+    out
+}
+
+fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
     let clocks = std::mem::take(&mut sys.clocks);
     let deadlines = std::mem::take(&mut sys.deadlines);
-    if clocks.is_empty() && deadlines.is_empty() {
-        return Ok(false);
-    }
     if clocks.len() > 1 {
         return Err(err(
             format!("system `{}` declares more than one `clock`", sys.name),
@@ -141,5 +221,5 @@ fn lower_system(sys: &mut SystemDecl) -> Result<bool, ParseError> {
             ),
         });
     }
-    Ok(true)
+    Ok(())
 }
