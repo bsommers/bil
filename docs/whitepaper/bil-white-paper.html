@@ -1,0 +1,815 @@
+<title>Bounded Invariant Logic in Practice</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an engineering journal article. Sticky contents rail on wide screens, one ~70ch reading
+   column, full-width tables and code that scroll inside their own boxes. Accent pair from the bil
+   logo (indigo → cyan); semantic colors only for proved / counterexample / bounded. */
+:root {
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --ink: #161a2b;
+  --muted: #586079;
+  --rule: #dde1ec;
+  --accent: #4338ca;
+  --accent-2: #0e7490;
+  --code-bg: #eef0f8;
+  --code-ink: #1d2340;
+  --trace-bg: #fff6f5;
+  --trace-rule: #f2c9c4;
+  --proved: #15803d;
+  --refuted: #b42318;
+  --bounded: #a15c07;
+  --font-display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --step--1: 0.84rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.5rem;
+  --step-3: 2.05rem;
+  --step-4: 2.9rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f1a; --surface: #111729; --ink: #e5e8f3; --muted: #97a1bd; --rule: #222a40;
+    --accent: #a5b4fc; --accent-2: #22d3ee; --code-bg: #121a30; --code-ink: #d8def0;
+    --trace-bg: #1d1416; --trace-rule: #4d2a2a; --proved: #4ade80; --refuted: #fb7185; --bounded: #fbbf24;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0f1a; --surface: #111729; --ink: #e5e8f3; --muted: #97a1bd; --rule: #222a40;
+  --accent: #a5b4fc; --accent-2: #22d3ee; --code-bg: #121a30; --code-ink: #d8def0;
+  --trace-bg: #1d1416; --trace-rule: #4d2a2a; --proved: #4ade80; --refuted: #fb7185; --bounded: #fbbf24;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--step-0)/1.65 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+code { font-family: var(--font-mono); font-size: 0.88em; background: var(--code-bg); color: var(--code-ink); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+
+.page {
+  max-width: 1180px; margin: 0 auto; padding-block: 40px 96px;
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px;
+}
+@media (max-width: 960px) { .page { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 24px 64px; } }
+
+/* Contents rail */
+.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: var(--step--1); max-height: calc(100vh - 48px); overflow-y: auto; }
+.toc details > summary { font: 600 0.72rem/1 var(--font-body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); cursor: pointer; list-style: none; padding-block: 6px; }
+.toc details > summary::-webkit-details-marker { display: none; }
+.toc ol { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 2px; }
+.toc ol ol { margin: 2px 0 6px 12px; }
+.toc a { color: var(--muted); text-decoration: none; display: block; padding: 3px 8px; border-left: 2px solid transparent; }
+.toc a:hover { color: var(--ink); border-left-color: var(--accent); }
+@media (max-width: 960px) { .toc { position: static; max-height: none; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; background: var(--surface); } }
+
+article { min-width: 0; }
+.prose > * { max-width: 70ch; }
+h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; line-height: 1.2; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-3); margin: 72px 0 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+h3 { font-size: var(--step-2); margin: 40px 0 10px; }
+h4 { font: 600 var(--step--1)/1.3 var(--font-body); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 28px 0 6px; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.3em; }
+li { margin-bottom: 6px; }
+.secno { color: var(--accent); font-family: var(--font-mono); font-size: 0.6em; vertical-align: 0.35em; margin-right: 10px; letter-spacing: 0; }
+
+/* Title block */
+.masthead { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: center; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.masthead svg { width: 92px; height: 92px; border-radius: 20px; }
+@media (max-width: 560px) { .masthead { grid-template-columns: minmax(0, 1fr); } .masthead svg { width: 64px; height: 64px; } }
+.eyebrow { font: 600 0.74rem/1 var(--font-body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-2); margin: 0 0 10px; }
+h1 { font-size: var(--step-4); margin: 0 0 10px; line-height: 1.05; }
+.deck { font-family: var(--font-display); font-size: var(--step-1); color: var(--muted); margin: 0; max-width: 60ch; }
+.byline { font-size: var(--step--1); color: var(--muted); margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+.abstract { margin: 28px 0 0; padding: 20px 24px; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; max-width: 76ch; }
+.abstract h2 { all: unset; display: block; font: 600 0.74rem/1 var(--font-body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+
+/* Results strip: these numbers are the point of the paper, so they get tiles */
+.figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin: 28px 0 8px; }
+.figures div { background: var(--surface); padding: 16px 18px; }
+.figures b { display: block; font: 600 var(--step-3)/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.figures span { font-size: var(--step--1); color: var(--muted); }
+.figures .ok b { color: var(--proved); }
+@media (max-width: 560px) { .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.figures .bad b { color: var(--refuted); }
+.fig-note { font-size: var(--step--1); color: var(--muted); }
+
+/* Citations */
+.cites { font-size: 0.8em; white-space: normal; color: var(--muted); }
+.cite { font-family: var(--font-mono); font-size: 0.92em; text-decoration: none; color: var(--accent-2); }
+.cite:hover { text-decoration: underline; }
+
+/* Code and traces */
+pre { margin: 14px 0 20px; overflow-x: auto; border-radius: 8px; font: 400 0.8rem/1.55 var(--font-mono); tab-size: 2; }
+pre code { background: none; padding: 0; border-radius: 0; font-size: inherit; color: inherit; overflow-wrap: normal; }
+pre.code { background: var(--code-bg); color: var(--code-ink); padding: 14px 16px; border: 1px solid var(--rule); }
+pre.trace { background: var(--trace-bg); color: var(--ink); padding: 14px 16px; border: 1px solid var(--trace-rule); border-left: 3px solid var(--refuted); }
+pre.cmd { background: var(--code-bg); color: var(--code-ink); padding: 14px 16px; border: 1px solid var(--rule); }
+
+/* Use-case sections */
+.case { scroll-margin-top: 16px; }
+.case-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 64px 0 6px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.case-head h3 { margin: 0; font-size: var(--step-3); flex: 1 1 22ch; }
+.case-head .eyebrow { flex-basis: 100%; margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 18px; }
+.chip { font: 500 0.74rem/1 var(--font-mono); padding: 6px 9px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--muted); }
+.chip.ok { color: var(--proved); border-color: color-mix(in srgb, var(--proved) 40%, var(--rule)); }
+.chip.bad { color: var(--refuted); border-color: color-mix(in srgb, var(--refuted) 40%, var(--rule)); }
+.lead-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 4px 24px 18px; margin-top: 40px; }
+.lead-case .case-head { border-top: 0; margin-top: 16px; }
+@media (max-width: 560px) { .lead-case { padding: 2px 14px 12px; } }
+
+.note { border-left: 3px solid var(--accent-2); padding: 4px 0 4px 14px; color: var(--muted); max-width: 70ch; }
+.limits { font-size: 0.94em; color: var(--muted); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin: 16px 0 24px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: var(--step--1); }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); white-space: nowrap; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+tr.total td { font-weight: 600; border-top: 2px solid var(--rule); }
+table.stats td:first-child { min-width: 15ch; }
+
+.status { font: 500 0.78rem/1 var(--font-mono); white-space: nowrap; }
+.status.ok { color: var(--proved); }
+.status.bad { color: var(--refuted); }
+.status.warn { color: var(--bounded); }
+
+/* Mermaid diagrams */
+pre.mermaid { background: var(--surface); border: 1px solid var(--rule); padding: 16px; text-align: center; font-family: var(--font-body); }
+
+/* References */
+ol.refs { list-style: none; padding: 0; margin: 0 0 20px; display: grid; gap: 12px; }
+ol.refs li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 10px; align-items: start; padding: 12px 14px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; scroll-margin-top: 16px; }
+@media (max-width: 560px) { ol.refs li { grid-template-columns: auto auto; } .ref-body { grid-column: 1 / -1; } }
+.ref-key { font: 500 0.8rem/1.6 var(--font-mono); color: var(--accent-2); }
+.tier { font: 600 0.72rem/1 var(--font-mono); padding: 4px 7px; border-radius: 4px; border: 1px solid var(--rule); color: var(--muted); }
+.tier-A { color: var(--proved); }
+.tier-B { color: var(--accent); }
+.tier-C { color: var(--accent-2); }
+.tier-D { color: var(--bounded); }
+.ref-body { min-width: 0; font-size: var(--step--1); }
+.ref-body p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.ref-meta { color: var(--muted); display: grid; gap: 2px; }
+</style>
+
+<div class="page">
+<nav class="toc" aria-label="Contents">
+  <details open>
+    <summary>Contents</summary>
+    <ol>
+      <li><a href="#abstract">Abstract</a></li>
+      <li><a href="#why">1. Why designs fail</a></li>
+      <li><a href="#bil">2. The language and toolchain</a></li>
+      <li><a href="#method">3. Method</a></li>
+      <li><a href="#results">4. Results</a></li>
+      <li><a href="#cases">5. Use cases</a>
+        <ol>
+          <li><a href="#semiconductor_se_spe">Semiconductor SE → SPE</a></li>
+          <li><a href="#process_safety_reactor">Process safety</a></li>
+          <li><a href="#robotics_cobot_cell">Collaborative robotics</a></li>
+          <li><a href="#surgical_teleoperation">Surgical robotics</a></li>
+          <li><a href="#medical_infusion_pump">Infusion pumps</a></li>
+          <li><a href="#manufacturing_press_cell">Manufacturing</a></li>
+          <li><a href="#iiot_mqtt_qos2">Industrial IoT</a></li>
+          <li><a href="#control_antiwindup_pi">Control systems</a></li>
+          <li><a href="#navigation_geofence">Navigation</a></li>
+          <li><a href="#automotive_acc">Automotive</a></li>
+          <li><a href="#aerospace_envelope">Aerospace</a></li>
+          <li><a href="#energy_bms_balancing">Energy storage</a></li>
+          <li><a href="#public_safety_traffic_rail">Public safety</a></li>
+          <li><a href="#cybersecurity_zero_trust">Cybersecurity</a></li>
+        </ol>
+      </li>
+      <li><a href="#lessons">6. Cross-cutting lessons</a></li>
+      <li><a href="#limits">7. Limitations</a></li>
+      <li><a href="#roadmap">8. Roadmap</a></li>
+      <li><a href="#reproduce">9. Reproduce</a></li>
+      <li><a href="#references">References</a></li>
+    </ol>
+  </details>
+</nav>
+
+<article>
+<header class="masthead">
+  <svg viewBox="0 0 340 340" role="img" aria-label="bil logo">
+    <defs>
+      <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="0.55" stop-color="#818cf8"/><stop offset="1" stop-color="#e879f9"/></linearGradient>
+    </defs>
+    <rect width="340" height="340" rx="64" fill="#0b0f1a"/>
+    <g transform="translate(0 20)" fill="none" stroke="url(#lg)" stroke-linecap="square">
+      <path d="M122 66 H96 V234 H122" stroke-width="12"/>
+      <path d="M218 66 H244 V234 H218" stroke-width="12"/>
+      <path d="M201 96.3 A62 62 0 1 1 139 96.3" stroke-width="6" stroke-linecap="round"/>
+    </g>
+    <path transform="translate(0 20)" d="M152.5 88.5 L135.4 89.8 L144.2 103.6 Z" fill="#a78bfa"/>
+    <path transform="translate(0 20)" d="M170 116 L204 150 L170 184 L136 150 Z" fill="url(#lg)"/>
+    <path transform="translate(0 20)" d="M155 150 L165 160 L184 139" fill="none" stroke="#0b0f1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div>
+    <p class="eyebrow">White paper · bil v0.6.0 · October 2026</p>
+    <h1>Bounded Invariant Logic in Practice</h1>
+    <p class="deck">Proving the safety logic of fourteen industrial, medical and security designs before they run, with every requirement traced to a qualified source.</p>
+    <div class="byline"><span>bil project</span><span>Models: <code>examples/domains/</code></span><span>Sources: <code>docs/whitepaper/CITATIONS.md</code></span></div>
+  </div>
+</header>
+
+<section class="abstract" id="abstract">
+  <h2>Abstract</h2>
+  <p>Accident and recall investigations keep finding the same class of defect: interlocks, alarms and protocol state machines whose logic was wrong in the design, long before any code ran. <code>bil</code> (Bounded Invariant Logic) is a statically typed language that puts domain ontologies, first-order specifications, Dijkstra's guarded commands and reactive state machines in one source file, and checks them with weakest-precondition proofs, SMT solving and explicit-state model checking. The same file then runs on an interpreter, a bytecode VM or as a native binary.</p>
+  <p>This paper applies <code>bil</code> to fourteen domains, from semiconductor anneal control after spectroscopic ellipsometry to surgical teleoperation, process safety instrumented systems and TLS-style handshakes. Each model encodes requirements taken from standards, regulator reports and peer-reviewed physics, and each source is graded and cited. Across the suite, z3 proves all 147 verification obligations with none left to sampling, the model checker explores 308 states in 16 systems and proves 14 liveness properties, and all three execution back ends print identical results. Ten one-line seeded bugs, each modeled on a documented failure mode, are all caught with a concrete counterexample. The research also corrected four of our own first drafts, which is the strongest argument in the paper for tying formal models to primary sources.</p>
+</section>
+
+<div class="figures" role="list" aria-label="Headline results">
+  <div role="listitem"><b>14</b><span>domain models</span></div>
+  <div role="listitem" class="ok"><b>147</b><span>obligations proved by z3</span></div>
+  <div role="listitem" class="ok"><b>0</b><span>left to bounded sampling</span></div>
+  <div role="listitem"><b>308</b><span>states explored in 16 systems</span></div>
+  <div role="listitem" class="bad"><b>10 / 10</b><span>seeded bugs caught</span></div>
+  <div role="listitem"><b>3</b><span>back ends with identical output</span></div>
+</div>
+<p class="fig-note">Figures are generated from live runs of <code>bil verify</code> and <code>bil model-check</code> when this page is built, and the same checks run in <code>tests/domain_examples.rs</code>.</p>
+
+<div class="prose">
+
+<h2 id="why"><span class="secno">1</span>Why designs fail</h2>
+<p>The failures that matter most in safety-critical systems are rarely arithmetic slips. They are logic errors in how a system reacts to events: an alarm that does not latch, a state machine that accepts a message out of order, an interlock that is correct for each fault alone but not for two faults together.</p>
+<ul>
+  <li><strong>Medical devices.</strong> Between 2005 and 2009 the FDA received about 56,000 adverse-event reports for infusion pumps and oversaw 87 recalls, 14 of them Class I. Its analysis traced many problems to design and engineering, including software defects such as failures of built-in safety alarms <span class="cites">[<a class="cite" href="https://www.fda.gov/medical-devices/infusion-pumps/white-paper-infusion-pump-improvement-initiative" title="U.S. FDA, *White Paper: Infusion Pump Improvement Initiative*, April 2010. · PDF: ">fda_ipii</a>]</span>.</li>
+  <li><strong>Process plants.</strong> The U.S. Chemical Safety Board found that the 2007 T2 Laboratories explosion, which killed four employees and injured 28 people at nearby businesses, was a runaway reaction that most likely followed an inadequate reactor cooling system <span class="cites">[<a class="cite" href="https://www.csb.gov/csb-finds-t2-laboratories-explosion-caused-by-failure-of-cooling-system-resulting-in-runaway-chemical-reaction-report-notes-company-did-not-recognize-hazards-of-chemical-process/" title="U.S. Chemical Safety Board, T2 Laboratories explosion (2009). ">csb_t2</a>]</span>.</li>
+  <li><strong>Security protocols.</strong> Systematic testing of TLS libraries found state-machine bugs that had gone unnoticed for years, including SKIP-TLS and FREAK, where a network attacker could skip handshake messages. The authors trace them to incorrect compositions of individually correct state machines <span class="cites">[<a class="cite" href="https://doi.org/10.1145/3023357" title="B. Beurdouche et al., &quot;A Messy State of the Union: Taming the Composite State Machines of TLS,&quot; IEEE S&amp;P 2015, pp. 535–552; *CACM* reprint · ">beurdouche2015</a>, <a class="cite" href="https://www.nccgroup.com/research/smack-skip-tls-freak-ssltls-vulnerabilities/" title="NCC Group, &quot;SMACK: SKIP-TLS &amp; FREAK SSL/TLS vulnerabilities.&quot; ">ncc_smack</a>]</span>.</li>
+</ul>
+<p>Industry has shown that this class of error can be found before deployment. Amazon Web Services has model-checked the designs of critical systems since 2011 and reports finding subtle bugs that testing missed <span class="cites">[<a class="cite" href="https://doi.org/10.1145/2699417" title="C. Newcombe, T. Rath, F. Zhang, B. Munteanu, M. Brooker, M. Deardeuff, &quot;How Amazon Web Services Uses Formal Methods,&quot; *CACM* 58(4), 2015. · ">newcombe2015</a>]</span>. Tools such as SPIN <span class="cites">[<a class="cite" href="https://doi.org/10.1109/32.588521" title="G. J. Holzmann, &quot;The Model Checker SPIN,&quot; *IEEE TSE* 23(5):279–295, 1997. ">holzmann1997</a>]</span>, which made model checking of protocols like Peterson's mutual exclusion <span class="cites">[<a class="cite" href="https://doi.org/10.1016/0020-0190(81" title="G. L. Peterson, &quot;Myths about the mutual exclusion problem,&quot; *Inf. Process. Lett.* 12(3):115–116, 1981. )90106-X">peterson1981</a>]</span> routine, TLA+, Alloy and Verus <span class="cites">[<a class="cite" href="https://doi.org/10.1145/3586037" title="A. Lattuada et al., &quot;Verus: Verifying Rust Programs using Linear Ghost Types,&quot; *Proc. ACM Program. Lang.* 7(OOPSLA1), art. 85, 2023. ">lattuada2023</a>]</span> are mature. The barrier is that the domain model, the specification, the protocol model and the executable logic usually live in different tools and drift apart.</p>
+
+<h2 id="bil"><span class="secno">2</span>The language and toolchain</h2>
+<p><code>bil</code> keeps all four in one file. A program can contain:</p>
+<ul>
+  <li><strong>Ontology:</strong> <code>concept</code> hierarchies with <code>&lt;:</code> subtyping, algebraic data types, and first-order <code>axiom</code>s over them.</li>
+  <li><strong>Specified functions:</strong> <code>fn</code> with <code>requires</code> and <code>ensures</code>, written in Dijkstra's guarded command language <span class="cites">[<a class="cite" href="https://doi.org/10.1145/360933.360975" title="E. W. Dijkstra, &quot;Guarded commands, nondeterminacy and formal derivation of programs,&quot; *CACM* 18(8):453–457, 1975. · EWD 472 transcription: ">dijkstra1975</a>]</span>: <code>if … fi</code> with nondeterministic choice among enabled guards, and <code>do … od</code> loops with an <code>invariant</code> and a <code>variant</code>.</li>
+  <li><strong>Reactive systems:</strong> <code>system</code> blocks with typed <code>state</code>, safety <code>invariant</code>s, <code>temporal</code> properties (<code>P ~&gt; Q</code>, <code>eventually</code>), an optional <code>terminal</code> condition and interleaved guarded <code>transition</code>s in the style of SPIN/Promela.</li>
+  <li><strong>Data pipelines:</strong> <code>|&gt;</code> chains of <code>where</code>, <code>map</code>, <code>sort_by</code>, <code>sum</code> and quantifiers over concrete data.</li>
+</ul>
+
+<pre class="mermaid">
+flowchart LR
+  SRC["model.bil"] --> CHK["check: ontology DAG + Hindley-Milner types"]
+  CHK --> WP["verify: weakest preconditions"]
+  WP --> SMT["z3 / cvc5: PROVED or counterexample values"]
+  WP --> BND["bounded sampler: cross-check"]
+  CHK --> MC["model-check: BFS + Tarjan SCC + weak fairness"]
+  CHK --> EX["run / vm / build: ghost-erased execution"]
+  CHK --> VER["emit-verus: Verus Rust"]
+</pre>
+
+<h3>Verification conditions</h3>
+<p>For <code>if G₁ → S₁ [] … [] Gₙ → Sₙ fi</code>, <code>bil verify</code> generates guard totality (some guard holds under the precondition) and one obligation per branch, <code>Gᵢ ⇒ wp(Sᵢ, Q)</code>. Because the semantics is demonic, a design with overlapping guards must be correct whichever enabled branch runs. For a <code>do … od</code> loop it generates five obligations: invariant initialization, preservation by every branch, non-negativity and strict decrease of the variant, and the postcondition on exit. The formal rules are in <code>docs/SEMANTICS.md</code>.</p>
+<p>Each obligation ends in one of three verdicts:</p>
+<ul>
+  <li><span class="status ok">PROVED (by z3)</span>: the SMT solver <span class="cites">[<a class="cite" href="https://doi.org/10.1007/978-3-540-78800-3_24" title="L. de Moura, N. Bjørner, &quot;Z3: An Efficient SMT Solver,&quot; TACAS 2008, LNCS 4963. ">demoura2008</a>]</span> showed the negated condition unsatisfiable.</li>
+  <li><span class="status bad">REFUTED</span>: a counterexample, with concrete values recovered from the solver's model, for example <code>{ x = 37 }</code>.</li>
+  <li><span class="status warn">BOUNDED (n samples)</span>: only sampled. <code>bil verify</code> exits with status 1 in that case unless <code>--allow-bounded</code> is given, so sampled evidence is never mistaken for a proof.</li>
+</ul>
+
+<h3>Model checking</h3>
+<p><code>bil model-check</code> explores every reachable state of a <code>system</code> breadth-first, so each counterexample is a shortest trace. It checks every invariant in every state, reports a deadlock wherever no guard is enabled in a non-terminal state, and checks <code>P ~&gt; Q</code> by decomposing the ¬Q subgraph into strongly connected components under weak fairness: a cycle only counts as a violation if no transition that leaves it stays enabled throughout. Liveness counterexamples are printed as lassos.</p>
+
+<h3>Execution</h3>
+<p>Proof-only constructs are erased before execution. The tree-walking interpreter, the bytecode VM and native binaries built through <code>rustc</code> share checked 64-bit arithmetic, Euclidean division, and limits of 64 nested calls and 100,000 loop steps; differential tests require identical output from all three. At run time, axioms are checked over the concept instances that actually exist (a closed world), while in the SMT encoding they hold over all models (an open world).</p>
+
+<h2 id="method"><span class="secno">3</span>Method</h2>
+<p>Each use case went through the same six steps.</p>
+<ol>
+  <li><strong>Draft</strong> the model from domain knowledge.</li>
+  <li><strong>Research and qualify sources.</strong> Every requirement, limit or physical constant is traced to a source and graded: <strong>A</strong> for standards, specifications and regulators; <strong>B</strong> for peer-reviewed work; <strong>C</strong> for manufacturer documents and patents; <strong>D</strong> for secondary sources used only to corroborate. Each entry also records how much of it was actually read. Several standards (ISO 10218, 13851, 13855 and 15622, and IEC 61511) are paywalled. Their figures come from secondary quotations and are marked as such.</li>
+  <li><strong>Encode</strong> each requirement as a contract, loop invariant, system invariant or temporal property, citing its key inline in the source file.</li>
+  <li><strong>Check</strong> with <code>bil verify</code>, <code>bil model-check</code> and all three back ends.</li>
+  <li><strong>Seed a bug.</strong> Each lesson gets a one-line variant in <code>examples/domains/seeded_bugs/</code> that reproduces a documented failure mode. <code>bil</code> must reject it with a specific counterexample.</li>
+  <li><strong>Regress.</strong> <code>tests/domain_examples.rs</code> requires every model to be fully proved and every seeded bug to be caught. It runs in about nine seconds as part of the local CI gate.</li>
+</ol>
+<p class="note">The research corrected four first drafts. The SPE regrowth rates were low by about 15–20%; sensor plausibility used an arbitrary span instead of the NAMUR NE 43 failure bands; the ACC model used a "two-second rule" where the sources give standard minimum time gaps of 0.8–1 s and recommend 1–2 s; and the bank-angle protection forced a roll-back even while the pilot held the stick, which is not how normal law behaves. The model checker also corrected one draft: an MQTT model whose retransmission guard was too strict to expose the bug it was written to show.</p>
+
+<h2 id="results"><span class="secno">4</span>Results</h2>
+<p>Every model below verifies with all obligations proved by SMT, model-checks without violation, and gives the same output under the interpreter, the VM and a native build. Verifying and model-checking the whole suite takes under two seconds with a release build.</p>
+<div class="table-wrap"><table class="stats"><thead><tr><th>Use case</th><th>Model</th><th class="n">Functions</th><th class="n">Obligations proved</th><th class="n">Bounded only</th><th class="n">Systems</th><th class="n">States explored</th><th class="n">LTL proved</th></tr></thead><tbody><tr><td><a href="#semiconductor_se_spe">Semiconductor: SE-gated SPE anneal</a></td><td><code>semiconductor_se_spe.bil</code></td><td class="n">5</td><td class="n">25</td><td class="n">0</td><td class="n">1</td><td class="n">158</td><td class="n">1</td></tr><tr><td><a href="#process_safety_reactor">Process safety: reactor SIS</a></td><td><code>process_safety_reactor.bil</code></td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">1</td><td class="n">23</td><td class="n">1</td></tr><tr><td><a href="#robotics_cobot_cell">Robotics: cobot SSM cell</a></td><td><code>robotics_cobot_cell.bil</code></td><td class="n">2</td><td class="n">8</td><td class="n">0</td><td class="n">1</td><td class="n">6</td><td class="n">1</td></tr><tr><td><a href="#surgical_teleoperation">Surgical robotics: teleoperation</a></td><td><code>surgical_teleoperation.bil</code></td><td class="n">3</td><td class="n">9</td><td class="n">0</td><td class="n">1</td><td class="n">7</td><td class="n">1</td></tr><tr><td><a href="#medical_infusion_pump">Medical devices: PCA infusion pump</a></td><td><code>medical_infusion_pump.bil</code></td><td class="n">2</td><td class="n">9</td><td class="n">0</td><td class="n">1</td><td class="n">11</td><td class="n">1</td></tr><tr><td><a href="#manufacturing_press_cell">Manufacturing: press guarding</a></td><td><code>manufacturing_press_cell.bil</code></td><td class="n">3</td><td class="n">10</td><td class="n">0</td><td class="n">1</td><td class="n">13</td><td class="n">1</td></tr><tr><td><a href="#iiot_mqtt_qos2">IIoT: MQTT QoS 2 and NE 43</a></td><td><code>iiot_mqtt_qos2.bil</code></td><td class="n">2</td><td class="n">8</td><td class="n">0</td><td class="n">1</td><td class="n">21</td><td class="n">0</td></tr><tr><td><a href="#control_antiwindup_pi">Control: anti-windup PI</a></td><td><code>control_antiwindup_pi.bil</code></td><td class="n">3</td><td class="n">22</td><td class="n">0</td><td class="n">1</td><td class="n">12</td><td class="n">2</td></tr><tr><td><a href="#navigation_geofence">Navigation: geofence and RTH</a></td><td><code>navigation_geofence.bil</code></td><td class="n">3</td><td class="n">16</td><td class="n">0</td><td class="n">1</td><td class="n">8</td><td class="n">1</td></tr><tr><td><a href="#automotive_acc">Automotive: adaptive cruise</a></td><td><code>automotive_acc.bil</code></td><td class="n">2</td><td class="n">7</td><td class="n">0</td><td class="n">1</td><td class="n">11</td><td class="n">0</td></tr><tr><td><a href="#aerospace_envelope">Aerospace: envelope protection</a></td><td><code>aerospace_envelope.bil</code></td><td class="n">2</td><td class="n">12</td><td class="n">0</td><td class="n">1</td><td class="n">8</td><td class="n">1</td></tr><tr><td><a href="#energy_bms_balancing">Energy storage: BMS</a></td><td><code>energy_bms_balancing.bil</code></td><td class="n">2</td><td class="n">12</td><td class="n">0</td><td class="n">1</td><td class="n">6</td><td class="n">0</td></tr><tr><td><a href="#public_safety_traffic_rail">Public safety: signals and crossing</a></td><td><code>public_safety_traffic_rail.bil</code></td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">2</td><td class="n">11</td><td class="n">3</td></tr><tr><td><a href="#cybersecurity_zero_trust">Cybersecurity: zero trust</a></td><td><code>cybersecurity_zero_trust.bil</code></td><td class="n">2</td><td class="n">6</td><td class="n">0</td><td class="n">2</td><td class="n">13</td><td class="n">1</td></tr><tr class="total"><td>Total</td><td>14 models</td><td class="n">34</td><td class="n">147</td><td class="n">0</td><td class="n">16</td><td class="n">308</td><td class="n">14</td></tr></tbody></table></div>
+<p>Ten seeded bugs, each caught:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Seeded bug</th><th>What changed</th><th>How <code>bil</code> rejects it</th></tr></thead>
+<tbody>
+<tr><td><code>spe_slow_thermal_loop</code></td><td>Thermal loop one tick too slow during an over-temperature excursion</td><td><span class="status bad">VIOLATION</span> NeverMeltAmorphousSi, 11-step trace</td></tr>
+<tr><td><code>spe_overtemp_only_in_soak</code></td><td>Over-strict invariant</td><td><span class="status bad">VIOLATION</span> OverTempIsTransient via a pyrometer fault</td></tr>
+<tr><td><code>reactor_slow_sis</code></td><td>Heating not pre-empted at the trip point</td><td><span class="status bad">VIOLATION</span> BelowDesignTemperature, temp = 9</td></tr>
+<tr><td><code>mqtt_unordered_transport</code></td><td>PUBREL may overtake a PUBLISH</td><td><span class="status bad">VIOLATION</span> ExactlyOnceSafety, delivered = 2</td></tr>
+<tr><td><code>tls_early_finished</code></td><td>Client accepts an injected early Finished</td><td><span class="status bad">VIOLATION</span> NoDataToUnverifiedPeer</td></tr>
+<tr><td><code>bms_fault_always_opens</code></td><td>Ignores contactor welding</td><td><span class="status bad">VIOLATION</span> FaultOpensPack via Closed → Welded</td></tr>
+<tr><td><code>robotics_stop_always_clears</code></td><td>Claims the protective stop always clears</td><td><span class="status bad">LTL FAILED</span> fair lasso</td></tr>
+<tr><td><code>infusion_alarm_always_cleared</code></td><td>Claims every alarm is eventually cleared</td><td><span class="status bad">LTL FAILED</span> fair lasso of recurring hazards</td></tr>
+<tr><td><code>cyber_noncompliant_grant</code></td><td>Issues a self-approved production grant</td><td><span class="status bad">RuntimeError</span> axiom SeparationOfDuties</td></tr>
+<tr><td><code>reactor_trip_via_call</code></td><td>Trip logic calls a helper (not a bug)</td><td><span class="status warn">BOUNDED</span> only: a tool limitation, see section 7</td></tr>
+</tbody></table></div>
+
+<h2 id="cases"><span class="secno">5</span>Use cases</h2>
+<p>Each use case gives the context and its sources, what was modeled, what was proved, and what the checker found. Code excerpts are copied from the model files when this page is built.</p>
+
+</div>
+
+<section class="case lead-case" id="semiconductor_se_spe">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Semiconductor manufacturing · lead case</p><h3>Spectroscopic ellipsometry gating a solid-phase epitaxy anneal</h3></div>
+  <div class="chips"><span class="chip ok">25 obligations proved</span><span class="chip">158 states</span><span class="chip ok">AnnealFinishes LTL proved</span><span class="chip bad">2 seeded bugs caught</span><span class="chip">semiconductor_se_spe.bil</span></div>
+
+  <h4>Process context</h4>
+  <p>Ion implantation amorphizes a surface layer of a silicon wafer. A thermal anneal then regrows it epitaxially from the crystalline substrate below: solid-phase epitaxy (SPE). Two measurements and one control loop decide whether the result is single-crystal silicon.</p>
+  <ul>
+    <li><strong>Metrology before the anneal.</strong> Spectroscopic ellipsometry measures the change in polarization, Ψ and Δ, over wavelength <span class="cites">[<a class="cite" href="https://catalogimages.wiley.com/images/db/pdf/9780470016084.excerpt.pdf" title="H. Fujiwara, *Spectroscopic Ellipsometry: Principles and Applications*, Wiley, 2007, ISBN 978-0-470-01608-4. Excerpt: ">fujiwara2007</a>]</span>. Fitting a multilayer optical model (oxide, amorphous layer, damaged substrate) gives the amorphous layer thickness. The fit has to be trusted with care: with an unsuitable dielectric-function model, ellipsometry can overestimate low-level damage <span class="cites">[<a class="cite" href="https://doi.org/10.1143/JJAP.35.5929" title="&quot;Spectro-ellipsometric Studies of Amorphization and Thermal Annealing in Ion-implanted Silicon,&quot; *Jpn. J. Appl. Phys.* 35, 5929 (1996). · group&#x27;s methods: ">lohner1996</a>]</span>. SE has been used to follow the regrowth of implant-amorphized silicon <span class="cites">[<a class="cite" href="https://doi.org/10.1007/BF01538413" title="S. Holgado, J. Martinez, J. Garrido, J. Piqueras, &quot;Regrowth-process study of amorphous BF₂⁺ ion-implanted silicon layers through spectroscopic ellipsometry,&quot; *A">holgado1995</a>]</span>.</li>
+    <li><strong>Kinetics of the regrowth.</strong> For intrinsic Si the regrowth front moves at v = 4.64×10¹⁶ Å/s · exp(−2.7 eV / kT) <span class="cites">[<a class="cite" href="#ref-roth1990" title="J. A. Roth, G. L. Olson, D. C. Jacobson, J. M. Poate, *Appl. Phys. Lett.* 57, 1340 (1990). Values as quoted in `[johnson2007]`.">roth1990</a>, <a class="cite" href="https://doi.org/10.1103/PhysRevB.76.045216" title="B. C. Johnson, J. C. McCallum, &quot;Dopant-enhanced solid phase epitaxy in buried amorphous silicon layers,&quot; *Phys. Rev. B* 76, 045216 (2007). · arXiv: ">johnson2007</a>]</span>. That is about 1.4 Å/s at 550 °C, 12 Å/s at 600 °C and 84 Å/s at 650 °C, so 30 °C of error changes the anneal time by a factor of two or more. Random nucleation in the amorphous layer has a higher activation energy, about 4 eV, so it gains on epitaxy as temperature rises <span class="cites">[<a class="cite" href="https://www.sciencedirect.com/science/article/pii/S0920230788800057" title="G. L. Olson, J. A. Roth, &quot;Kinetics of solid phase crystallization in amorphous silicon,&quot; *Mater. Sci. Rep.* 3, 1 (1988). ">olsonroth1988</a>, <a class="cite" href="https://doi.org/10.1557/PROC-35-25" title="G. L. Olson, &quot;Kinetics and Mechanisms of Solid Phase Epitaxy and Competitive Processes in Silicon,&quot; *MRS Proc.* 35, 25 (1985). ">olson1985</a>]</span>. This sets the upper edge of the process window.</li>
+    <li><strong>The thermal hazard.</strong> Amorphous Si melts 200 ± 50 K below crystalline Si. Under pulsed heating, a thin liquid layer can then propagate through the amorphous film at 10–20 m/s and leave fine-grained polycrystalline silicon: explosive crystallization <span class="cites">[<a class="cite" href="https://link.aps.org/doi/10.1103/PhysRevLett.52.2360" title="M. O. Thompson et al., &quot;Melting temperature and explosive crystallization of amorphous silicon during pulsed laser irradiation,&quot; *Phys. Rev. Lett.* 52, 2360 (19">thompson1984</a>]</span>. In rapid thermal processing, temperature non-uniformity during ramps causes slip, which limits how fast the lamps may slew <span class="cites">[<a class="cite" href="https://web.stanford.edu/~boyd/papers/temperature_uniformity.html" title="S. A. Norman, C. D. Schaper, S. P. Boyd, &quot;Improvement of Temperature Uniformity in Rapid Thermal Processing Systems Using Multivariable Control,&quot; 1991. ">norman1991</a>, <a class="cite" href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6403925" title="US Patent 6,403,925, &quot;System and method for thermal processing of a semiconductor substrate.&quot; ">uspto6403925</a>]</span>. Typical RTP ramps run at 20–100 °C/s <span class="cites">[<a class="cite" href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6034356" title="US Patent 6,034,356, &quot;RTP lamp design for oxidation and annealing.&quot; ">uspto6034356</a>]</span>.</li>
+    <li><strong>In-situ monitoring.</strong> Real-time SE during solid-phase crystallization yields both a near-surface temperature calibration and the crystalline volume fraction over time <span class="cites">[<a class="cite" href="https://doi.org/10.1557/PROC-507-939" title="H. Fujiwara, J. Koh, Y. Lee, C. R. Wronski, R. W. Collins, &quot;Real Time Spectroscopic Ellipsometry Studies of the Solid Phase Crystallization of Amorphous Silicon">fujiwara1998</a>]</span>. This makes an ellipsometric endpoint for the regrowth, and a second temperature channel, practical.</li>
+  </ul>
+
+  <pre class="mermaid">
+stateDiagram-v2
+  [*] --> Load
+  Load --> Measure: amorph := 3
+  Measure --> Ramp: SE fit valid (se_ok)
+  Measure --> Reject: SE fit rejected
+  Ramp --> Soak: temp reaches window (band 6)
+  Ramp --> Cool: pyrometer fault, lamp off
+  Soak --> Soak: regrow one unit, or excursion to band 7 and back
+  Soak --> Cool: SE endpoint (amorph = 0), lamp off
+  Soak --> Cool: pyrometer fault, lamp off
+  Cool --> Done: cold and fully regrown
+  Cool --> Reject: cold with amorphous layer left
+  </pre>
+
+  <h4>What is modeled and proved</h4>
+  <p>The SE gate accepts a site only when the regression converged, the fit error is under a threshold, and the thickness is inside the implant recipe's expected range. z3 proves the gate is exactly that predicate, with no hidden case:</p>
+  <pre class="code"><code>fn se_site_valid(s: SeSite, mse_max: Int, t_min: Int, t_max: Int) -&gt; Bool
+  requires mse_max &gt; 0 &amp;&amp; 0 &lt;= t_min &amp;&amp; t_min &lt; t_max
+  ensures  result &lt;=&gt; (s.converged &amp;&amp; s.mse_milli &lt;= mse_max
+                       &amp;&amp; s.a_si_thickness_a &gt;= t_min &amp;&amp; s.a_si_thickness_a &lt;= t_max)
+=
+  s.converged &amp;&amp; s.mse_milli &lt;= mse_max
+  &amp;&amp; s.a_si_thickness_a &gt;= t_min &amp;&amp; s.a_si_thickness_a &lt;= t_max</code></pre>
+  <p>The wafer disposition is proved for all inputs: fewer than 80% usable sites always sends the wafer back to metrology, and enough sites with a uniform layer always releases it. The regrowth-rate table comes from the Arrhenius law above. Each band uses the rate at its lower edge, so a time computed from it is never optimistic, and z3 proves the rate is zero outside the window and positive inside:</p>
+  <pre class="code"><code>fn spe_rate(temp_c: Int, t_upper: Int) -&gt; Int
+  requires t_upper &gt; 650
+  ensures  result &gt;= 0 &amp;&amp; (temp_c &lt; 550 =&gt; result == 0) &amp;&amp; (temp_c &gt;= t_upper =&gt; result == 0)
+           &amp;&amp; (temp_c &gt;= 550 &amp;&amp; temp_c &lt; t_upper =&gt; result &gt; 0)
+=
+  if temp_c &lt; 550                          -&gt; 0
+  [] temp_c &gt;= 550 &amp;&amp; temp_c &lt; 600         -&gt; 1
+  [] temp_c &gt;= 600 &amp;&amp; temp_c &lt; 650         -&gt; 12
+  [] temp_c &gt;= 650 &amp;&amp; temp_c &lt; t_upper     -&gt; 84
+  [] temp_c &gt;= t_upper                     -&gt; 0
+  fi</code></pre>
+  <p>The fast thermal loop is where the hazards meet. Whatever the outer loop demands, the per-tick setpoint stays within the slew limit and never exceeds the hard temperature limit. All five branches are proved, including the case where the demand is above the hard limit while the current setpoint is below it:</p>
+  <pre class="code"><code>fn thermal_setpoint(cur: Int, demand: Int, max_step: Int, t_hard: Int) -&gt; Int
+  requires max_step &gt; 0 &amp;&amp; cur &lt;= t_hard
+  ensures  result &lt;= t_hard &amp;&amp; result - cur &lt;= max_step &amp;&amp; cur - result &lt;= max_step
+=
+  if demand &gt; cur + max_step &amp;&amp; cur + max_step &lt;= t_hard   -&gt; cur + max_step
+  [] demand &gt; cur + max_step &amp;&amp; cur + max_step &gt; t_hard    -&gt; t_hard
+  [] demand &lt; cur - max_step                               -&gt; cur - max_step
+  [] demand &gt;= cur - max_step &amp;&amp; demand &lt;= cur + max_step &amp;&amp; demand &lt;= t_hard -&gt; demand
+  [] demand &gt;= cur - max_step &amp;&amp; demand &lt;= cur + max_step &amp;&amp; demand &gt; t_hard  -&gt; t_hard
+  fi</code></pre>
+  <p>The anneal itself is a <code>system</code> with temperature in bands. Lamp drift or latent-heat release may push the wafer out of the window at any time during the soak, up to a bounded number of excursions, and the pyrometer may fail at any point. Five invariants are checked in all 158 reachable states, and <code>AnnealFinishes</code> proves under weak fairness that every anneal that starts ramping ends in <code>Done</code> or <code>Reject</code>:</p>
+  <pre class="code"><code>  invariant NeverMeltAmorphousSi:   temp &lt;= 7
+  invariant NoAnnealWithoutSe:      (phase == Ramp || phase == Soak) =&gt; se_ok
+  invariant NoHeatOnPyrometerFault: !pyro_ok =&gt; !lamp
+  invariant RegrowthOnlyAfterSe:    amorph &lt; 3 =&gt; se_ok || phase == Load || phase == Measure
+  // Over-temperature only arises from a soak excursion. A pyrometer fault in the middle
+  // of one drops straight to Cool with the lamp off, so the wafer can still be at
+  // band 7 in Cool (the model checker found that trace for a stricter `phase == Soak`).
+  invariant OverTempIsTransient:    temp == 7 =&gt; ((phase == Soak || phase == Cool) &amp;&amp; excursions &gt;= 1)</code></pre>
+  <p>On the example wafer W07 the verdict is <code>Rework</code>. Only three of five sites pass the SE gate, which is under 80%, even though the three good thicknesses are uniform (<code>uniform = true</code>, mean 411 Å). At 600 °C that layer needs 35 one-second ticks to regrow, computed by <code>regrowth_ticks</code>, which is proved to terminate with the whole layer consumed.</p>
+
+  <h4>What the checker found</h4>
+  <p><strong>A thermal loop one tick too slow melts the amorphous layer.</strong> If the controller can heat once more while already in the over-temperature band, the wafer reaches band 8, which is the a-Si melt and explosive-crystallization hazard. The checker returns the shortest path to it:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/spe_slow_thermal_loop.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;NeverMeltAmorphousSi&#x27; violated at state { amorph=3; excursions=1; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=8 }
+    Init: { amorph=0; excursions=0; lamp=false; phase=Load; pyro_ok=true; se_ok=false; temp=0 }
+    Step 1 [Guard #1 (phase == Load)] -&gt; { amorph=3; excursions=0; lamp=false; phase=Measure; pyro_ok=true; se_ok=false; temp=0 }
+    Step 2 [Guard #2 (phase == Measure)] -&gt; { amorph=3; excursions=0; lamp=false; phase=Ramp; pyro_ok=true; se_ok=true; temp=0 }
+    Step 3 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=1 }
+    Step 4 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=2 }
+    Step 5 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=3 }
+    Step 6 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=4 }
+    Step 7 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=5 }
+    Step 8 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=6 }
+    Step 9 [Guard #5 ((phase == Ramp) &amp;&amp; (temp == 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=6 }
+    Step 10 [Guard #7 (((phase == Soak) &amp;&amp; (temp == 6)) &amp;&amp; (excursions &lt; 2))] -&gt; { amorph=3; excursions=1; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=7 }
+    Step 11 [Guard #9 (((phase == Soak) &amp;&amp; (temp == 7)) &amp;&amp; lamp)] -&gt; { amorph=3; excursions=1; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=8 }</code></pre>
+  <p><strong>An invariant that was too strong.</strong> The first draft stated that over-temperature can only occur during the soak. The checker showed a pyrometer fault in the middle of an excursion: the lamp is cut and the phase moves to <code>Cool</code> while the wafer is still in band 7. Cutting the lamp is the right response, so the invariant was corrected rather than the design.</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/spe_overtemp_only_in_soak.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;OverTempIsTransient&#x27; violated at state { amorph=3; excursions=1; lamp=false; phase=Cool; pyro_ok=false; se_ok=true; temp=7 }
+    Init: { amorph=0; excursions=0; lamp=false; phase=Load; pyro_ok=true; se_ok=false; temp=0 }
+    Step 1 [Guard #1 (phase == Load)] -&gt; { amorph=3; excursions=0; lamp=false; phase=Measure; pyro_ok=true; se_ok=false; temp=0 }
+    Step 2 [Guard #2 (phase == Measure)] -&gt; { amorph=3; excursions=0; lamp=false; phase=Ramp; pyro_ok=true; se_ok=true; temp=0 }
+    Step 3 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=1 }
+    Step 4 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=2 }
+    Step 5 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=3 }
+    Step 6 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=4 }
+    Step 7 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=5 }
+    Step 8 [Guard #4 (((phase == Ramp) &amp;&amp; pyro_ok) &amp;&amp; (temp &lt; 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Ramp; pyro_ok=true; se_ok=true; temp=6 }
+    Step 9 [Guard #5 ((phase == Ramp) &amp;&amp; (temp == 6))] -&gt; { amorph=3; excursions=0; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=6 }
+    Step 10 [Guard #7 (((phase == Soak) &amp;&amp; (temp == 6)) &amp;&amp; (excursions &lt; 2))] -&gt; { amorph=3; excursions=1; lamp=true; phase=Soak; pyro_ok=true; se_ok=true; temp=7 }
+    Step 11 [Guard #10 (((phase == Ramp) || (phase == Soak)) &amp;&amp; pyro_ok)] -&gt; { amorph=3; excursions=1; lamp=false; phase=Cool; pyro_ok=false; se_ok=true; temp=7 }</code></pre>
+  <p class="limits"><strong>Limits.</strong> Temperature is discretized into bands and time into ticks. A production controller needs dense-time or hybrid analysis of the plant, and the window edge (680 °C here), the fit thresholds and the excursion budget are example recipe parameters, not recommendations. The model proves the supervisory logic and the per-tick command bounds, not the thermal physics.</p>
+</div>
+</section>
+
+<section class="case" id="process_safety_reactor">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Critical process systems</p><h3>A safety instrumented system for an exothermic reactor</h3></div>
+  <div class="chips"><span class="chip ok">2 obligations proved</span><span class="chip">23 states</span><span class="chip ok">TripIsReset LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The T2 Laboratories explosion was a runaway reaction after a cooling failure <span class="cites">[<a class="cite" href="https://www.csb.gov/csb-finds-t2-laboratories-explosion-caused-by-failure-of-cooling-system-resulting-in-runaway-chemical-reaction-report-notes-company-did-not-recognize-hazards-of-chemical-process/" title="U.S. Chemical Safety Board, T2 Laboratories explosion (2009). ">csb_t2</a>]</span>. A safety instrumented system under IEC 61511 <span class="cites">[<a class="cite" href="https://open-exam-prep.com/study-guides/pe-control-systems/sis-design-sil/sis-design-constraints" title="IEC 61511, Functional safety — SIS for the process industry sector. Hardware fault tolerance by SIL (IEC 61511-1:2018 §11.4), as summarized by ">iec61511</a>]</span> is the independent layer meant to stop that sequence. Three temperature transmitters voted 2-out-of-3 tolerate one fault both against failing to trip and against tripping spuriously <span class="cites">[<a class="cite" href="https://ntnu.edu/documents/624876/1277046207/SIS+book+-+chapter+12+-+Spurious+trip+rate/ad91f310-f8b2-41f5-a923-3e9e22971f75" title="M. A. Lundteigen, M. Rausand, SIS book ch. 12, &quot;Spurious trip rate,&quot; NTNU. ">lundteigen_sis</a>]</span>, at a higher cost and complexity than simpler architectures <span class="cites">[<a class="cite" href="https://kenexis.com/wp-content/uploads/2018/11/Comparison-of-2oo3-voting-and-2oo2-voting.pdf" title="Kenexis, &quot;Comparison of 2oo3 voting and 2oo2 voting.&quot; ">kenexis_2oo3</a>]</span>. Both properties are proved for all inputs:</p>
+  <pre class="code"><code>fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -&gt; Bool
+  requires setpoint &gt; 0
+  ensures  ((t1 &gt;= setpoint &amp;&amp; t2 &gt;= setpoint) =&gt; result)
+           &amp;&amp; ((t1 &lt; setpoint &amp;&amp; t2 &lt; setpoint) =&gt; !result)
+=
+  (t1 &gt;= setpoint &amp;&amp; t2 &gt;= setpoint) || (t1 &gt;= setpoint &amp;&amp; t3 &gt;= setpoint)
+  || (t2 &gt;= setpoint &amp;&amp; t3 &gt;= setpoint)</code></pre>
+  <p>The reactor <code>system</code> lets cooling fail at any time. While running, the SIS trips at band 7 and pre-empts further heating, residual heat may add one more step, and the reactor is reset after cooling. The design temperature is never exceeded, and every trip is eventually reset.</p>
+  <h4>What the checker found</h4>
+  <p>If heating is not pre-empted at the trip point, which is what happens when the SIS responds more slowly than the reaction, the interleaving lets the temperature climb past the design limit before the trip fires:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/reactor_slow_sis.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;BelowDesignTemperature&#x27; violated at state { cooling=false; feed=true; residual=false; temp=9; tripped=false }
+    Init: { cooling=true; feed=true; residual=false; temp=5; tripped=false }
+    Step 1 [Guard #4 (cooling &amp;&amp; !(tripped))] -&gt; { cooling=false; feed=true; residual=false; temp=5; tripped=false }
+    Step 2 [Guard #1 ((feed &amp;&amp; !(cooling)) &amp;&amp; (temp &lt; 10))] -&gt; { cooling=false; feed=true; residual=false; temp=6; tripped=false }
+    Step 3 [Guard #1 ((feed &amp;&amp; !(cooling)) &amp;&amp; (temp &lt; 10))] -&gt; { cooling=false; feed=true; residual=false; temp=7; tripped=false }
+    Step 4 [Guard #1 ((feed &amp;&amp; !(cooling)) &amp;&amp; (temp &lt; 10))] -&gt; { cooling=false; feed=true; residual=false; temp=8; tripped=false }
+    Step 5 [Guard #1 ((feed &amp;&amp; !(cooling)) &amp;&amp; (temp &lt; 10))] -&gt; { cooling=false; feed=true; residual=false; temp=9; tripped=false }</code></pre>
+  <p class="limits"><strong>Limits.</strong> Response time is abstracted as transition priority. Probability of failure on demand, proof-test intervals and common-cause failure, which IEC 61511 requires, are outside the model.</p>
+</div>
+</section>
+
+<section class="case" id="robotics_cobot_cell">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Collaborative robotics</p><h3>Speed and separation monitoring in a cobot cell</h3></div>
+  <div class="chips"><span class="chip ok">8 obligations proved</span><span class="chip">6 states</span><span class="chip ok">EStopIsReleasable LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>ISO/TS 15066 defines speed and separation monitoring (SSM) as one of four collaborative modes <span class="cites">[<a class="cite" href="https://www.automate.org/tech-papers/iso-ts-15066-explained" title="ISO/TS 15066, Robots and robotic devices — Collaborative robots. Overview: ">isots15066</a>]</span>. NIST has published guidance on implementing its protective separation distance <span class="cites">[<a class="cite" href="https://doi.org/10.1016/j.rcim.2016.08.001" title="J. A. Marvel, R. Norcross, &quot;Implementing speed and separation monitoring in collaborative robot workcells,&quot; *Robotics and Computer-Integrated Manufacturing* (NI">marvel2017</a>]</span> and built a laser-scanner testbed that stops and restarts a robot from it <span class="cites">[<a class="cite" href="https://nvlpubs.nist.gov/nistpubs/ir/2012/NIST.IR.7851.pdf" title="S. Szabo, W. Shackleford, R. Norcross, J. Marvel, NIST IR 7851 (2012). ">szabo2012</a>]</span>. The model takes the protective distance as an input and adds a 500 mm collaborative band capped at the 250 mm/s reduced speed associated with ISO 10218 <span class="cites">[<a class="cite" href="https://www.controldesign.com/safety/functional-safety/article/55300304/how-to-understand-safe-reduced-speed-and-safe-limited-speed" title="ISO 10218-1/-2, reduced speed of 250 mm/s. Quoted by and ">iso10218</a>]</span>:</p>
+  <pre class="code"><code>fn ssm_speed_limit(sep_mm: Int, protective_mm: Int, vmax: Int) -&gt; Int
+  requires protective_mm &gt; 0 &amp;&amp; vmax &gt;= 250 &amp;&amp; sep_mm &gt;= 0
+  ensures  result &gt;= 0 &amp;&amp; result &lt;= vmax
+           &amp;&amp; (sep_mm &lt;= protective_mm =&gt; result == 0)
+           &amp;&amp; (sep_mm &lt; protective_mm + 500 =&gt; result &lt;= 250)
+=
+  if sep_mm &lt;= protective_mm                                  -&gt; 0
+  [] sep_mm &gt; protective_mm &amp;&amp; sep_mm &lt; protective_mm + 500   -&gt; 250
+  [] sep_mm &gt;= protective_mm + 500                            -&gt; vmax
+  fi</code></pre>
+  <p>The cell supervisor lets the human move between zones at any moment, with the scanner's safety output acting in the same step. Four invariants hold in every state: standstill in the protective zone, reduced speed in the shared band, E-stop means stop, and a valid zone.</p>
+  <h4>What the checker found</h4>
+  <p>The first draft claimed that a protective stop always clears. It cannot, because the human may stay in the protective zone, or press E-stop again, forever. The checker returns that as a fair lasso. What the controller can promise is that a latched E-stop is always releasable, and that is now proved.</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/robotics_stop_always_clears.bil   # exit 1
+  [LTL FAILED] temporal `StopIsNotPermanent`: ((mode == ProtectiveStop) &amp;&amp; !(estop)) ~&gt; (mode != ProtectiveStop)
+  [VIOLATION] LTL Temporal Property &#x27;StopIsNotPermanent&#x27; (((mode == ProtectiveStop) &amp;&amp; !(estop)) ~&gt; (mode != ProtectiveStop)) violated at state { estop=true; mode=ProtectiveStop; speed=0; zone=2 }
+    Init: { estop=false; mode=Auto; speed=1000; zone=0 }
+    Step 1 [Guard #1 ((zone == 0) &amp;&amp; !(estop))] -&gt; { estop=false; mode=Reduced; speed=250; zone=1 }
+    Step 2 [Guard #2 ((zone == 1) &amp;&amp; !(estop))] -&gt; { estop=false; mode=ProtectiveStop; speed=0; zone=2 }
+    Step 3 [Guard #5 !(estop)] -&gt; { estop=true; mode=ProtectiveStop; speed=0; zone=2 }
+    Weakly Fair ¬Q Cycle (Lasso): { estop=true; mode=ProtectiveStop; speed=0; zone=2 } -&gt; { estop=false; mode=ProtectiveStop; speed=0; zone=2 }</code></pre>
+</div>
+</section>
+
+<section class="case" id="surgical_teleoperation">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Surgical robotics</p><h3>Teleoperation with virtual fixtures and a link watchdog</h3></div>
+  <div class="chips"><span class="chip ok">9 obligations proved</span><span class="chip">7 states</span><span class="chip ok">HoldIsLeftWhenLinkIsUp LTL proved</span></div>
+  <p>Virtual fixtures, introduced for telepresence by Rosenberg <span class="cites">[<a class="cite" href="https://doi.org/10.1117/12.164901" title="L. B. Rosenberg, &quot;Virtual fixtures as tools to enhance operator performance in telepresence environments,&quot; *Proc. SPIE* 2057 (1993). ">rosenberg1993</a>]</span>, include forbidden-region fixtures that keep a manipulator out of parts of the workspace. They have been studied on the da Vinci and JHU Steady-Hand platforms <span class="cites">[<a class="cite" href="https://doi.org/10.1007/978-3-540-48113-3_5" title="J. J. Abbott, P. Marayong, A. M. Okamura, &quot;Haptic Virtual Fixtures for Robot-Assisted Manipulation,&quot; *Robotics Research*, Springer, 2007. · PDF: ">abbott2007</a>]</span>. Robotically assisted surgical equipment falls under IEC 80601-2-77 <span class="cites">[<a class="cite" href="https://www.iso.org/standard/68473.html" title="IEC 80601-2-77:2019+AMD1:2023, robotically assisted surgical equipment (RASE). ">iec80601277</a>]</span>. The model proves three instrument-level functions: a depth fixture that never lets the tip pass the limit while leaving retraction unrestricted, 5:1 motion scaling, and a symmetric force limit.</p>
+  <pre class="code"><code>fn fixture_step(depth: Int, step: Int, limit: Int) -&gt; Int
+  requires depth &lt;= limit
+  ensures  depth + result &lt;= limit
+           &amp;&amp; (step &lt;= 0 =&gt; result == step)
+           &amp;&amp; (step &gt; 0 =&gt; (result &gt;= 0 &amp;&amp; result &lt;= step))
+=
+  if step &lt;= 0                             -&gt; step
+  [] step &gt; 0 &amp;&amp; depth + step &lt;= limit     -&gt; step
+  [] step &gt; 0 &amp;&amp; depth + step &gt; limit      -&gt; limit - depth
+  fi</code></pre>
+  <p>The supervisor puts the arm on hold when the console link drops. When the link returns, the arm stays on hold until the surgeon releases and re-presses the clutch. <code>NoMotionWithoutReengage</code> is checked in every state, because motion that resumes on its own when the link recovers is the hazard.</p>
+</div>
+</section>
+
+<section class="case" id="medical_infusion_pump">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Medical devices</p><h3>A patient-controlled analgesia infusion pump</h3></div>
+  <div class="chips"><span class="chip ok">9 obligations proved</span><span class="chip">11 states</span><span class="chip ok">ClearPumpCanRun LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The FDA's Infusion Pump Improvement Initiative cites failures of built-in safety alarms among recurring defects <span class="cites">[<a class="cite" href="https://www.fda.gov/medical-devices/infusion-pumps/white-paper-infusion-pump-improvement-initiative" title="U.S. FDA, *White Paper: Infusion Pump Improvement Initiative*, April 2010. · PDF: ">fda_ipii</a>]</span>. The FDA's Generic PCA pump model and its safety requirements have been model-checked in UPPAAL by others <span class="cites">[<a class="cite" href="https://repository.upenn.edu/cis_papers/475" title="B. Kim et al., &quot;Safety-Assured Development of the GPCA Infusion Pump Software,&quot; UPenn. ">kim2011gpca</a>, <a class="cite" href="https://crisys.cs.umn.edu/gpca.shtml" title="University of Minnesota CRISYS, GPCA requirements and artifacts. ">gpca_umn</a>]</span>. This model proves the bolus rule (lockout interval and hourly cap, stated as an exact equivalence) and that delivery never exceeds the volume to be infused and stops exactly on it. The interlock <code>system</code> checks no free flow with the door open, a stop on occlusion or air-in-line, and an alarm that latches the motor off.</p>
+  <pre class="code"><code>fn infuse(vtbi: Int, stroke: Int) -&gt; Int
+  requires vtbi &gt;= 0 &amp;&amp; stroke &gt; 0
+  ensures  result == vtbi
+=
+  do v = 0
+    invariant v &gt;= 0 &amp;&amp; v &lt;= vtbi
+    variant   vtbi - v
+  :
+     vtbi - v &gt;= stroke             -&gt; v := v + stroke
+  [] vtbi - v &lt; stroke &amp;&amp; v &lt; vtbi  -&gt; v := vtbi
+  od
+  then v</code></pre>
+  <h4>What the checker found</h4>
+  <p>"Every alarm is eventually cleared" does not hold. Hazards can keep recurring, and clearing an alarm is a clinical action rather than something the pump controls. The checker returns a fair lasso of alternating occlusion, air and door faults:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/infusion_alarm_always_cleared.bil   # exit 1
+  [LTL FAILED] temporal `AlarmsAreAcknowledged`: alarm ~&gt; !(alarm)
+  [VIOLATION] LTL Temporal Property &#x27;AlarmsAreAcknowledged&#x27; (alarm ~&gt; !(alarm)) violated at state { air=false; alarm=true; door_closed=false; occlusion=true; pumping=false }
+    Init: { air=false; alarm=false; door_closed=true; occlusion=false; pumping=false }
+    Step 1 [Guard #3 !(occlusion)] -&gt; { air=false; alarm=true; door_closed=true; occlusion=true; pumping=false }
+    Step 2 [Guard #5 (door_closed &amp;&amp; !(pumping))] -&gt; { air=false; alarm=true; door_closed=false; occlusion=true; pumping=false }
+    Weakly Fair ¬Q Cycle (Lasso): { air=false; alarm=true; door_closed=false; occlusion=true; pumping=false } -&gt; { air=false; alarm=true; door_closed=false; occlusion=false; pumping=false } -&gt; { air=false; alarm=true; door_closed=true; occlusion=false; pumping=false } -&gt; { air=true; alarm=true; door_closed=true; occlusion=false; pumping=false } -&gt; { air=true; alarm=true; door_closed=false; occlusion=false; pumping=false } -&gt; { air=true; alarm=true; door_closed=false; occlusion=true; pumping=false } -&gt; { air=true; alarm=true; door_closed=true; occlusion=true; pumping=false } -&gt; { air=false; alarm=true; door_closed=true; occlusion=true; pumping=false }</code></pre>
+</div>
+</section>
+
+<section class="case" id="manufacturing_press_cell">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Manufacturing</p><h3>Hydraulic press guarding and gravimetric dosing</h3></div>
+  <div class="chips"><span class="chip ok">10 obligations proved</span><span class="chip">13 states</span><span class="chip ok">NoStuckDownstroke LTL proved</span></div>
+  <p>Two-hand control under ISO 13851 type III requires both actuators within 0.5 s, and both released before re-triggering <span class="cites">[<a class="cite" href="https://committee.iso.org/standard/35560.html" title="ISO 13851:2019, Two-hand control devices. ">iso13851</a>]</span>. A light curtain must be mounted at least S = K·T + C from the hazard, with K = 2000 mm/s and C = 8(d − 14) for resolutions d ≤ 40 mm <span class="cites">[<a class="cite" href="https://www.issa.int/sites/default/files/documents/prevention/2Light_Curtain_2011_en-36159.pdf" title="ISO 13855, positioning of protective equipment: S = K·T + C, K = 2000 mm/s, C = 8(d − 14) for d ≤ 40 mm. Quoted by and ">iso13855</a>]</span>. Sources disagree on when K may drop to 1600 mm/s, so the model always uses the larger distance:</p>
+  <pre class="code"><code>fn light_curtain_distance(t_stop_ms: Int, d_mm: Int) -&gt; Int
+  requires t_stop_ms &gt; 0 &amp;&amp; d_mm &gt;= 14 &amp;&amp; d_mm &lt;= 40
+  ensures  result == 2 * t_stop_ms + 8 * (d_mm - 14) &amp;&amp; result &gt;= 2 * t_stop_ms
+=
+  2 * t_stop_ms + 8 * (d_mm - 14)</code></pre>
+  <p>The press <code>system</code> lets either hand release, the curtain break or the door open during the down-stroke, and the safety relay reverses the ram in the same step. <code>DownstrokeIsGuarded</code> holds in every state, and every down-stroke returns to the top. Coarse/fine dosing is proved never to overfill and to end exactly on target.</p>
+</div>
+</section>
+
+<section class="case" id="iiot_mqtt_qos2">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Industrial IoT</p><h3>MQTT exactly-once delivery and NAMUR NE 43 telemetry</h3></div>
+  <div class="chips"><span class="chip ok">8 obligations proved</span><span class="chip">21 states</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The model sends one QoS 2 PUBLISH over a network that may lose any packet, with timeout retransmission at the sender. MQTT 3.1.1 requires the receiver to acknowledge re-sent PUBLISHes until PUBREL and "MUST NOT cause duplicate messages to be delivered" [MQTT-4.3.3-2], and it assumes "an ordered, lossless, stream of bytes" underneath (§4.2) <span class="cites">[<a class="cite" href="https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html" title="OASIS, *MQTT Version 3.1.1*, OASIS Standard, 29 Oct 2014. ">mqtt311</a>]</span>. The sender side keeps its copy until PUBREC and the packet identifier until PUBCOMP <span class="cites">[<a class="cite" href="https://emqx.io/blog/introduction-to-mqtt-qos" title="EMQX, &quot;Introduction to MQTT QoS.&quot; ">emqx_qos</a>]</span>. With an in-order transport, the model checker shows at most one delivery in every state and delivery whenever the sender reaches <code>Done</code>.</p>
+  <h4>What the checker found</h4>
+  <p>Drop the ordering assumption, so that PUBREL can overtake a retransmitted PUBLISH, and the receiver releases the packet identifier before the duplicate arrives. The duplicate is then delivered as new. The protocol's exactly-once guarantee depends on the transport, and the model makes that dependency explicit:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/mqtt_unordered_transport.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;ExactlyOnceSafety&#x27; violated at state { delivered=2; net_comp=true; net_pub=false; net_rec=true; net_rel=false; s=WaitComp; stored=true }
+    Init: { delivered=0; net_comp=false; net_pub=false; net_rec=false; net_rel=false; s=SendPub; stored=false }
+    Step 1 [Guard #1 (s == SendPub)] -&gt; { delivered=0; net_comp=false; net_pub=true; net_rec=false; net_rel=false; s=WaitRec; stored=false }
+    Step 2 [Guard #4 (net_pub &amp;&amp; !(stored))] -&gt; { delivered=1; net_comp=false; net_pub=false; net_rec=true; net_rel=false; s=WaitRec; stored=true }
+    Step 3 [Guard #2 ((s == WaitRec) &amp;&amp; !(net_pub))] -&gt; { delivered=1; net_comp=false; net_pub=true; net_rec=true; net_rel=false; s=WaitRec; stored=true }
+    Step 4 [Guard #7 (net_rec &amp;&amp; (s == WaitRec))] -&gt; { delivered=1; net_comp=false; net_pub=true; net_rec=false; net_rel=true; s=WaitComp; stored=true }
+    Step 5 [Guard #11 net_rel] -&gt; { delivered=1; net_comp=true; net_pub=true; net_rec=false; net_rel=false; s=WaitComp; stored=false }
+    Step 6 [Guard #4 (net_pub &amp;&amp; !(stored))] -&gt; { delivered=2; net_comp=true; net_pub=false; net_rec=true; net_rel=false; s=WaitComp; stored=true }</code></pre>
+  <p>The same file classifies 4–20 mA loop currents under NAMUR NE 43: 3.8–20.5 mA is a measurement, and ≤ 3.6 mA or ≥ 21 mA signals a failure <span class="cites">[<a class="cite" href="https://www.namur.net/en/publications/news-archive/ne-43-has-been-revised.html" title="NAMUR NE 43 (ed. 2021-07-26), standardization of the failure signal level of digital transmitters. ">namur_ne43</a>]</span>. The classification is proved for every input and drives a telemetry pipeline that flags <code>[&quot;PT-102&quot;, &quot;PT-103&quot;]</code> as failed and <code>[&quot;PT-104&quot;]</code> as suspect.</p>
+  <pre class="code"><code>fn ne43_class(ua: Int) -&gt; Ne43
+  requires true
+  ensures  (ua &gt;= 3800 &amp;&amp; ua &lt;= 20500 =&gt; result == Measurement)
+           &amp;&amp; ((ua &lt;= 3600 || ua &gt;= 21000) =&gt; result == Failure)
+           &amp;&amp; ((ua &gt; 3600 &amp;&amp; ua &lt; 3800) || (ua &gt; 20500 &amp;&amp; ua &lt; 21000) =&gt; result == Warning)
+=
+  if ua &gt;= 3800 &amp;&amp; ua &lt;= 20500                              -&gt; Measurement
+  [] ua &lt;= 3600 || ua &gt;= 21000                              -&gt; Failure
+  [] (ua &gt; 3600 &amp;&amp; ua &lt; 3800) || (ua &gt; 20500 &amp;&amp; ua &lt; 21000) -&gt; Warning
+  fi</code></pre>
+</div>
+</section>
+
+<section class="case" id="control_antiwindup_pi">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Control systems</p><h3>Fixed-point PI control with anti-windup</h3></div>
+  <div class="chips"><span class="chip ok">22 obligations proved</span><span class="chip">12 states</span><span class="chip ok">2 LTL proved</span></div>
+  <p>When an actuator saturates, an integrator keeps accumulating and the loop behaves as if open. Conditional integration and back-calculation are the two standard remedies <span class="cites">[<a class="cite" href="https://scilab.org/pid-anti-windup-schemes" title="&quot;PID Anti-Windup Schemes,&quot; Scilab. ">scilab_aw</a>, <a class="cite" href="http://www.cds.caltech.edu/~murray/courses/cds101/fa02/caltech/astrom-ch6.pdf" title="K. J. Åström, R. M. Murray, *Feedback Systems*, Princeton University Press (PID chapter, integrator windup). Course copy cited by MathWorks: ">astrom_murray</a>]</span>. The model proves, for all integer inputs as on a PLC, that saturation stays in the actuator range, that the conditionally integrated state stays bounded, and that a rate-limited setpoint ramp never overshoots and lands exactly on target:</p>
+  <pre class="code"><code>fn ramp_to(start: Int, target: Int, rate: Int) -&gt; Int
+  requires rate &gt; 0
+  ensures  result == target
+=
+  do r = start
+    invariant (start &lt;= target =&gt; (r &gt;= start &amp;&amp; r &lt;= target))
+              &amp;&amp; (start &gt; target =&gt; (r &lt;= start &amp;&amp; r &gt;= target))
+    variant   abs(target - r)
+  :
+     r &lt; target &amp;&amp; target - r &gt; rate  -&gt; r := r + rate
+  [] r &lt; target &amp;&amp; target - r &lt;= rate -&gt; r := target
+  [] r &gt; target &amp;&amp; r - target &gt; rate  -&gt; r := r - rate
+  [] r &gt; target &amp;&amp; r - target &lt;= rate -&gt; r := target
+  od
+  then r</code></pre>
+  <p>A hysteresis thermostat <code>system</code> keeps the temperature in its comfort band, and two liveness properties prove the heater never latches on or off.</p>
+</div>
+</section>
+
+<section class="case" id="navigation_geofence">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Navigation and autonomy</p><h3>Geofenced waypoint following and return-to-home</h3></div>
+  <div class="chips"><span class="chip ok">16 obligations proved</span><span class="chip">8 states</span><span class="chip ok">ReturnsHome LTL proved</span></div>
+  <p>NASA Langley's Safeguard enforces stay-in and stay-out geofences independently of the autopilot, and its boundary-violation detection is proved in PVS <span class="cites">[<a class="cite" href="https://technology.nasa.gov/patent/LAR-TOPS-244" title="NASA Langley, Safeguard geofencing: · NTRS report: · geofence algorithms proved in PVS: ">nasa_safeguard</a>]</span>. In the same spirit, the waypoint follower here is proved never to leave the fence, to decrease its Manhattan distance on every step whichever axis the planner picks, and to arrive exactly at the target. The mission supervisor keeps <code>battery ≥ 2 · dist</code> in every reachable state, so the drone can always get home.</p>
+  <pre class="code"><code>fn goto_waypoint(start: Pose, target: Pose, fence: Pose) -&gt; Pose
+  requires fence.x &gt; 0 &amp;&amp; fence.y &gt; 0
+           &amp;&amp; start.x &gt;= 0 &amp;&amp; start.x &lt;= fence.x &amp;&amp; start.y &gt;= 0 &amp;&amp; start.y &lt;= fence.y
+           &amp;&amp; target.x &gt;= 0 &amp;&amp; target.x &lt;= fence.x &amp;&amp; target.y &gt;= 0 &amp;&amp; target.y &lt;= fence.y
+  ensures  result.x == target.x &amp;&amp; result.y == target.y
+=
+  do cur = start
+    invariant cur.x &gt;= 0 &amp;&amp; cur.x &lt;= fence.x &amp;&amp; cur.y &gt;= 0 &amp;&amp; cur.y &lt;= fence.y
+    variant   abs(target.x - cur.x) + abs(target.y - cur.y)
+  :
+     cur.x &lt; target.x -&gt; cur := cur with { x: cur.x + 1 }
+  [] cur.x &gt; target.x -&gt; cur := cur with { x: cur.x - 1 }
+  [] cur.y &lt; target.y -&gt; cur := cur with { y: cur.y + 1 }
+  [] cur.y &gt; target.y -&gt; cur := cur with { y: cur.y - 1 }
+  od
+  then cur</code></pre>
+</div>
+</section>
+
+<section class="case" id="automotive_acc">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Automotive</p><h3>Adaptive cruise control with an emergency-braking override</h3></div>
+  <div class="chips"><span class="chip ok">7 obligations proved</span><span class="chip">11 states</span></div>
+  <p>ISO 15622 covers the ACC control strategy, minimum functionality and reaction to failure <span class="cites">[<a class="cite" href="https://www.iso.org/standard/89465.html" title="ISO 15622, Adaptive cruise control systems. ">iso15622</a>]</span>. A review of ACC parameterization reports standard minimum selectable time gaps of 0.8 s and 1 s, and a recommended range of 1–2 s <span class="cites">[<a class="cite" href="https://austria-forum.org/web-books/driverassistance00en2017isds/000100" title="S. Bernsteiner, *Integration of Advanced Driver Assistance Systems on Full-Vehicle Level*, TU Graz, 2016, ch. 6, p. 78. ">bernsteiner2016</a>]</span>. The model uses 1.5 s plus a 5 m standstill margin. The acceleration request is proved to stay within comfort limits, to brake whenever the gap is short, to command emergency braking below half the safe gap, and never to accelerate above the set speed. The supervisor proves that the brake pedal always cancels ACC, and that ACC never brakes while the driver overrides with the accelerator.</p>
+  <pre class="code"><code>fn acc_command(gap: Int, speed: Int, set_speed: Int) -&gt; Int
+  requires speed &gt;= 0 &amp;&amp; gap &gt;= 0 &amp;&amp; set_speed &gt;= 0
+  ensures  result &gt;= 0 - 900 &amp;&amp; result &lt;= 200
+           &amp;&amp; (2 * gap &lt; 3 * speed + 100 =&gt; result &lt; 0)
+           &amp;&amp; (4 * gap &lt; 3 * speed + 100 =&gt; result == 0 - 900)
+           &amp;&amp; (speed &gt; set_speed =&gt; result &lt;= 0)
+=
+  if 4 * gap &lt; 3 * speed + 100                                         -&gt; 0 - 900
+  [] 4 * gap &gt;= 3 * speed + 100 &amp;&amp; 2 * gap &lt; 3 * speed + 100           -&gt; 0 - 350
+  [] 2 * gap &gt;= 3 * speed + 100 &amp;&amp; speed &gt; set_speed                   -&gt; 0 - 100
+  [] 2 * gap &gt;= 3 * speed + 100 &amp;&amp; speed &lt;= set_speed &amp;&amp; speed + 20 &lt;= set_speed -&gt; 200
+  [] 2 * gap &gt;= 3 * speed + 100 &amp;&amp; speed &lt;= set_speed &amp;&amp; speed + 20 &gt; set_speed  -&gt; 0
+  fi</code></pre>
+</div>
+</section>
+
+<section class="case" id="aerospace_envelope">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Aerospace</p><h3>Fly-by-wire envelope protection</h3></div>
+  <div class="chips"><span class="chip ok">12 obligations proved</span><span class="chip">8 states</span><span class="chip ok">WarningIsCancelled LTL proved</span></div>
+  <p>In Airbus normal law, bank beyond 33° needs continuous sidestick input, releasing it returns the aircraft to 33°, and 67° is the limit. Between α-prot and α-max the stick commands angle of attack, and α-max is never exceeded <span class="cites">[<a class="cite" href="https://code7700.com/airbus_control_laws.htm" title="Airbus normal-law protections, as summarized from Airbus FCTM material by Code7700: · FlyByWire A32NX (simulator) guide: · ">airbus_laws</a>]</span>. These figures come from secondary summaries, so the model is illustrative and the type's FCOM governs. The research corrected the first draft, which forced a roll-back even with the stick held:</p>
+  <pre class="code"><code>fn roll_cmd(stick: Int, bank: Int) -&gt; Int
+  requires stick &gt;= 0 - 1000 &amp;&amp; stick &lt;= 1000 &amp;&amp; bank &gt;= 0 - 6700 &amp;&amp; bank &lt;= 6700
+  ensures  result &gt;= 0 - 1000 &amp;&amp; result &lt;= 1000
+           &amp;&amp; (bank &gt;= 6700 =&gt; result &lt;= 0)
+           &amp;&amp; (bank &lt;= 0 - 6700 =&gt; result &gt;= 0)
+           &amp;&amp; (bank &gt; 3300 &amp;&amp; bank &lt; 6700 &amp;&amp; stick == 0 =&gt; result &lt; 0)
+           &amp;&amp; (bank &lt; 0 - 3300 &amp;&amp; bank &gt; 0 - 6700 &amp;&amp; stick == 0 =&gt; result &gt; 0)
+           &amp;&amp; (bank &gt; 0 - 6700 &amp;&amp; bank &lt; 6700 &amp;&amp; stick != 0 =&gt; result == stick)
+=
+  if bank &gt;= 6700                                               -&gt; min(stick, 0)
+  [] bank &lt;= 0 - 6700                                           -&gt; max(stick, 0)
+  [] bank &gt; 3300 &amp;&amp; bank &lt; 6700 &amp;&amp; stick == 0                   -&gt; 0 - 100
+  [] bank &lt; 0 - 3300 &amp;&amp; bank &gt; 0 - 6700 &amp;&amp; stick == 0           -&gt; 100
+  [] bank &gt; 0 - 6700 &amp;&amp; bank &lt; 6700 &amp;&amp; stick != 0               -&gt; stick
+  [] bank &gt;= 0 - 3300 &amp;&amp; bank &lt;= 3300 &amp;&amp; stick == 0             -&gt; 0
+  fi</code></pre>
+  <p>The autopilot <code>system</code> proves the autopilot is engaged only inside the envelope and never with sidestick input, and that every disconnect warning is eventually cancelled.</p>
+</div>
+</section>
+
+<section class="case" id="energy_bms_balancing">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Energy storage</p><h3>Battery cell balancing and contactor sequencing</h3></div>
+  <div class="chips"><span class="chip ok">12 obligations proved</span><span class="chip">6 states</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>Cell balancing is proved to conserve total charge, keep both cells non-negative and terminate balanced. Charge current is proved to derate to zero outside the temperature window and to a tenth of maximum above 95% state of charge. The contactor <code>system</code> closes the main contactor only after precharge <span class="cites">[<a class="cite" href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10476262" title="US 10,476,262, &quot;Dual-bus battery precharge circuit.&quot; ">uspto10476262</a>]</span> and models contact welding, which manufacturers detect from voltages that fail to decay after an open command <span class="cites">[<a class="cite" href="https://patents.google.com/patent/US11592485" title="US 11,592,485 B2, &quot;Methods and apparatus for contactor weld detection in a vehicle.&quot; ">uspto11592485</a>, <a class="cite" href="https://patents.google.com/patent/US12077054" title="US 12,077,054 B2, &quot;Vehicle main contactor weld detection system.&quot; ">uspto12077054</a>]</span>.</p>
+  <pre class="code"><code>fn balance(c0: CellPair) -&gt; CellPair
+  requires c0.a &gt;= 0 &amp;&amp; c0.b &gt;= 0
+  ensures  result.a + result.b == c0.a + c0.b
+           &amp;&amp; result.a &gt;= 0 &amp;&amp; result.b &gt;= 0
+           &amp;&amp; abs(result.a - result.b) &lt;= 1
+=
+  do c = c0
+    invariant c.a + c.b == c0.a + c0.b &amp;&amp; c.a &gt;= 0 &amp;&amp; c.b &gt;= 0
+    variant   abs(c.a - c.b)
+  :
+     c.a &gt; c.b + 1 -&gt; c := c with { a: c.a - 1, b: c.b + 1 }
+  [] c.b &gt; c.a + 1 -&gt; c := c with { a: c.a + 1, b: c.b - 1 }
+  od
+  then c</code></pre>
+  <h4>What the checker found</h4>
+  <p>"An isolation fault always opens the pack" is false once welding is possible. The checker produces the trace, and the trace is the engineering case for a second, independent contactor:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/bms_fault_always_opens.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;FaultOpensPack&#x27; violated at state { iso_fault=true; k=Welded; precharged=true }
+    Init: { iso_fault=false; k=Open; precharged=false }
+    Step 1 [Guard #1 ((k == Open) &amp;&amp; !(iso_fault))] -&gt; { iso_fault=false; k=Precharge; precharged=false }
+    Step 2 [Guard #2 ((k == Precharge) &amp;&amp; !(iso_fault))] -&gt; { iso_fault=false; k=Closed; precharged=true }
+    Step 3 [Guard #6 (k == Closed)] -&gt; { iso_fault=false; k=Welded; precharged=true }
+    Step 4 [Guard #7 ((k == Welded) &amp;&amp; !(iso_fault))] -&gt; { iso_fault=true; k=Welded; precharged=true }</code></pre>
+</div>
+</section>
+
+<section class="case" id="public_safety_traffic_rail">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Public safety</p><h3>Signals with emergency preemption, a level crossing, and dispatch triage</h3></div>
+  <div class="chips"><span class="chip ok">1 obligation proved</span><span class="chip">11 states in 2 systems</span><span class="chip ok">3 LTL proved</span></div>
+  <p>A conflict monitor or malfunction management unit forces an intersection into flash when it sees conflicting greens <span class="cites">[<a class="cite" href="https://open-exam-prep.com/study-guides/imsa-traffic-signal-i/cabinet-wiring-and-components/cmu-and-mmu" title="Conflict Monitor Units and Malfunction Management Units (NEMA TS-1/TS-2). ">mmu</a>]</span>. The MUTCD requires a steady yellow after every green and leaves red clearance to engineering practice <span class="cites">[<a class="cite" href="https://dot.nj.gov/transportation/about/publicat/lmreports/pdf/2013rlrtechnicalappendix.pdf" title="FHWA *MUTCD* (2009) §4D.26, Yellow Change and Red Clearance Intervals. Quoted by the NJDOT technical appendix () and a state reprint ()">mutcd4d26</a>]</span>. The intersection model proves no conflicting greens, the property the monitor enforces in hardware, in every state, including during emergency preemption. It also proves that preemption ends and that north–south traffic is served.</p>
+  <p>The level crossing follows Heitmeyer and Lynch's Generalized Railroad Crossing benchmark <span class="cites">[<a class="cite" href="https://groups.csail.mit.edu/tds/papers/Heitmeyer/TM-511.html" title="C. Heitmeyer, N. Lynch, &quot;The Generalized Railroad Crossing: A Case Study in Formal Verification of Real-Time Systems,&quot; MIT LCS TM-511 / IEEE RTSS 1994. · benchm">heitmeyer1994</a>]</span>: the gate is down whenever the crossing is occupied, and it reopens once the train has gone. The siting assumption, that the gate is down before a train can arrive, is written as an explicit guard rather than hidden. Dispatch triage is a proved scoring function and a pipeline over an incident queue.</p>
+  <pre class="code"><code>system LevelCrossing {
+  state train: Int = 0
+  state gate: Gate = Up
+
+  invariant GateDownWhenOccupied: train == 2 =&gt; gate == Down
+  invariant TrainRange:           train &gt;= 0 &amp;&amp; train &lt;= 2
+
+  temporal GateReopens: (train == 0 &amp;&amp; gate == Down) ~&gt; (gate == Up || train == 1)
+
+  transition
+     train == 0                    -&gt; train := 1, gate := Lowering
+  [] gate == Lowering              -&gt; gate := Down
+  [] train == 1 &amp;&amp; gate == Down    -&gt; train := 2
+  [] train == 2                    -&gt; train := 0
+  [] train == 0 &amp;&amp; gate == Down    -&gt; gate := Up
+}</code></pre>
+</div>
+</section>
+
+<section class="case" id="cybersecurity_zero_trust">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Cybersecurity</p><h3>Rate limiting, lockout, handshake ordering and separation of duties</h3></div>
+  <div class="chips"><span class="chip ok">6 obligations proved</span><span class="chip">13 states in 2 systems</span><span class="chip ok">LockoutExpires LTL proved</span><span class="chip bad">2 seeded bugs caught</span></div>
+  <p>Token-bucket refill and spend are proved never to overflow capacity or go negative <span class="cites">[<a class="cite" href="https://www.rfc-editor.org/rfc/rfc2697" title="J. Heinanen, R. Guerin, RFC 2697, *A Single Rate Three Color Marker*, 1999. ">rfc2697</a>]</span>. The lockout <code>system</code> uses five failures, well under NIST SP 800-63B's ceiling of 100 consecutive failures per authenticator, which permits lower limits <span class="cites">[<a class="cite" href="https://pages.nist.gov/800-63-4/sp800-63b.html" title="NIST SP 800-63B, Digital Identity Guidelines: Authentication, §3.2.2 Rate Limiting (Throttling). ">nist80063b</a>]</span>, and proves that every lockout expires. The client handshake proves no application data is sent to an unverified peer. Separation of duties is an axiom over issued grants <span class="cites">[<a class="cite" href="https://www.upguard.com/compliance/nist-sp-800-53/ac/ac-5" title="NIST SP 800-53 Rev. 5, AC-5 Separation of Duties. Catalog summary: ">nist80053ac5</a>]</span>, audited by a pipeline over pending requests.</p>
+  <h4>What the checker found</h4>
+  <p>Accept an attacker-injected Finished straight after the hello, the SKIP-TLS pattern <span class="cites">[<a class="cite" href="https://doi.org/10.1145/3023357" title="B. Beurdouche et al., &quot;A Messy State of the Union: Taming the Composite State Machines of TLS,&quot; IEEE S&amp;P 2015, pp. 535–552; *CACM* reprint · ">beurdouche2015</a>]</span>, and data reaches a peer whose certificate was never checked:</p>
+  <pre class="trace"><code>$ bil model-check examples/domains/seeded_bugs/tls_early_finished.bil   # exit 1
+  [VIOLATION] Safety Invariant &#x27;NoDataToUnverifiedPeer&#x27; violated at state { app_data_sent=true; cert_ok=false; hs=Finished }
+    Init: { app_data_sent=false; cert_ok=false; hs=Start }
+    Step 1 [Guard #1 (hs == Start)] -&gt; { app_data_sent=false; cert_ok=false; hs=HelloSent }
+    Step 2 [Guard #6 (hs == HelloSent)] -&gt; { app_data_sent=false; cert_ok=false; hs=Finished }
+    Step 3 [Guard #7 ((hs == Finished) &amp;&amp; !(app_data_sent))] -&gt; { app_data_sent=true; cert_ok=false; hs=Finished }</code></pre>
+  <p>Issuing a self-approved production grant violates the axiom at run time, because axioms are enforced over the instances that actually exist:</p>
+  <pre class="trace"><code>$ bil run examples/domains/seeded_bugs/cyber_noncompliant_grant.bil   # exit 1
+[RuntimeError] OntoLogic Axiom &#x27;SeparationOfDuties&#x27; violated at line 84</code></pre>
+</div>
+</section>
+
+<div class="prose">
+
+<h2 id="lessons"><span class="secno">6</span>Cross-cutting lessons</h2>
+<ul>
+  <li><strong>Liveness often belongs to the environment.</strong> In the cobot cell and the infusion pump, the natural liveness claim ("the stop clears", "the alarm clears") was false, because a person or a recurring hazard controls it. The checker separates what the controller can guarantee from what it cannot, which is the distinction a hazard analysis needs.</li>
+  <li><strong>Protocols carry hidden assumptions.</strong> MQTT's exactly-once guarantee is only as good as in-order transport. Writing the assumption as a guard means that deleting it produces a counterexample instead of silently weakening the proof.</li>
+  <li><strong>Response time is a safety property.</strong> In the reactor and the SPE anneal, a protection function that was logically correct but one step slower than the hazard was unsafe. Interleaving semantics finds these races without a timing model, as long as the race is modeled as a choice.</li>
+  <li><strong>Counterexamples also find over-strong requirements.</strong> The SPE invariant was wrong, not the design. A refuted property is a question to answer, and sometimes the answer is to fix the specification.</li>
+  <li><strong>Formal models need primary sources.</strong> Four drafts changed after research, and in each case the model was internally consistent and verified before the correction. A proof shows that the model meets its specification. Only sources show that the specification matches the world.</li>
+</ul>
+
+<h2 id="limits"><span class="secno">7</span>Limitations and threats to validity</h2>
+<ul>
+  <li><strong>Abstraction.</strong> Continuous quantities are integer bands and time is discrete steps. Claims are about supervisory logic and per-step bounds. Dense-time and hybrid properties need timed or hybrid automata.</li>
+  <li><strong>SMT encoding.</strong> Calls to user-defined functions inside a contract are not unfolded into the SMT query. The 2oo3 trip written as a call to <code>vote_2oo3</code> is only bounded-checked, so the shipped model inlines it. The seeded file <code>reactor_trip_via_call.bil</code> documents this.</li>
+  <li><strong>Bounded cross-check cost.</strong> The bounded sampler that runs beside SMT enumerates the product of every parameter's sample domain. A function with a record and four integer parameters took 59 seconds to verify in a debug build, so the navigation model passes records instead. A sample cap is on the roadmap.</li>
+  <li><strong>Arithmetic.</strong> SMT reasons over unbounded integers, while execution uses checked 64-bit integers that stop on overflow. Proofs therefore cover the intended mathematics, and execution fails loudly outside it.</li>
+  <li><strong>Sources.</strong> Several standards were read only through secondary quotations, and those figures are marked in the citations. Parameters in the models are illustrative, not compliance values.</li>
+  <li><strong>Assurance.</strong> <code>bil</code> is not a qualified tool under IEC 61508, ISO 26262, IEC 62304 or DO-330, and these models have not been reviewed by domain safety assessors. They demonstrate method, not certification evidence.</li>
+</ul>
+
+<h2 id="roadmap"><span class="secno">8</span>Roadmap</h2>
+<ul>
+  <li>Unfold or inline non-recursive user functions in the SMT encoding, so contracts can call helpers.</li>
+  <li>Cap and randomize the bounded cross-check, with the sample budget reported.</li>
+  <li>Clocks and timed guards in <code>system</code> blocks, for response-time properties that are currently encoded as priority.</li>
+  <li>A refinement path from banded models to continuous controllers, ending in Verus-checked Rust through <code>bil emit-verus</code>.</li>
+  <li>Tool-qualification evidence: requirements tracing, coverage and independent test suites for the verifier itself.</li>
+</ul>
+
+<h2 id="reproduce"><span class="secno">9</span>Reproduce</h2>
+<p>Requires Rust and z3 on <code>PATH</code>.</p>
+<pre class="cmd"><code>cargo build --release
+B=target/release/bil
+for f in examples/domains/*.bil; do $B verify "$f" &amp;&amp; $B model-check "$f" &amp;&amp; $B run "$f"; done
+$B model-check examples/domains/seeded_bugs/spe_slow_thermal_loop.bil   # exits 1 with a trace
+cargo test --test domain_examples                                       # the whole suite as a test
+python3 docs/whitepaper/build.py                                        # rebuild this page from live runs</code></pre>
+
+<h2 id="references">References</h2>
+<p>Generated from <code>docs/whitepaper/CITATIONS.md</code>. Tiers: <span class="tier tier-A">A</span> standard, specification or regulator; <span class="tier tier-B">B</span> peer-reviewed or scholarly; <span class="tier tier-C">C</span> manufacturer or patent; <span class="tier tier-D">D</span> secondary, used only to corroborate.</p>
+</div>
+<h3>Foundations: formal methods and tools</h3><ol class="refs"><li id="ref-dijkstra1975"><span class="ref-key">[dijkstra1975]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>E. W. Dijkstra, "Guarded commands, nondeterminacy and formal derivation of programs," <em>CACM</em> 18(8):453–457, 1975. <a href="https://doi.org/10.1145/360933.360975">https://doi.org/10.1145/360933.360975</a> · EWD 472 transcription: <a href="https://www.cs.utexas.edu/users/EWD/transcriptions/EWD04xx/EWD472.html">https://www.cs.utexas.edu/users/EWD/transcriptions/EWD04xx/EWD472.html</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: GCL <code>if … fi</code> / <code>do … od</code>, weakest preconditions, nondeterminism</span></p></div></li><li id="ref-newcombe2015"><span class="ref-key">[newcombe2015]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>C. Newcombe, T. Rath, F. Zhang, B. Munteanu, M. Brooker, M. Deardeuff, "How Amazon Web Services Uses Formal Methods," <em>CACM</em> 58(4), 2015. <a href="https://doi.org/10.1145/2699417">https://doi.org/10.1145/2699417</a> · <a href="https://cacm.acm.org/magazines/2015/4/184701-how-amazon-web-services-uses-formal-methods/fulltext">https://cacm.acm.org/magazines/2015/4/184701-how-amazon-web-services-uses-formal-methods/fulltext</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Industrial precedent: model checking designs before they ship</span></p></div></li><li id="ref-lattuada2023"><span class="ref-key">[lattuada2023]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>A. Lattuada et al., "Verus: Verifying Rust Programs using Linear Ghost Types," <em>Proc. ACM Program. Lang.</em> 7(OOPSLA1), art. 85, 2023. <a href="https://doi.org/10.1145/3586037">https://doi.org/10.1145/3586037</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: <code>spec</code> / <code>proof</code> / <code>exec</code> modes, <code>bil emit-verus</code> target</span></p></div></li><li id="ref-demoura2008"><span class="ref-key">[demoura2008]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>L. de Moura, N. Bjørner, "Z3: An Efficient SMT Solver," TACAS 2008, LNCS 4963. <a href="https://doi.org/10.1007/978-3-540-78800-3_24">https://doi.org/10.1007/978-3-540-78800-3_24</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: The SMT back end that discharges the obligations</span></p></div></li><li id="ref-holzmann1997"><span class="ref-key">[holzmann1997]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>G. J. Holzmann, "The Model Checker SPIN," <em>IEEE TSE</em> 23(5):279–295, 1997. <a href="https://doi.org/10.1109/32.588521">https://doi.org/10.1109/32.588521</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Explicit-state, interleaving-semantics model checking</span></p></div></li><li id="ref-peterson1981"><span class="ref-key">[peterson1981]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>G. L. Peterson, "Myths about the mutual exclusion problem," <em>Inf. Process. Lett.</em> 12(3):115–116, 1981. <a href="https://doi.org/10.1016/0020-0190(81">https://doi.org/10.1016/0020-0190(81</a>)90106-X</p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: <code>examples/mutex_protocol.bil</code></span></p></div></li></ol>
+<h3>Semiconductor manufacturing: spectroscopic ellipsometry and solid-phase epitaxy</h3><ol class="refs"><li id="ref-roth1990"><span class="ref-key">[roth1990]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>J. A. Roth, G. L. Olson, D. C. Jacobson, J. M. Poate, <em>Appl. Phys. Lett.</em> 57, 1340 (1990). Values as quoted in <code>[johnson2007]</code>.</p><p class="ref-meta"><span>Verified: text (via <code>[johnson2007]</code>)</span><span>Supports: Intrinsic Si SPE: v₀ = 4.64×10¹⁶ Å/s, Eₐ = 2.7 eV, which gives the <code>spe_rate</code> table</span></p></div></li><li id="ref-johnson2007"><span class="ref-key">[johnson2007]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>B. C. Johnson, J. C. McCallum, "Dopant-enhanced solid phase epitaxy in buried amorphous silicon layers," <em>Phys. Rev. B</em> 76, 045216 (2007). <a href="https://doi.org/10.1103/PhysRevB.76.045216">https://doi.org/10.1103/PhysRevB.76.045216</a> · arXiv: <a href="https://arxiv.org/abs/1007.5372">https://arxiv.org/abs/1007.5372</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: Fit v₀ = (4±1)×10¹⁶ Å/s, Eₐ = 2.68±0.04 eV; time-resolved reflectivity; 460–660 °C anneals</span></p></div></li><li id="ref-olsonroth1988"><span class="ref-key">[olsonroth1988]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>G. L. Olson, J. A. Roth, "Kinetics of solid phase crystallization in amorphous silicon," <em>Mater. Sci. Rep.</em> 3, 1 (1988). <a href="https://www.sciencedirect.com/science/article/pii/S0920230788800057">https://www.sciencedirect.com/science/article/pii/S0920230788800057</a></p><p class="ref-meta"><span>Verified: secondary (search excerpt)</span><span>Supports: SPE Eₐ ≈ 2.7 eV over about 470–1350 °C; random nucleation Eₐ ≈ 4 eV, so nucleation gains on SPE as temperature rises, which motivates the upper limit of the window</span></p></div></li><li id="ref-olson1985"><span class="ref-key">[olson1985]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>G. L. Olson, "Kinetics and Mechanisms of Solid Phase Epitaxy and Competitive Processes in Silicon," <em>MRS Proc.</em> 35, 25 (1985). <a href="https://doi.org/10.1557/PROC-35-25">https://doi.org/10.1557/PROC-35-25</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Kinetic competition between SPE and random crystallization</span></p></div></li><li id="ref-thompson1984"><span class="ref-key">[thompson1984]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>M. O. Thompson et al., "Melting temperature and explosive crystallization of amorphous silicon during pulsed laser irradiation," <em>Phys. Rev. Lett.</em> 52, 2360 (1984). <a href="https://link.aps.org/doi/10.1103/PhysRevLett.52.2360">https://link.aps.org/doi/10.1103/PhysRevLett.52.2360</a> · abstract: <a href="https://impact.ornl.gov/en/publications/melting-temperature-and-explosive-crystallization-of-amorphous-si/">https://impact.ornl.gov/en/publications/melting-temperature-and-explosive-crystallization-of-amorphous-si/</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: a-Si melts 200±50 K below c-Si; a self-propagating liquid layer at 10–20 m/s leaves fine-grained poly-Si. This is the <code>NeverMeltAmorphousSi</code> hazard</span></p></div></li><li id="ref-lohner1996"><span class="ref-key">[lohner1996]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>"Spectro-ellipsometric Studies of Amorphization and Thermal Annealing in Ion-implanted Silicon," <em>Jpn. J. Appl. Phys.</em> 35, 5929 (1996). <a href="https://doi.org/10.1143/JJAP.35.5929">https://doi.org/10.1143/JJAP.35.5929</a> · group's methods: <a href="https://ris.utwente.nl/ws/files/6689010/Lohner93ion.pdf">https://ris.utwente.nl/ws/files/6689010/Lohner93ion.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: SE with multilayer optical models gives damaged/amorphous layer thickness. Caveat: low damage can be overestimated with unsuitable dielectric functions, which motivates the <code>mse_milli</code> gate</span></p></div></li><li id="ref-holgado1995"><span class="ref-key">[holgado1995]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>S. Holgado, J. Martinez, J. Garrido, J. Piqueras, "Regrowth-process study of amorphous BF₂⁺ ion-implanted silicon layers through spectroscopic ellipsometry," <em>Appl. Phys. A</em> 60(3), 325–332 (1995). <a href="https://doi.org/10.1007/BF01538413">https://doi.org/10.1007/BF01538413</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: SE applied to the regrowth of implant-amorphized Si</span></p></div></li><li id="ref-fujiwara1998"><span class="ref-key">[fujiwara1998]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>H. Fujiwara, J. Koh, Y. Lee, C. R. Wronski, R. W. Collins, "Real Time Spectroscopic Ellipsometry Studies of the Solid Phase Crystallization of Amorphous Silicon," <em>MRS Proc.</em> 507, 939 (1998). <a href="https://doi.org/10.1557/PROC-507-939">https://doi.org/10.1557/PROC-507-939</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Real-time SE gives near-surface temperature calibration and crystalline volume fraction during anneal, which is the in-situ endpoint in <code>SpeAnneal</code></span></p></div></li><li id="ref-fujiwara2007"><span class="ref-key">[fujiwara2007]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>H. Fujiwara, <em>Spectroscopic Ellipsometry: Principles and Applications</em>, Wiley, 2007, ISBN 978-0-470-01608-4. Excerpt: <a href="https://catalogimages.wiley.com/images/db/pdf/9780470016084.excerpt.pdf">https://catalogimages.wiley.com/images/db/pdf/9780470016084.excerpt.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Ψ/Δ as the measured amplitude ratio and phase difference; real-time monitoring and process control</span></p></div></li><li id="ref-norman1991"><span class="ref-key">[norman1991]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>S. A. Norman, C. D. Schaper, S. P. Boyd, "Improvement of Temperature Uniformity in Rapid Thermal Processing Systems Using Multivariable Control," 1991. <a href="https://web.stanford.edu/~boyd/papers/temperature_uniformity.html">https://web.stanford.edu/~boyd/papers/temperature_uniformity.html</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Non-uniformity during ramps causes slip, which limits the ramp rate. This is the slew limit in <code>thermal_setpoint</code></span></p></div></li><li id="ref-uspto6403925"><span class="ref-key">[uspto6403925]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>US Patent 6,403,925, "System and method for thermal processing of a semiconductor substrate." <a href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6403925">https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6403925</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Edge-cool gradients above ~800 °C produce slip lines</span></p></div></li><li id="ref-uspto6034356"><span class="ref-key">[uspto6034356]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>US Patent 6,034,356, "RTP lamp design for oxidation and annealing." <a href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6034356">https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6034356</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: Typical RTP ramp rates 20–100 °C/s versus 5–10 °C/min in furnaces</span></p></div></li></ol>
+<h3>Collaborative robotics</h3><ol class="refs"><li id="ref-marvel2017"><span class="ref-key">[marvel2017]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>J. A. Marvel, R. Norcross, "Implementing speed and separation monitoring in collaborative robot workcells," <em>Robotics and Computer-Integrated Manufacturing</em> (NIST). <a href="https://doi.org/10.1016/j.rcim.2016.08.001">https://doi.org/10.1016/j.rcim.2016.08.001</a> · <a href="https://www.nist.gov/node/1097971">https://www.nist.gov/node/1097971</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: ISO/TS 15066 SSM protective separation distance and how to implement it</span></p></div></li><li id="ref-szabo2012"><span class="ref-key">[szabo2012]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>S. Szabo, W. Shackleford, R. Norcross, J. Marvel, NIST IR 7851 (2012). <a href="https://nvlpubs.nist.gov/nistpubs/ir/2012/NIST.IR.7851.pdf">https://nvlpubs.nist.gov/nistpubs/ir/2012/NIST.IR.7851.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Laser-scanner SSM testbed that issues stop/restart from the separation distance</span></p></div></li><li id="ref-isots15066"><span class="ref-key">[isots15066]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>ISO/TS 15066, Robots and robotic devices — Collaborative robots. Overview: <a href="https://www.automate.org/tech-papers/iso-ts-15066-explained">https://www.automate.org/tech-papers/iso-ts-15066-explained</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: SSM as one of the four collaborative modes; supplements ISO 10218-1/-2</span></p></div></li><li id="ref-iso10218"><span class="ref-key">[iso10218]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>ISO 10218-1/-2, reduced speed of 250 mm/s. Quoted by <a href="https://www.controldesign.com/safety/functional-safety/article/55300304/how-to-understand-safe-reduced-speed-and-safe-limited-speed">https://www.controldesign.com/safety/functional-safety/article/55300304/how-to-understand-safe-reduced-speed-and-safe-limited-speed</a> and <a href="https://manual.doosanrobotics.com/en/user-manual/3.2.1/2-a-series/manual-mode">https://manual.doosanrobotics.com/en/user-manual/3.2.1/2-a-series/manual-mode</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: The 250 mm/s reduced-speed cap used in <code>ssm_speed_limit</code></span></p></div></li></ol>
+<h3>Control systems</h3><ol class="refs"><li id="ref-scilab_aw"><span class="ref-key">[scilab_aw]</span><span class="tier tier-D" title="Secondary, corroboration only">D</span><div class="ref-body"><p>"PID Anti-Windup Schemes," Scilab. <a href="https://scilab.org/pid-anti-windup-schemes">https://scilab.org/pid-anti-windup-schemes</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: Conditional integration and back-calculation are the two basic anti-windup schemes (<code>integrate</code> uses conditional integration)</span></p></div></li><li id="ref-astrom_murray"><span class="ref-key">[astrom_murray]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>K. J. Åström, R. M. Murray, <em>Feedback Systems</em>, Princeton University Press (PID chapter, integrator windup). Course copy cited by MathWorks: <a href="http://www.cds.caltech.edu/~murray/courses/cds101/fa02/caltech/astrom-ch6.pdf">http://www.cds.caltech.edu/~murray/courses/cds101/fa02/caltech/astrom-ch6.pdf</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: Standard reference for windup</span></p></div></li></ol>
+<h3>Navigation and autonomy</h3><ol class="refs"><li id="ref-nasa_safeguard"><span class="ref-key">[nasa_safeguard]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>NASA Langley, Safeguard geofencing: <a href="https://technology.nasa.gov/patent/LAR-TOPS-244">https://technology.nasa.gov/patent/LAR-TOPS-244</a> · NTRS report: <a href="https://ntrs.nasa.gov/api/citations/20190000716/downloads/20190000716.pdf">https://ntrs.nasa.gov/api/citations/20190000716/downloads/20190000716.pdf</a> · geofence algorithms proved in PVS: <a href="https://ntrs.nasa.gov/api/citations/20170009617/downloads/20170009617.pdf">https://ntrs.nasa.gov/api/citations/20170009617/downloads/20170009617.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Precedent for formally verified stay-in/stay-out geofencing that runs independently of the autopilot</span></p></div></li></ol>
+<h3>Industrial IoT</h3><ol class="refs"><li id="ref-mqtt311"><span class="ref-key">[mqtt311]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>OASIS, <em>MQTT Version 3.1.1</em>, OASIS Standard, 29 Oct 2014. <a href="https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html">https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: §4.2: "requires an underlying transport that provides an ordered, lossless, stream of bytes"; §4.3.3 [MQTT-4.3.3-2]: until PUBREL the receiver acknowledges re-sent PUBLISHes and "MUST NOT cause duplicate messages to be delivered"; §4.6 [MQTT-4.6.0-1] re-send in original order</span></p></div></li><li id="ref-emqx_qos"><span class="ref-key">[emqx_qos]</span><span class="tier tier-D" title="Secondary, corroboration only">D</span><div class="ref-body"><p>EMQX, "Introduction to MQTT QoS." <a href="https://emqx.io/blog/introduction-to-mqtt-qos">https://emqx.io/blog/introduction-to-mqtt-qos</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Sender-side QoS 2 flow</span></p></div></li><li id="ref-namur_ne43"><span class="ref-key">[namur_ne43]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>NAMUR NE 43 (ed. 2021-07-26), standardization of the failure signal level of digital transmitters. <a href="https://www.namur.net/en/publications/news-archive/ne-43-has-been-revised.html">https://www.namur.net/en/publications/news-archive/ne-43-has-been-revised.html</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: 3.8–20.5 mA measurement band; ≤ 3.6 mA or ≥ 21 mA signals a failure. Bands quoted by <a href="https://www.microcontrol.net/en/service/measurement-technology/industrial-standard-signals/">https://www.microcontrol.net/en/service/measurement-technology/industrial-standard-signals/</a> and <a href="https://www.electricalvolt.com/what-is-namur-ne-43">https://www.electricalvolt.com/what-is-namur-ne-43</a></span></p></div></li></ol>
+<h3>Manufacturing machinery</h3><ol class="refs"><li id="ref-iso13851"><span class="ref-key">[iso13851]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>ISO 13851:2019, Two-hand control devices. <a href="https://committee.iso.org/standard/35560.html">https://committee.iso.org/standard/35560.html</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: Type III: both actuators within 0.5 s, release before re-triggering. Quoted by Eaton (<a href="https://origin.golfpride.com/gb/en-gb/markets/machine-building/service-and-support-machine-building-moem-service-eaton/blogs/Two-hand-control-for-machinery-blog-functional-safety.html">https://origin.golfpride.com/gb/en-gb/markets/machine-building/service-and-support-machine-building-moem-service-eaton/blogs/Two-hand-control-for-machinery-blog-functional-safety.html</a>) and by Phoenix Contact's type IIIA relay, "synchronous activation monitoring &lt; 0.5 s" (<a href="https://www.phoenixcontact.com/us/products/2700571/pdf">https://www.phoenixcontact.com/us/products/2700571/pdf</a>, tier C)</span></p></div></li><li id="ref-iso13855"><span class="ref-key">[iso13855]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>ISO 13855, positioning of protective equipment: S = K·T + C, K = 2000 mm/s, C = 8(d − 14) for d ≤ 40 mm. Quoted by <a href="https://www.issa.int/sites/default/files/documents/prevention/2Light_Curtain_2011_en-36159.pdf">https://www.issa.int/sites/default/files/documents/prevention/2Light_Curtain_2011_en-36159.pdf</a> and <a href="https://www.leuze.com/en-us/navigation/0942f478ebd948d9b0b7c4c7734c3714">https://www.leuze.com/en-us/navigation/0942f478ebd948d9b0b7c4c7734c3714</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: <code>light_curtain_distance</code>. <strong>Sources disagree</strong> on the K = 1600 / 500 mm switch-over between editions, so the model always uses K = 2000 (the larger distance)</span></p></div></li></ol>
+<h3>Critical process systems</h3><ol class="refs"><li id="ref-csb_t2"><span class="ref-key">[csb_t2]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>U.S. Chemical Safety Board, T2 Laboratories explosion (2009). <a href="https://www.csb.gov/csb-finds-t2-laboratories-explosion-caused-by-failure-of-cooling-system-resulting-in-runaway-chemical-reaction-report-notes-company-did-not-recognize-hazards-of-chemical-process/">https://www.csb.gov/csb-finds-t2-laboratories-explosion-caused-by-failure-of-cooling-system-resulting-in-runaway-chemical-reaction-report-notes-company-did-not-recognize-hazards-of-chemical-process/</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Cooling failure leading to runaway reaction (4 killed, 28 injured nearby). This is the <code>ReactorSis</code> scenario</span></p></div></li><li id="ref-lundteigen_sis"><span class="ref-key">[lundteigen_sis]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>M. A. Lundteigen, M. Rausand, SIS book ch. 12, "Spurious trip rate," NTNU. <a href="https://ntnu.edu/documents/624876/1277046207/SIS+book+-+chapter+12+-+Spurious+trip+rate/ad91f310-f8b2-41f5-a923-3e9e22971f75">https://ntnu.edu/documents/624876/1277046207/SIS+book+-+chapter+12+-+Spurious+trip+rate/ad91f310-f8b2-41f5-a923-3e9e22971f75</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: 2oo3 tolerates one fault both against failure to trip and against spurious trips; the two <code>high_temp_trip</code> properties</span></p></div></li><li id="ref-iec61511"><span class="ref-key">[iec61511]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>IEC 61511, Functional safety — SIS for the process industry sector. Hardware fault tolerance by SIL (IEC 61511-1:2018 §11.4), as summarized by <a href="https://open-exam-prep.com/study-guides/pe-control-systems/sis-design-sil/sis-design-constraints">https://open-exam-prep.com/study-guides/pe-control-systems/sis-design-sil/sis-design-constraints</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: Voting architectures and HFT</span></p></div></li><li id="ref-kenexis_2oo3"><span class="ref-key">[kenexis_2oo3]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>Kenexis, "Comparison of 2oo3 voting and 2oo2 voting." <a href="https://kenexis.com/wp-content/uploads/2018/11/Comparison-of-2oo3-voting-and-2oo2-voting.pdf">https://kenexis.com/wp-content/uploads/2018/11/Comparison-of-2oo3-voting-and-2oo2-voting.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Cost and complexity trade-offs of 2oo3</span></p></div></li></ol>
+<h3>Surgical robotics</h3><ol class="refs"><li id="ref-rosenberg1993"><span class="ref-key">[rosenberg1993]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>L. B. Rosenberg, "Virtual fixtures as tools to enhance operator performance in telepresence environments," <em>Proc. SPIE</em> 2057 (1993). <a href="https://doi.org/10.1117/12.164901">https://doi.org/10.1117/12.164901</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Origin of virtual fixtures</span></p></div></li><li id="ref-abbott2007"><span class="ref-key">[abbott2007]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>J. J. Abbott, P. Marayong, A. M. Okamura, "Haptic Virtual Fixtures for Robot-Assisted Manipulation," <em>Robotics Research</em>, Springer, 2007. <a href="https://doi.org/10.1007/978-3-540-48113-3_5">https://doi.org/10.1007/978-3-540-48113-3_5</a> · PDF: <a href="https://my.eng.utah.edu/~jabbott/pmwiki/uploads/Main/Abbott_RoboticsResearch07.pdf">https://my.eng.utah.edu/~jabbott/pmwiki/uploads/Main/Abbott_RoboticsResearch07.pdf</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Forbidden-region virtual fixtures keep the manipulator out of forbidden regions (<code>fixture_step</code>); da Vinci and the JHU Steady-Hand robot</span></p></div></li><li id="ref-iec80601277"><span class="ref-key">[iec80601277]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>IEC 80601-2-77:2019+AMD1:2023, robotically assisted surgical equipment (RASE). <a href="https://www.iso.org/standard/68473.html">https://www.iso.org/standard/68473.html</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Basic safety and essential performance of RASE/RASS</span></p></div></li></ol>
+<h3>Medical devices (infusion pumps)</h3><ol class="refs"><li id="ref-fda_ipii"><span class="ref-key">[fda_ipii]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>U.S. FDA, <em>White Paper: Infusion Pump Improvement Initiative</em>, April 2010. <a href="https://www.fda.gov/medical-devices/infusion-pumps/white-paper-infusion-pump-improvement-initiative">https://www.fda.gov/medical-devices/infusion-pumps/white-paper-infusion-pump-improvement-initiative</a> · PDF: <a href="https://www.fda.gov/media/116949/download">https://www.fda.gov/media/116949/download</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: ~56,000 adverse-event reports (2005–2009), 87 recalls (14 Class I); software defects including failures of built-in safety alarms; problems traced to design and engineering</span></p></div></li><li id="ref-kim2011gpca"><span class="ref-key">[kim2011gpca]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>B. Kim et al., "Safety-Assured Development of the GPCA Infusion Pump Software," UPenn. <a href="https://repository.upenn.edu/cis_papers/475">https://repository.upenn.edu/cis_papers/475</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: FDA Generic PCA reference model checked in UPPAAL against FDA's generic safety requirements</span></p></div></li><li id="ref-gpca_umn"><span class="ref-key">[gpca_umn]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>University of Minnesota CRISYS, GPCA requirements and artifacts. <a href="https://crisys.cs.umn.edu/gpca.shtml">https://crisys.cs.umn.edu/gpca.shtml</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Home of the GPCA requirements documents</span></p></div></li></ol>
+<h3>Public safety</h3><ol class="refs"><li id="ref-mutcd4d26"><span class="ref-key">[mutcd4d26]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>FHWA <em>MUTCD</em> (2009) §4D.26, Yellow Change and Red Clearance Intervals. Quoted by the NJDOT technical appendix (<a href="https://dot.nj.gov/transportation/about/publicat/lmreports/pdf/2013rlrtechnicalappendix.pdf">https://dot.nj.gov/transportation/about/publicat/lmreports/pdf/2013rlrtechnicalappendix.pdf</a>) and a state reprint (<a href="https://regulations.justia.com/states/delaware/title-2/2000/2400/2402/part-4/chapter-4d/section-4d-26">https://regulations.justia.com/states/delaware/title-2/2000/2400/2402/part-4/chapter-4d/section-4d-26</a>)</p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: A steady yellow follows every green; yellow should last 3–6 s; red clearance is set by engineering practice. This is the <code>Yellow</code> phase that every green passes through</span></p></div></li><li id="ref-mmu"><span class="ref-key">[mmu]</span><span class="tier tier-D" title="Secondary, corroboration only">D</span><div class="ref-body"><p>Conflict Monitor Units and Malfunction Management Units (NEMA TS-1/TS-2). <a href="https://open-exam-prep.com/study-guides/imsa-traffic-signal-i/cabinet-wiring-and-components/cmu-and-mmu">https://open-exam-prep.com/study-guides/imsa-traffic-signal-i/cabinet-wiring-and-components/cmu-and-mmu</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Hardware monitor that forces flash on conflicting greens. <code>NoConflictingGreens</code> is the same property, proved at design time</span></p></div></li><li id="ref-heitmeyer1994"><span class="ref-key">[heitmeyer1994]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>C. Heitmeyer, N. Lynch, "The Generalized Railroad Crossing: A Case Study in Formal Verification of Real-Time Systems," MIT LCS TM-511 / IEEE RTSS 1994. <a href="https://groups.csail.mit.edu/tds/papers/Heitmeyer/TM-511.html">https://groups.csail.mit.edu/tds/papers/Heitmeyer/TM-511.html</a> · benchmark: <a href="https://groups.csail.mit.edu/tds/grc.html">https://groups.csail.mit.edu/tds/grc.html</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Safety (gate down whenever the crossing is occupied) and utility (gate up otherwise). This is the <code>LevelCrossing</code> model</span></p></div></li></ol>
+<h3>Cybersecurity</h3><ol class="refs"><li id="ref-nist80063b"><span class="ref-key">[nist80063b]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>NIST SP 800-63B, Digital Identity Guidelines: Authentication, §3.2.2 Rate Limiting (Throttling). <a href="https://pages.nist.gov/800-63-4/sp800-63b.html">https://pages.nist.gov/800-63-4/sp800-63b.html</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: No more than 100 consecutive failures per authenticator (then disable it); agencies may set lower limits. The model's 5 is such a lower limit</span></p></div></li><li id="ref-beurdouche2015"><span class="ref-key">[beurdouche2015]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>B. Beurdouche et al., "A Messy State of the Union: Taming the Composite State Machines of TLS," IEEE S&amp;P 2015, pp. 535–552; <em>CACM</em> reprint <a href="https://doi.org/10.1145/3023357">https://doi.org/10.1145/3023357</a> · <a href="https://hal.archives-ouvertes.fr/hal-01114250">https://hal.archives-ouvertes.fr/hal-01114250</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: State-machine bugs (SKIP, FREAK) let an attacker skip messages. This is the <code>ClientHandshake</code> seeded bug</span></p></div></li><li id="ref-ncc_smack"><span class="ref-key">[ncc_smack]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>NCC Group, "SMACK: SKIP-TLS &amp; FREAK SSL/TLS vulnerabilities." <a href="https://www.nccgroup.com/research/smack-skip-tls-freak-ssltls-vulnerabilities/">https://www.nccgroup.com/research/smack-skip-tls-freak-ssltls-vulnerabilities/</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: CVE-2014-6593 (SKIP-TLS), CVE-2015-0204 (FREAK)</span></p></div></li><li id="ref-rfc2697"><span class="ref-key">[rfc2697]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>J. Heinanen, R. Guerin, RFC 2697, <em>A Single Rate Three Color Marker</em>, 1999. <a href="https://www.rfc-editor.org/rfc/rfc2697">https://www.rfc-editor.org/rfc/rfc2697</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: Token buckets that start full and fill at a committed rate, capped at the burst size (<code>refill</code>, <code>spend</code>)</span></p></div></li><li id="ref-nist80053ac5"><span class="ref-key">[nist80053ac5]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>NIST SP 800-53 Rev. 5, AC-5 Separation of Duties. Catalog summary: <a href="https://www.upguard.com/compliance/nist-sp-800-53/ac/ac-5">https://www.upguard.com/compliance/nist-sp-800-53/ac/ac-5</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: <code>SeparationOfDuties</code> axiom</span></p></div></li></ol>
+<h3>Automotive</h3><ol class="refs"><li id="ref-iso15622"><span class="ref-key">[iso15622]</span><span class="tier tier-A" title="Standard, specification or regulator">A</span><div class="ref-body"><p>ISO 15622, Adaptive cruise control systems. <a href="https://www.iso.org/standard/89465.html">https://www.iso.org/standard/89465.html</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: ACC control strategy, minimum functionality, driver interface, failure reaction</span></p></div></li><li id="ref-bernsteiner2016"><span class="ref-key">[bernsteiner2016]</span><span class="tier tier-B" title="Peer-reviewed or scholarly">B</span><div class="ref-body"><p>S. Bernsteiner, <em>Integration of Advanced Driver Assistance Systems on Full-Vehicle Level</em>, TU Graz, 2016, ch. 6, p. 78. <a href="https://austria-forum.org/web-books/driverassistance00en2017isds/000100">https://austria-forum.org/web-books/driverassistance00en2017isds/000100</a></p><p class="ref-meta"><span>Verified: text</span><span>Supports: Minimum selectable time gap of 1 s in one standard and 0.8 s in another; Fancher et al. recommend 1–2 s. The model's 1.5 s lies in that range</span></p></div></li></ol>
+<h3>Battery systems</h3><ol class="refs"><li id="ref-uspto11592485"><span class="ref-key">[uspto11592485]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>US 11,592,485 B2, "Methods and apparatus for contactor weld detection in a vehicle." <a href="https://patents.google.com/patent/US11592485">https://patents.google.com/patent/US11592485</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Welded main contactor detected when the load-side voltage does not decay after an open command</span></p></div></li><li id="ref-uspto12077054"><span class="ref-key">[uspto12077054]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>US 12,077,054 B2, "Vehicle main contactor weld detection system." <a href="https://patents.google.com/patent/US12077054">https://patents.google.com/patent/US12077054</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Inrush-based weld detection and response</span></p></div></li><li id="ref-uspto10476262"><span class="ref-key">[uspto10476262]</span><span class="tier tier-C" title="Manufacturer or patent">C</span><div class="ref-body"><p>US 10,476,262, "Dual-bus battery precharge circuit." <a href="https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10476262">https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10476262</a></p><p class="ref-meta"><span>Verified: abstract</span><span>Supports: Precharge before main contactor closure; welds come from inrush above making capacity (<code>ClosedOnlyAfterPrecharge</code>)</span></p></div></li></ol>
+<h3>Aerospace</h3><ol class="refs"><li id="ref-airbus_laws"><span class="ref-key">[airbus_laws]</span><span class="tier tier-D" title="Secondary, corroboration only">D</span><div class="ref-body"><p>Airbus normal-law protections, as summarized from Airbus FCTM material by Code7700: <a href="https://code7700.com/airbus_control_laws.htm">https://code7700.com/airbus_control_laws.htm</a> · FlyByWire A32NX (simulator) guide: <a href="https://docs.flybywiresim.com/pilots-corner/a32nx/a32nx-advanced-guides/protections/overview/">https://docs.flybywiresim.com/pilots-corner/a32nx/a32nx-advanced-guides/protections/overview/</a> · <a href="https://en.wikipedia.org/wiki/Flight_control_modes">https://en.wikipedia.org/wiki/Flight_control_modes</a></p><p class="ref-meta"><span>Verified: secondary</span><span>Supports: Bank beyond 33° needs continuous sidestick input, release returns to 33°, 67° limit; between α-prot and α-max the stick commands AoA, α-max is never exceeded; α-prot disengages the autopilot. <strong>Illustrative only: verify against the type's FCOM</strong></span></p></div></li></ol>
+</article>
+</div>

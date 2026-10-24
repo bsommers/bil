@@ -1,0 +1,571 @@
+<title>Bounded Invariant Logic in Practice</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an engineering journal article. Sticky contents rail on wide screens, one ~70ch reading
+   column, full-width tables and code that scroll inside their own boxes. Accent pair from the bil
+   logo (indigo → cyan); semantic colors only for proved / counterexample / bounded. */
+:root {
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --ink: #161a2b;
+  --muted: #586079;
+  --rule: #dde1ec;
+  --accent: #4338ca;
+  --accent-2: #0e7490;
+  --code-bg: #eef0f8;
+  --code-ink: #1d2340;
+  --trace-bg: #fff6f5;
+  --trace-rule: #f2c9c4;
+  --proved: #15803d;
+  --refuted: #b42318;
+  --bounded: #a15c07;
+  --font-display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --step--1: 0.84rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.5rem;
+  --step-3: 2.05rem;
+  --step-4: 2.9rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f1a; --surface: #111729; --ink: #e5e8f3; --muted: #97a1bd; --rule: #222a40;
+    --accent: #a5b4fc; --accent-2: #22d3ee; --code-bg: #121a30; --code-ink: #d8def0;
+    --trace-bg: #1d1416; --trace-rule: #4d2a2a; --proved: #4ade80; --refuted: #fb7185; --bounded: #fbbf24;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0f1a; --surface: #111729; --ink: #e5e8f3; --muted: #97a1bd; --rule: #222a40;
+  --accent: #a5b4fc; --accent-2: #22d3ee; --code-bg: #121a30; --code-ink: #d8def0;
+  --trace-bg: #1d1416; --trace-rule: #4d2a2a; --proved: #4ade80; --refuted: #fb7185; --bounded: #fbbf24;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--step-0)/1.65 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+code { font-family: var(--font-mono); font-size: 0.88em; background: var(--code-bg); color: var(--code-ink); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+
+.page {
+  max-width: 1180px; margin: 0 auto; padding-block: 40px 96px;
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px;
+}
+@media (max-width: 960px) { .page { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 24px 64px; } }
+
+/* Contents rail */
+.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: var(--step--1); max-height: calc(100vh - 48px); overflow-y: auto; }
+.toc details > summary { font: 600 0.72rem/1 var(--font-body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); cursor: pointer; list-style: none; padding-block: 6px; }
+.toc details > summary::-webkit-details-marker { display: none; }
+.toc ol { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 2px; }
+.toc ol ol { margin: 2px 0 6px 12px; }
+.toc a { color: var(--muted); text-decoration: none; display: block; padding: 3px 8px; border-left: 2px solid transparent; }
+.toc a:hover { color: var(--ink); border-left-color: var(--accent); }
+@media (max-width: 960px) { .toc { position: static; max-height: none; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; background: var(--surface); } }
+
+article { min-width: 0; }
+.prose > * { max-width: 70ch; }
+h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; line-height: 1.2; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-3); margin: 72px 0 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+h3 { font-size: var(--step-2); margin: 40px 0 10px; }
+h4 { font: 600 var(--step--1)/1.3 var(--font-body); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 28px 0 6px; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.3em; }
+li { margin-bottom: 6px; }
+.secno { color: var(--accent); font-family: var(--font-mono); font-size: 0.6em; vertical-align: 0.35em; margin-right: 10px; letter-spacing: 0; }
+
+/* Title block */
+.masthead { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: center; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.masthead svg { width: 92px; height: 92px; border-radius: 20px; }
+@media (max-width: 560px) { .masthead { grid-template-columns: minmax(0, 1fr); } .masthead svg { width: 64px; height: 64px; } }
+.eyebrow { font: 600 0.74rem/1 var(--font-body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-2); margin: 0 0 10px; }
+h1 { font-size: var(--step-4); margin: 0 0 10px; line-height: 1.05; }
+.deck { font-family: var(--font-display); font-size: var(--step-1); color: var(--muted); margin: 0; max-width: 60ch; }
+.byline { font-size: var(--step--1); color: var(--muted); margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+.abstract { margin: 28px 0 0; padding: 20px 24px; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; max-width: 76ch; }
+.abstract h2 { all: unset; display: block; font: 600 0.74rem/1 var(--font-body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+
+/* Results strip: these numbers are the point of the paper, so they get tiles */
+.figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin: 28px 0 8px; }
+.figures div { background: var(--surface); padding: 16px 18px; }
+.figures b { display: block; font: 600 var(--step-3)/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.figures span { font-size: var(--step--1); color: var(--muted); }
+.figures .ok b { color: var(--proved); }
+@media (max-width: 560px) { .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.figures .bad b { color: var(--refuted); }
+.fig-note { font-size: var(--step--1); color: var(--muted); }
+
+/* Citations */
+.cites { font-size: 0.8em; white-space: normal; color: var(--muted); }
+.cite { font-family: var(--font-mono); font-size: 0.92em; text-decoration: none; color: var(--accent-2); }
+.cite:hover { text-decoration: underline; }
+
+/* Code and traces */
+pre { margin: 14px 0 20px; overflow-x: auto; border-radius: 8px; font: 400 0.8rem/1.55 var(--font-mono); tab-size: 2; }
+pre code { background: none; padding: 0; border-radius: 0; font-size: inherit; color: inherit; overflow-wrap: normal; }
+pre.code { background: var(--code-bg); color: var(--code-ink); padding: 14px 16px; border: 1px solid var(--rule); }
+pre.trace { background: var(--trace-bg); color: var(--ink); padding: 14px 16px; border: 1px solid var(--trace-rule); border-left: 3px solid var(--refuted); }
+pre.cmd { background: var(--code-bg); color: var(--code-ink); padding: 14px 16px; border: 1px solid var(--rule); }
+
+/* Use-case sections */
+.case { scroll-margin-top: 16px; }
+.case-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 64px 0 6px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.case-head h3 { margin: 0; font-size: var(--step-3); flex: 1 1 22ch; }
+.case-head .eyebrow { flex-basis: 100%; margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 18px; }
+.chip { font: 500 0.74rem/1 var(--font-mono); padding: 6px 9px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--muted); }
+.chip.ok { color: var(--proved); border-color: color-mix(in srgb, var(--proved) 40%, var(--rule)); }
+.chip.bad { color: var(--refuted); border-color: color-mix(in srgb, var(--refuted) 40%, var(--rule)); }
+.lead-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 4px 24px 18px; margin-top: 40px; }
+.lead-case .case-head { border-top: 0; margin-top: 16px; }
+@media (max-width: 560px) { .lead-case { padding: 2px 14px 12px; } }
+
+.note { border-left: 3px solid var(--accent-2); padding: 4px 0 4px 14px; color: var(--muted); max-width: 70ch; }
+.limits { font-size: 0.94em; color: var(--muted); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin: 16px 0 24px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: var(--step--1); }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); white-space: nowrap; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+tr.total td { font-weight: 600; border-top: 2px solid var(--rule); }
+table.stats td:first-child { min-width: 15ch; }
+
+.status { font: 500 0.78rem/1 var(--font-mono); white-space: nowrap; }
+.status.ok { color: var(--proved); }
+.status.bad { color: var(--refuted); }
+.status.warn { color: var(--bounded); }
+
+/* Mermaid diagrams */
+pre.mermaid { background: var(--surface); border: 1px solid var(--rule); padding: 16px; text-align: center; font-family: var(--font-body); }
+
+/* References */
+ol.refs { list-style: none; padding: 0; margin: 0 0 20px; display: grid; gap: 12px; }
+ol.refs li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 10px; align-items: start; padding: 12px 14px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; scroll-margin-top: 16px; }
+@media (max-width: 560px) { ol.refs li { grid-template-columns: auto auto; } .ref-body { grid-column: 1 / -1; } }
+.ref-key { font: 500 0.8rem/1.6 var(--font-mono); color: var(--accent-2); }
+.tier { font: 600 0.72rem/1 var(--font-mono); padding: 4px 7px; border-radius: 4px; border: 1px solid var(--rule); color: var(--muted); }
+.tier-A { color: var(--proved); }
+.tier-B { color: var(--accent); }
+.tier-C { color: var(--accent-2); }
+.tier-D { color: var(--bounded); }
+.ref-body { min-width: 0; font-size: var(--step--1); }
+.ref-body p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.ref-meta { color: var(--muted); display: grid; gap: 2px; }
+</style>
+
+<div class="page">
+<nav class="toc" aria-label="Contents">
+  <details open>
+    <summary>Contents</summary>
+    <ol>
+      <li><a href="#abstract">Abstract</a></li>
+      <li><a href="#why">1. Why designs fail</a></li>
+      <li><a href="#bil">2. The language and toolchain</a></li>
+      <li><a href="#method">3. Method</a></li>
+      <li><a href="#results">4. Results</a></li>
+      <li><a href="#cases">5. Use cases</a>
+        <ol>
+          <li><a href="#semiconductor_se_spe">Semiconductor SE → SPE</a></li>
+          <li><a href="#process_safety_reactor">Process safety</a></li>
+          <li><a href="#robotics_cobot_cell">Collaborative robotics</a></li>
+          <li><a href="#surgical_teleoperation">Surgical robotics</a></li>
+          <li><a href="#medical_infusion_pump">Infusion pumps</a></li>
+          <li><a href="#manufacturing_press_cell">Manufacturing</a></li>
+          <li><a href="#iiot_mqtt_qos2">Industrial IoT</a></li>
+          <li><a href="#control_antiwindup_pi">Control systems</a></li>
+          <li><a href="#navigation_geofence">Navigation</a></li>
+          <li><a href="#automotive_acc">Automotive</a></li>
+          <li><a href="#aerospace_envelope">Aerospace</a></li>
+          <li><a href="#energy_bms_balancing">Energy storage</a></li>
+          <li><a href="#public_safety_traffic_rail">Public safety</a></li>
+          <li><a href="#cybersecurity_zero_trust">Cybersecurity</a></li>
+        </ol>
+      </li>
+      <li><a href="#lessons">6. Cross-cutting lessons</a></li>
+      <li><a href="#limits">7. Limitations</a></li>
+      <li><a href="#roadmap">8. Roadmap</a></li>
+      <li><a href="#reproduce">9. Reproduce</a></li>
+      <li><a href="#references">References</a></li>
+    </ol>
+  </details>
+</nav>
+
+<article>
+<header class="masthead">
+  <svg viewBox="0 0 340 340" role="img" aria-label="bil logo">
+    <defs>
+      <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="0.55" stop-color="#818cf8"/><stop offset="1" stop-color="#e879f9"/></linearGradient>
+    </defs>
+    <rect width="340" height="340" rx="64" fill="#0b0f1a"/>
+    <g transform="translate(0 20)" fill="none" stroke="url(#lg)" stroke-linecap="square">
+      <path d="M122 66 H96 V234 H122" stroke-width="12"/>
+      <path d="M218 66 H244 V234 H218" stroke-width="12"/>
+      <path d="M201 96.3 A62 62 0 1 1 139 96.3" stroke-width="6" stroke-linecap="round"/>
+    </g>
+    <path transform="translate(0 20)" d="M152.5 88.5 L135.4 89.8 L144.2 103.6 Z" fill="#a78bfa"/>
+    <path transform="translate(0 20)" d="M170 116 L204 150 L170 184 L136 150 Z" fill="url(#lg)"/>
+    <path transform="translate(0 20)" d="M155 150 L165 160 L184 139" fill="none" stroke="#0b0f1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div>
+    <p class="eyebrow">White paper · bil v0.6.0 · October 2026</p>
+    <h1>Bounded Invariant Logic in Practice</h1>
+    <p class="deck">Proving the safety logic of fourteen industrial, medical and security designs before they run, with every requirement traced to a qualified source.</p>
+    <div class="byline"><span>bil project</span><span>Models: <code>examples/domains/</code></span><span>Sources: <code>docs/whitepaper/CITATIONS.md</code></span></div>
+  </div>
+</header>
+
+<section class="abstract" id="abstract">
+  <h2>Abstract</h2>
+  <p>Accident and recall investigations keep finding the same class of defect: interlocks, alarms and protocol state machines whose logic was wrong in the design, long before any code ran. <code>bil</code> (Bounded Invariant Logic) is a statically typed language that puts domain ontologies, first-order specifications, Dijkstra's guarded commands and reactive state machines in one source file, and checks them with weakest-precondition proofs, SMT solving and explicit-state model checking. The same file then runs on an interpreter, a bytecode VM or as a native binary.</p>
+  <p>This paper applies <code>bil</code> to fourteen domains, from semiconductor anneal control after spectroscopic ellipsometry to surgical teleoperation, process safety instrumented systems and TLS-style handshakes. Each model encodes requirements taken from standards, regulator reports and peer-reviewed physics, and each source is graded and cited. Across the suite, z3 proves all [[total:proved]] verification obligations with none left to sampling, the model checker explores [[total:states]] states in [[total:systems]] systems and proves [[total:ltl]] liveness properties, and all three execution back ends print identical results. Ten one-line seeded bugs, each modeled on a documented failure mode, are all caught with a concrete counterexample. The research also corrected four of our own first drafts, which is the strongest argument in the paper for tying formal models to primary sources.</p>
+</section>
+
+<div class="figures" role="list" aria-label="Headline results">
+  <div role="listitem"><b>[[total:models]]</b><span>domain models</span></div>
+  <div role="listitem" class="ok"><b>[[total:proved]]</b><span>obligations proved by z3</span></div>
+  <div role="listitem" class="ok"><b>[[total:bounded]]</b><span>left to bounded sampling</span></div>
+  <div role="listitem"><b>[[total:states]]</b><span>states explored in [[total:systems]] systems</span></div>
+  <div role="listitem" class="bad"><b>10 / 10</b><span>seeded bugs caught</span></div>
+  <div role="listitem"><b>3</b><span>back ends with identical output</span></div>
+</div>
+<p class="fig-note">Figures are generated from live runs of <code>bil verify</code> and <code>bil model-check</code> when this page is built, and the same checks run in <code>tests/domain_examples.rs</code>.</p>
+
+<div class="prose">
+
+<h2 id="why"><span class="secno">1</span>Why designs fail</h2>
+<p>The failures that matter most in safety-critical systems are rarely arithmetic slips. They are logic errors in how a system reacts to events: an alarm that does not latch, a state machine that accepts a message out of order, an interlock that is correct for each fault alone but not for two faults together.</p>
+<ul>
+  <li><strong>Medical devices.</strong> Between 2005 and 2009 the FDA received about 56,000 adverse-event reports for infusion pumps and oversaw 87 recalls, 14 of them Class I. Its analysis traced many problems to design and engineering, including software defects such as failures of built-in safety alarms [[c:fda_ipii]].</li>
+  <li><strong>Process plants.</strong> The U.S. Chemical Safety Board found that the 2007 T2 Laboratories explosion, which killed four employees and injured 28 people at nearby businesses, was a runaway reaction that most likely followed an inadequate reactor cooling system [[c:csb_t2]].</li>
+  <li><strong>Security protocols.</strong> Systematic testing of TLS libraries found state-machine bugs that had gone unnoticed for years, including SKIP-TLS and FREAK, where a network attacker could skip handshake messages. The authors trace them to incorrect compositions of individually correct state machines [[c:beurdouche2015,ncc_smack]].</li>
+</ul>
+<p>Industry has shown that this class of error can be found before deployment. Amazon Web Services has model-checked the designs of critical systems since 2011 and reports finding subtle bugs that testing missed [[c:newcombe2015]]. Tools such as SPIN [[c:holzmann1997]], which made model checking of protocols like Peterson's mutual exclusion [[c:peterson1981]] routine, TLA+, Alloy and Verus [[c:lattuada2023]] are mature. The barrier is that the domain model, the specification, the protocol model and the executable logic usually live in different tools and drift apart.</p>
+
+<h2 id="bil"><span class="secno">2</span>The language and toolchain</h2>
+<p><code>bil</code> keeps all four in one file. A program can contain:</p>
+<ul>
+  <li><strong>Ontology:</strong> <code>concept</code> hierarchies with <code>&lt;:</code> subtyping, algebraic data types, and first-order <code>axiom</code>s over them.</li>
+  <li><strong>Specified functions:</strong> <code>fn</code> with <code>requires</code> and <code>ensures</code>, written in Dijkstra's guarded command language [[c:dijkstra1975]]: <code>if … fi</code> with nondeterministic choice among enabled guards, and <code>do … od</code> loops with an <code>invariant</code> and a <code>variant</code>.</li>
+  <li><strong>Reactive systems:</strong> <code>system</code> blocks with typed <code>state</code>, safety <code>invariant</code>s, <code>temporal</code> properties (<code>P ~&gt; Q</code>, <code>eventually</code>), an optional <code>terminal</code> condition and interleaved guarded <code>transition</code>s in the style of SPIN/Promela.</li>
+  <li><strong>Data pipelines:</strong> <code>|&gt;</code> chains of <code>where</code>, <code>map</code>, <code>sort_by</code>, <code>sum</code> and quantifiers over concrete data.</li>
+</ul>
+
+<pre class="mermaid">
+flowchart LR
+  SRC["model.bil"] --> CHK["check: ontology DAG + Hindley-Milner types"]
+  CHK --> WP["verify: weakest preconditions"]
+  WP --> SMT["z3 / cvc5: PROVED or counterexample values"]
+  WP --> BND["bounded sampler: cross-check"]
+  CHK --> MC["model-check: BFS + Tarjan SCC + weak fairness"]
+  CHK --> EX["run / vm / build: ghost-erased execution"]
+  CHK --> VER["emit-verus: Verus Rust"]
+</pre>
+
+<h3>Verification conditions</h3>
+<p>For <code>if G₁ → S₁ [] … [] Gₙ → Sₙ fi</code>, <code>bil verify</code> generates guard totality (some guard holds under the precondition) and one obligation per branch, <code>Gᵢ ⇒ wp(Sᵢ, Q)</code>. Because the semantics is demonic, a design with overlapping guards must be correct whichever enabled branch runs. For a <code>do … od</code> loop it generates five obligations: invariant initialization, preservation by every branch, non-negativity and strict decrease of the variant, and the postcondition on exit. The formal rules are in <code>docs/SEMANTICS.md</code>.</p>
+<p>Each obligation ends in one of three verdicts:</p>
+<ul>
+  <li><span class="status ok">PROVED (by z3)</span>: the SMT solver [[c:demoura2008]] showed the negated condition unsatisfiable.</li>
+  <li><span class="status bad">REFUTED</span>: a counterexample, with concrete values recovered from the solver's model, for example <code>{ x = 37 }</code>.</li>
+  <li><span class="status warn">BOUNDED (n samples)</span>: only sampled. <code>bil verify</code> exits with status 1 in that case unless <code>--allow-bounded</code> is given, so sampled evidence is never mistaken for a proof.</li>
+</ul>
+
+<h3>Model checking</h3>
+<p><code>bil model-check</code> explores every reachable state of a <code>system</code> breadth-first, so each counterexample is a shortest trace. It checks every invariant in every state, reports a deadlock wherever no guard is enabled in a non-terminal state, and checks <code>P ~&gt; Q</code> by decomposing the ¬Q subgraph into strongly connected components under weak fairness: a cycle only counts as a violation if no transition that leaves it stays enabled throughout. Liveness counterexamples are printed as lassos.</p>
+
+<h3>Execution</h3>
+<p>Proof-only constructs are erased before execution. The tree-walking interpreter, the bytecode VM and native binaries built through <code>rustc</code> share checked 64-bit arithmetic, Euclidean division, and limits of 64 nested calls and 100,000 loop steps; differential tests require identical output from all three. At run time, axioms are checked over the concept instances that actually exist (a closed world), while in the SMT encoding they hold over all models (an open world).</p>
+
+<h2 id="method"><span class="secno">3</span>Method</h2>
+<p>Each use case went through the same six steps.</p>
+<ol>
+  <li><strong>Draft</strong> the model from domain knowledge.</li>
+  <li><strong>Research and qualify sources.</strong> Every requirement, limit or physical constant is traced to a source and graded: <strong>A</strong> for standards, specifications and regulators; <strong>B</strong> for peer-reviewed work; <strong>C</strong> for manufacturer documents and patents; <strong>D</strong> for secondary sources used only to corroborate. Each entry also records how much of it was actually read. Several standards (ISO 10218, 13851, 13855 and 15622, and IEC 61511) are paywalled. Their figures come from secondary quotations and are marked as such.</li>
+  <li><strong>Encode</strong> each requirement as a contract, loop invariant, system invariant or temporal property, citing its key inline in the source file.</li>
+  <li><strong>Check</strong> with <code>bil verify</code>, <code>bil model-check</code> and all three back ends.</li>
+  <li><strong>Seed a bug.</strong> Each lesson gets a one-line variant in <code>examples/domains/seeded_bugs/</code> that reproduces a documented failure mode. <code>bil</code> must reject it with a specific counterexample.</li>
+  <li><strong>Regress.</strong> <code>tests/domain_examples.rs</code> requires every model to be fully proved and every seeded bug to be caught. It runs in about nine seconds as part of the local CI gate.</li>
+</ol>
+<p class="note">The research corrected four first drafts. The SPE regrowth rates were low by about 15–20%; sensor plausibility used an arbitrary span instead of the NAMUR NE 43 failure bands; the ACC model used a "two-second rule" where the sources give standard minimum time gaps of 0.8–1 s and recommend 1–2 s; and the bank-angle protection forced a roll-back even while the pilot held the stick, which is not how normal law behaves. The model checker also corrected one draft: an MQTT model whose retransmission guard was too strict to expose the bug it was written to show.</p>
+
+<h2 id="results"><span class="secno">4</span>Results</h2>
+<p>Every model below verifies with all obligations proved by SMT, model-checks without violation, and gives the same output under the interpreter, the VM and a native build. Verifying and model-checking the whole suite takes under two seconds with a release build.</p>
+[[stats]]
+<p>Ten seeded bugs, each caught:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Seeded bug</th><th>What changed</th><th>How <code>bil</code> rejects it</th></tr></thead>
+<tbody>
+<tr><td><code>spe_slow_thermal_loop</code></td><td>Thermal loop one tick too slow during an over-temperature excursion</td><td><span class="status bad">VIOLATION</span> NeverMeltAmorphousSi, 11-step trace</td></tr>
+<tr><td><code>spe_overtemp_only_in_soak</code></td><td>Over-strict invariant</td><td><span class="status bad">VIOLATION</span> OverTempIsTransient via a pyrometer fault</td></tr>
+<tr><td><code>reactor_slow_sis</code></td><td>Heating not pre-empted at the trip point</td><td><span class="status bad">VIOLATION</span> BelowDesignTemperature, temp = 9</td></tr>
+<tr><td><code>mqtt_unordered_transport</code></td><td>PUBREL may overtake a PUBLISH</td><td><span class="status bad">VIOLATION</span> ExactlyOnceSafety, delivered = 2</td></tr>
+<tr><td><code>tls_early_finished</code></td><td>Client accepts an injected early Finished</td><td><span class="status bad">VIOLATION</span> NoDataToUnverifiedPeer</td></tr>
+<tr><td><code>bms_fault_always_opens</code></td><td>Ignores contactor welding</td><td><span class="status bad">VIOLATION</span> FaultOpensPack via Closed → Welded</td></tr>
+<tr><td><code>robotics_stop_always_clears</code></td><td>Claims the protective stop always clears</td><td><span class="status bad">LTL FAILED</span> fair lasso</td></tr>
+<tr><td><code>infusion_alarm_always_cleared</code></td><td>Claims every alarm is eventually cleared</td><td><span class="status bad">LTL FAILED</span> fair lasso of recurring hazards</td></tr>
+<tr><td><code>cyber_noncompliant_grant</code></td><td>Issues a self-approved production grant</td><td><span class="status bad">RuntimeError</span> axiom SeparationOfDuties</td></tr>
+<tr><td><code>reactor_trip_via_call</code></td><td>Trip logic calls a helper (not a bug)</td><td><span class="status warn">BOUNDED</span> only: a tool limitation, see section 7</td></tr>
+</tbody></table></div>
+
+<h2 id="cases"><span class="secno">5</span>Use cases</h2>
+<p>Each use case gives the context and its sources, what was modeled, what was proved, and what the checker found. Code excerpts are copied from the model files when this page is built.</p>
+
+</div>
+
+<section class="case lead-case" id="semiconductor_se_spe">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Semiconductor manufacturing · lead case</p><h3>Spectroscopic ellipsometry gating a solid-phase epitaxy anneal</h3></div>
+  <div class="chips"><span class="chip ok">25 obligations proved</span><span class="chip">158 states</span><span class="chip ok">AnnealFinishes LTL proved</span><span class="chip bad">2 seeded bugs caught</span><span class="chip">semiconductor_se_spe.bil</span></div>
+
+  <h4>Process context</h4>
+  <p>Ion implantation amorphizes a surface layer of a silicon wafer. A thermal anneal then regrows it epitaxially from the crystalline substrate below: solid-phase epitaxy (SPE). Two measurements and one control loop decide whether the result is single-crystal silicon.</p>
+  <ul>
+    <li><strong>Metrology before the anneal.</strong> Spectroscopic ellipsometry measures the change in polarization, Ψ and Δ, over wavelength [[c:fujiwara2007]]. Fitting a multilayer optical model (oxide, amorphous layer, damaged substrate) gives the amorphous layer thickness. The fit has to be trusted with care: with an unsuitable dielectric-function model, ellipsometry can overestimate low-level damage [[c:lohner1996]]. SE has been used to follow the regrowth of implant-amorphized silicon [[c:holgado1995]].</li>
+    <li><strong>Kinetics of the regrowth.</strong> For intrinsic Si the regrowth front moves at v = 4.64×10¹⁶ Å/s · exp(−2.7 eV / kT) [[c:roth1990,johnson2007]]. That is about 1.4 Å/s at 550 °C, 12 Å/s at 600 °C and 84 Å/s at 650 °C, so 30 °C of error changes the anneal time by a factor of two or more. Random nucleation in the amorphous layer has a higher activation energy, about 4 eV, so it gains on epitaxy as temperature rises [[c:olsonroth1988,olson1985]]. This sets the upper edge of the process window.</li>
+    <li><strong>The thermal hazard.</strong> Amorphous Si melts 200 ± 50 K below crystalline Si. Under pulsed heating, a thin liquid layer can then propagate through the amorphous film at 10–20 m/s and leave fine-grained polycrystalline silicon: explosive crystallization [[c:thompson1984]]. In rapid thermal processing, temperature non-uniformity during ramps causes slip, which limits how fast the lamps may slew [[c:norman1991,uspto6403925]]. Typical RTP ramps run at 20–100 °C/s [[c:uspto6034356]].</li>
+    <li><strong>In-situ monitoring.</strong> Real-time SE during solid-phase crystallization yields both a near-surface temperature calibration and the crystalline volume fraction over time [[c:fujiwara1998]]. This makes an ellipsometric endpoint for the regrowth, and a second temperature channel, practical.</li>
+  </ul>
+
+  <pre class="mermaid">
+stateDiagram-v2
+  [*] --> Load
+  Load --> Measure: amorph := 3
+  Measure --> Ramp: SE fit valid (se_ok)
+  Measure --> Reject: SE fit rejected
+  Ramp --> Soak: temp reaches window (band 6)
+  Ramp --> Cool: pyrometer fault, lamp off
+  Soak --> Soak: regrow one unit, or excursion to band 7 and back
+  Soak --> Cool: SE endpoint (amorph = 0), lamp off
+  Soak --> Cool: pyrometer fault, lamp off
+  Cool --> Done: cold and fully regrown
+  Cool --> Reject: cold with amorphous layer left
+  </pre>
+
+  <h4>What is modeled and proved</h4>
+  <p>The SE gate accepts a site only when the regression converged, the fit error is under a threshold, and the thickness is inside the implant recipe's expected range. z3 proves the gate is exactly that predicate, with no hidden case:</p>
+  [[x:examples/domains/semiconductor_se_spe.bil|fn se_site_valid|=&& s.a_si_thickness_a >= t_min && s.a_si_thickness_a <= t_max]]
+  <p>The wafer disposition is proved for all inputs: fewer than 80% usable sites always sends the wafer back to metrology, and enough sites with a uniform layer always releases it. The regrowth-rate table comes from the Arrhenius law above. Each band uses the rate at its lower edge, so a time computed from it is never optimistic, and z3 proves the rate is zero outside the window and positive inside:</p>
+  [[x:examples/domains/semiconductor_se_spe.bil|fn spe_rate|=fi]]
+  <p>The fast thermal loop is where the hazards meet. Whatever the outer loop demands, the per-tick setpoint stays within the slew limit and never exceeds the hard temperature limit. All five branches are proved, including the case where the demand is above the hard limit while the current setpoint is below it:</p>
+  [[x:examples/domains/semiconductor_se_spe.bil|fn thermal_setpoint|=fi]]
+  <p>The anneal itself is a <code>system</code> with temperature in bands. Lamp drift or latent-heat release may push the wafer out of the window at any time during the soak, up to a bounded number of excursions, and the pyrometer may fail at any point. Five invariants are checked in all 158 reachable states, and <code>AnnealFinishes</code> proves under weak fairness that every anneal that starts ramping ends in <code>Done</code> or <code>Reject</code>:</p>
+  [[x:examples/domains/semiconductor_se_spe.bil|invariant NeverMeltAmorphousSi|invariant OverTempIsTransient]]
+  <p>On the example wafer W07 the verdict is <code>[[run:examples/domains/semiconductor_se_spe.bil:verdict]]</code>. Only three of five sites pass the SE gate, which is under 80%, even though the three good thicknesses are uniform (<code>uniform = [[run:examples/domains/semiconductor_se_spe.bil:uniform]]</code>, mean [[run:examples/domains/semiconductor_se_spe.bil:mean_a]] Å). At 600 °C that layer needs [[run:examples/domains/semiconductor_se_spe.bil:ticks_600c]] one-second ticks to regrow, computed by <code>regrowth_ticks</code>, which is proved to terminate with the whole layer consumed.</p>
+
+  <h4>What the checker found</h4>
+  <p><strong>A thermal loop one tick too slow melts the amorphous layer.</strong> If the controller can heat once more while already in the over-temperature band, the wafer reaches band 8, which is the a-Si melt and explosive-crystallization hazard. The checker returns the shortest path to it:</p>
+  [[trace:spe_slow_thermal_loop.bil]]
+  <p><strong>An invariant that was too strong.</strong> The first draft stated that over-temperature can only occur during the soak. The checker showed a pyrometer fault in the middle of an excursion: the lamp is cut and the phase moves to <code>Cool</code> while the wafer is still in band 7. Cutting the lamp is the right response, so the invariant was corrected rather than the design.</p>
+  [[trace:spe_overtemp_only_in_soak.bil]]
+  <p class="limits"><strong>Limits.</strong> Temperature is discretized into bands and time into ticks. A production controller needs dense-time or hybrid analysis of the plant, and the window edge (680 °C here), the fit thresholds and the excursion budget are example recipe parameters, not recommendations. The model proves the supervisory logic and the per-tick command bounds, not the thermal physics.</p>
+</div>
+</section>
+
+<section class="case" id="process_safety_reactor">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Critical process systems</p><h3>A safety instrumented system for an exothermic reactor</h3></div>
+  <div class="chips"><span class="chip ok">2 obligations proved</span><span class="chip">23 states</span><span class="chip ok">TripIsReset LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The T2 Laboratories explosion was a runaway reaction after a cooling failure [[c:csb_t2]]. A safety instrumented system under IEC 61511 [[c:iec61511]] is the independent layer meant to stop that sequence. Three temperature transmitters voted 2-out-of-3 tolerate one fault both against failing to trip and against tripping spuriously [[c:lundteigen_sis]], at a higher cost and complexity than simpler architectures [[c:kenexis_2oo3]]. Both properties are proved for all inputs:</p>
+  [[x:examples/domains/process_safety_reactor.bil|fn high_temp_trip|(t2 >= setpoint && t3 >= setpoint)]]
+  <p>The reactor <code>system</code> lets cooling fail at any time. While running, the SIS trips at band 7 and pre-empts further heating, residual heat may add one more step, and the reactor is reset after cooling. The design temperature is never exceeded, and every trip is eventually reset.</p>
+  <h4>What the checker found</h4>
+  <p>If heating is not pre-empted at the trip point, which is what happens when the SIS responds more slowly than the reaction, the interleaving lets the temperature climb past the design limit before the trip fires:</p>
+  [[trace:reactor_slow_sis.bil]]
+  <p class="limits"><strong>Limits.</strong> Response time is abstracted as transition priority. Probability of failure on demand, proof-test intervals and common-cause failure, which IEC 61511 requires, are outside the model.</p>
+</div>
+</section>
+
+<section class="case" id="robotics_cobot_cell">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Collaborative robotics</p><h3>Speed and separation monitoring in a cobot cell</h3></div>
+  <div class="chips"><span class="chip ok">8 obligations proved</span><span class="chip">6 states</span><span class="chip ok">EStopIsReleasable LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>ISO/TS 15066 defines speed and separation monitoring (SSM) as one of four collaborative modes [[c:isots15066]]. NIST has published guidance on implementing its protective separation distance [[c:marvel2017]] and built a laser-scanner testbed that stops and restarts a robot from it [[c:szabo2012]]. The model takes the protective distance as an input and adds a 500 mm collaborative band capped at the 250 mm/s reduced speed associated with ISO 10218 [[c:iso10218]]:</p>
+  [[x:examples/domains/robotics_cobot_cell.bil|fn ssm_speed_limit|=fi]]
+  <p>The cell supervisor lets the human move between zones at any moment, with the scanner's safety output acting in the same step. Four invariants hold in every state: standstill in the protective zone, reduced speed in the shared band, E-stop means stop, and a valid zone.</p>
+  <h4>What the checker found</h4>
+  <p>The first draft claimed that a protective stop always clears. It cannot, because the human may stay in the protective zone, or press E-stop again, forever. The checker returns that as a fair lasso. What the controller can promise is that a latched E-stop is always releasable, and that is now proved.</p>
+  [[trace:robotics_stop_always_clears.bil]]
+</div>
+</section>
+
+<section class="case" id="surgical_teleoperation">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Surgical robotics</p><h3>Teleoperation with virtual fixtures and a link watchdog</h3></div>
+  <div class="chips"><span class="chip ok">9 obligations proved</span><span class="chip">7 states</span><span class="chip ok">HoldIsLeftWhenLinkIsUp LTL proved</span></div>
+  <p>Virtual fixtures, introduced for telepresence by Rosenberg [[c:rosenberg1993]], include forbidden-region fixtures that keep a manipulator out of parts of the workspace. They have been studied on the da Vinci and JHU Steady-Hand platforms [[c:abbott2007]]. Robotically assisted surgical equipment falls under IEC 80601-2-77 [[c:iec80601277]]. The model proves three instrument-level functions: a depth fixture that never lets the tip pass the limit while leaving retraction unrestricted, 5:1 motion scaling, and a symmetric force limit.</p>
+  [[x:examples/domains/surgical_teleoperation.bil|fn fixture_step|=fi]]
+  <p>The supervisor puts the arm on hold when the console link drops. When the link returns, the arm stays on hold until the surgeon releases and re-presses the clutch. <code>NoMotionWithoutReengage</code> is checked in every state, because motion that resumes on its own when the link recovers is the hazard.</p>
+</div>
+</section>
+
+<section class="case" id="medical_infusion_pump">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Medical devices</p><h3>A patient-controlled analgesia infusion pump</h3></div>
+  <div class="chips"><span class="chip ok">9 obligations proved</span><span class="chip">11 states</span><span class="chip ok">ClearPumpCanRun LTL proved</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The FDA's Infusion Pump Improvement Initiative cites failures of built-in safety alarms among recurring defects [[c:fda_ipii]]. The FDA's Generic PCA pump model and its safety requirements have been model-checked in UPPAAL by others [[c:kim2011gpca,gpca_umn]]. This model proves the bolus rule (lockout interval and hourly cap, stated as an exact equivalence) and that delivery never exceeds the volume to be infused and stops exactly on it. The interlock <code>system</code> checks no free flow with the door open, a stop on occlusion or air-in-line, and an alarm that latches the motor off.</p>
+  [[x:examples/domains/medical_infusion_pump.bil|fn infuse|=then v]]
+  <h4>What the checker found</h4>
+  <p>"Every alarm is eventually cleared" does not hold. Hazards can keep recurring, and clearing an alarm is a clinical action rather than something the pump controls. The checker returns a fair lasso of alternating occlusion, air and door faults:</p>
+  [[trace:infusion_alarm_always_cleared.bil]]
+</div>
+</section>
+
+<section class="case" id="manufacturing_press_cell">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Manufacturing</p><h3>Hydraulic press guarding and gravimetric dosing</h3></div>
+  <div class="chips"><span class="chip ok">10 obligations proved</span><span class="chip">13 states</span><span class="chip ok">NoStuckDownstroke LTL proved</span></div>
+  <p>Two-hand control under ISO 13851 type III requires both actuators within 0.5 s, and both released before re-triggering [[c:iso13851]]. A light curtain must be mounted at least S = K·T + C from the hazard, with K = 2000 mm/s and C = 8(d − 14) for resolutions d ≤ 40 mm [[c:iso13855]]. Sources disagree on when K may drop to 1600 mm/s, so the model always uses the larger distance:</p>
+  [[x:examples/domains/manufacturing_press_cell.bil|fn light_curtain_distance|=2 * t_stop_ms + 8 * (d_mm - 14)]]
+  <p>The press <code>system</code> lets either hand release, the curtain break or the door open during the down-stroke, and the safety relay reverses the ram in the same step. <code>DownstrokeIsGuarded</code> holds in every state, and every down-stroke returns to the top. Coarse/fine dosing is proved never to overfill and to end exactly on target.</p>
+</div>
+</section>
+
+<section class="case" id="iiot_mqtt_qos2">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Industrial IoT</p><h3>MQTT exactly-once delivery and NAMUR NE 43 telemetry</h3></div>
+  <div class="chips"><span class="chip ok">8 obligations proved</span><span class="chip">21 states</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>The model sends one QoS 2 PUBLISH over a network that may lose any packet, with timeout retransmission at the sender. MQTT 3.1.1 requires the receiver to acknowledge re-sent PUBLISHes until PUBREL and "MUST NOT cause duplicate messages to be delivered" [MQTT-4.3.3-2], and it assumes "an ordered, lossless, stream of bytes" underneath (§4.2) [[c:mqtt311]]. The sender side keeps its copy until PUBREC and the packet identifier until PUBCOMP [[c:emqx_qos]]. With an in-order transport, the model checker shows at most one delivery in every state and delivery whenever the sender reaches <code>Done</code>.</p>
+  <h4>What the checker found</h4>
+  <p>Drop the ordering assumption, so that PUBREL can overtake a retransmitted PUBLISH, and the receiver releases the packet identifier before the duplicate arrives. The duplicate is then delivered as new. The protocol's exactly-once guarantee depends on the transport, and the model makes that dependency explicit:</p>
+  [[trace:mqtt_unordered_transport.bil]]
+  <p>The same file classifies 4–20 mA loop currents under NAMUR NE 43: 3.8–20.5 mA is a measurement, and ≤ 3.6 mA or ≥ 21 mA signals a failure [[c:namur_ne43]]. The classification is proved for every input and drives a telemetry pipeline that flags <code>[[run:examples/domains/iiot_mqtt_qos2.bil:failed]]</code> as failed and <code>[[run:examples/domains/iiot_mqtt_qos2.bil:suspect]]</code> as suspect.</p>
+  [[x:examples/domains/iiot_mqtt_qos2.bil|fn ne43_class|=fi]]
+</div>
+</section>
+
+<section class="case" id="control_antiwindup_pi">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Control systems</p><h3>Fixed-point PI control with anti-windup</h3></div>
+  <div class="chips"><span class="chip ok">22 obligations proved</span><span class="chip">12 states</span><span class="chip ok">2 LTL proved</span></div>
+  <p>When an actuator saturates, an integrator keeps accumulating and the loop behaves as if open. Conditional integration and back-calculation are the two standard remedies [[c:scilab_aw,astrom_murray]]. The model proves, for all integer inputs as on a PLC, that saturation stays in the actuator range, that the conditionally integrated state stays bounded, and that a rate-limited setpoint ramp never overshoots and lands exactly on target:</p>
+  [[x:examples/domains/control_antiwindup_pi.bil|fn ramp_to|=then r]]
+  <p>A hysteresis thermostat <code>system</code> keeps the temperature in its comfort band, and two liveness properties prove the heater never latches on or off.</p>
+</div>
+</section>
+
+<section class="case" id="navigation_geofence">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Navigation and autonomy</p><h3>Geofenced waypoint following and return-to-home</h3></div>
+  <div class="chips"><span class="chip ok">16 obligations proved</span><span class="chip">8 states</span><span class="chip ok">ReturnsHome LTL proved</span></div>
+  <p>NASA Langley's Safeguard enforces stay-in and stay-out geofences independently of the autopilot, and its boundary-violation detection is proved in PVS [[c:nasa_safeguard]]. In the same spirit, the waypoint follower here is proved never to leave the fence, to decrease its Manhattan distance on every step whichever axis the planner picks, and to arrive exactly at the target. The mission supervisor keeps <code>battery ≥ 2 · dist</code> in every reachable state, so the drone can always get home.</p>
+  [[x:examples/domains/navigation_geofence.bil|fn goto_waypoint|=then cur]]
+</div>
+</section>
+
+<section class="case" id="automotive_acc">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Automotive</p><h3>Adaptive cruise control with an emergency-braking override</h3></div>
+  <div class="chips"><span class="chip ok">7 obligations proved</span><span class="chip">11 states</span></div>
+  <p>ISO 15622 covers the ACC control strategy, minimum functionality and reaction to failure [[c:iso15622]]. A review of ACC parameterization reports standard minimum selectable time gaps of 0.8 s and 1 s, and a recommended range of 1–2 s [[c:bernsteiner2016]]. The model uses 1.5 s plus a 5 m standstill margin. The acceleration request is proved to stay within comfort limits, to brake whenever the gap is short, to command emergency braking below half the safe gap, and never to accelerate above the set speed. The supervisor proves that the brake pedal always cancels ACC, and that ACC never brakes while the driver overrides with the accelerator.</p>
+  [[x:examples/domains/automotive_acc.bil|fn acc_command|=fi]]
+</div>
+</section>
+
+<section class="case" id="aerospace_envelope">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Aerospace</p><h3>Fly-by-wire envelope protection</h3></div>
+  <div class="chips"><span class="chip ok">12 obligations proved</span><span class="chip">8 states</span><span class="chip ok">WarningIsCancelled LTL proved</span></div>
+  <p>In Airbus normal law, bank beyond 33° needs continuous sidestick input, releasing it returns the aircraft to 33°, and 67° is the limit. Between α-prot and α-max the stick commands angle of attack, and α-max is never exceeded [[c:airbus_laws]]. These figures come from secondary summaries, so the model is illustrative and the type's FCOM governs. The research corrected the first draft, which forced a roll-back even with the stick held:</p>
+  [[x:examples/domains/aerospace_envelope.bil|fn roll_cmd|=fi]]
+  <p>The autopilot <code>system</code> proves the autopilot is engaged only inside the envelope and never with sidestick input, and that every disconnect warning is eventually cancelled.</p>
+</div>
+</section>
+
+<section class="case" id="energy_bms_balancing">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Energy storage</p><h3>Battery cell balancing and contactor sequencing</h3></div>
+  <div class="chips"><span class="chip ok">12 obligations proved</span><span class="chip">6 states</span><span class="chip bad">1 seeded bug caught</span></div>
+  <p>Cell balancing is proved to conserve total charge, keep both cells non-negative and terminate balanced. Charge current is proved to derate to zero outside the temperature window and to a tenth of maximum above 95% state of charge. The contactor <code>system</code> closes the main contactor only after precharge [[c:uspto10476262]] and models contact welding, which manufacturers detect from voltages that fail to decay after an open command [[c:uspto11592485,uspto12077054]].</p>
+  [[x:examples/domains/energy_bms_balancing.bil|fn balance|=then c]]
+  <h4>What the checker found</h4>
+  <p>"An isolation fault always opens the pack" is false once welding is possible. The checker produces the trace, and the trace is the engineering case for a second, independent contactor:</p>
+  [[trace:bms_fault_always_opens.bil]]
+</div>
+</section>
+
+<section class="case" id="public_safety_traffic_rail">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Public safety</p><h3>Signals with emergency preemption, a level crossing, and dispatch triage</h3></div>
+  <div class="chips"><span class="chip ok">1 obligation proved</span><span class="chip">11 states in 2 systems</span><span class="chip ok">3 LTL proved</span></div>
+  <p>A conflict monitor or malfunction management unit forces an intersection into flash when it sees conflicting greens [[c:mmu]]. The MUTCD requires a steady yellow after every green and leaves red clearance to engineering practice [[c:mutcd4d26]]. The intersection model proves no conflicting greens, the property the monitor enforces in hardware, in every state, including during emergency preemption. It also proves that preemption ends and that north–south traffic is served.</p>
+  <p>The level crossing follows Heitmeyer and Lynch's Generalized Railroad Crossing benchmark [[c:heitmeyer1994]]: the gate is down whenever the crossing is occupied, and it reopens once the train has gone. The siting assumption, that the gate is down before a train can arrive, is written as an explicit guard rather than hidden. Dispatch triage is a proved scoring function and a pipeline over an incident queue.</p>
+  [[x:examples/domains/public_safety_traffic_rail.bil|system LevelCrossing|=}]]
+</div>
+</section>
+
+<section class="case" id="cybersecurity_zero_trust">
+<div class="prose">
+  <div class="case-head"><p class="eyebrow">Cybersecurity</p><h3>Rate limiting, lockout, handshake ordering and separation of duties</h3></div>
+  <div class="chips"><span class="chip ok">6 obligations proved</span><span class="chip">13 states in 2 systems</span><span class="chip ok">LockoutExpires LTL proved</span><span class="chip bad">2 seeded bugs caught</span></div>
+  <p>Token-bucket refill and spend are proved never to overflow capacity or go negative [[c:rfc2697]]. The lockout <code>system</code> uses five failures, well under NIST SP 800-63B's ceiling of 100 consecutive failures per authenticator, which permits lower limits [[c:nist80063b]], and proves that every lockout expires. The client handshake proves no application data is sent to an unverified peer. Separation of duties is an axiom over issued grants [[c:nist80053ac5]], audited by a pipeline over pending requests.</p>
+  <h4>What the checker found</h4>
+  <p>Accept an attacker-injected Finished straight after the hello, the SKIP-TLS pattern [[c:beurdouche2015]], and data reaches a peer whose certificate was never checked:</p>
+  [[trace:tls_early_finished.bil]]
+  <p>Issuing a self-approved production grant violates the axiom at run time, because axioms are enforced over the instances that actually exist:</p>
+  [[trace:cyber_noncompliant_grant.bil]]
+</div>
+</section>
+
+<div class="prose">
+
+<h2 id="lessons"><span class="secno">6</span>Cross-cutting lessons</h2>
+<ul>
+  <li><strong>Liveness often belongs to the environment.</strong> In the cobot cell and the infusion pump, the natural liveness claim ("the stop clears", "the alarm clears") was false, because a person or a recurring hazard controls it. The checker separates what the controller can guarantee from what it cannot, which is the distinction a hazard analysis needs.</li>
+  <li><strong>Protocols carry hidden assumptions.</strong> MQTT's exactly-once guarantee is only as good as in-order transport. Writing the assumption as a guard means that deleting it produces a counterexample instead of silently weakening the proof.</li>
+  <li><strong>Response time is a safety property.</strong> In the reactor and the SPE anneal, a protection function that was logically correct but one step slower than the hazard was unsafe. Interleaving semantics finds these races without a timing model, as long as the race is modeled as a choice.</li>
+  <li><strong>Counterexamples also find over-strong requirements.</strong> The SPE invariant was wrong, not the design. A refuted property is a question to answer, and sometimes the answer is to fix the specification.</li>
+  <li><strong>Formal models need primary sources.</strong> Four drafts changed after research, and in each case the model was internally consistent and verified before the correction. A proof shows that the model meets its specification. Only sources show that the specification matches the world.</li>
+</ul>
+
+<h2 id="limits"><span class="secno">7</span>Limitations and threats to validity</h2>
+<ul>
+  <li><strong>Abstraction.</strong> Continuous quantities are integer bands and time is discrete steps. Claims are about supervisory logic and per-step bounds. Dense-time and hybrid properties need timed or hybrid automata.</li>
+  <li><strong>SMT encoding.</strong> Calls to user-defined functions inside a contract are not unfolded into the SMT query. The 2oo3 trip written as a call to <code>vote_2oo3</code> is only bounded-checked, so the shipped model inlines it. The seeded file <code>reactor_trip_via_call.bil</code> documents this.</li>
+  <li><strong>Bounded cross-check cost.</strong> The bounded sampler that runs beside SMT enumerates the product of every parameter's sample domain. A function with a record and four integer parameters took 59 seconds to verify in a debug build, so the navigation model passes records instead. A sample cap is on the roadmap.</li>
+  <li><strong>Arithmetic.</strong> SMT reasons over unbounded integers, while execution uses checked 64-bit integers that stop on overflow. Proofs therefore cover the intended mathematics, and execution fails loudly outside it.</li>
+  <li><strong>Sources.</strong> Several standards were read only through secondary quotations, and those figures are marked in the citations. Parameters in the models are illustrative, not compliance values.</li>
+  <li><strong>Assurance.</strong> <code>bil</code> is not a qualified tool under IEC 61508, ISO 26262, IEC 62304 or DO-330, and these models have not been reviewed by domain safety assessors. They demonstrate method, not certification evidence.</li>
+</ul>
+
+<h2 id="roadmap"><span class="secno">8</span>Roadmap</h2>
+<ul>
+  <li>Unfold or inline non-recursive user functions in the SMT encoding, so contracts can call helpers.</li>
+  <li>Cap and randomize the bounded cross-check, with the sample budget reported.</li>
+  <li>Clocks and timed guards in <code>system</code> blocks, for response-time properties that are currently encoded as priority.</li>
+  <li>A refinement path from banded models to continuous controllers, ending in Verus-checked Rust through <code>bil emit-verus</code>.</li>
+  <li>Tool-qualification evidence: requirements tracing, coverage and independent test suites for the verifier itself.</li>
+</ul>
+
+<h2 id="reproduce"><span class="secno">9</span>Reproduce</h2>
+<p>Requires Rust and z3 on <code>PATH</code>.</p>
+<pre class="cmd"><code>cargo build --release
+B=target/release/bil
+for f in examples/domains/*.bil; do $B verify "$f" &amp;&amp; $B model-check "$f" &amp;&amp; $B run "$f"; done
+$B model-check examples/domains/seeded_bugs/spe_slow_thermal_loop.bil   # exits 1 with a trace
+cargo test --test domain_examples                                       # the whole suite as a test
+python3 docs/whitepaper/build.py                                        # rebuild this page from live runs</code></pre>
+
+<h2 id="references">References</h2>
+<p>Generated from <code>docs/whitepaper/CITATIONS.md</code>. Tiers: <span class="tier tier-A">A</span> standard, specification or regulator; <span class="tier tier-B">B</span> peer-reviewed or scholarly; <span class="tier tier-C">C</span> manufacturer or patent; <span class="tier tier-D">D</span> secondary, used only to corroborate.</p>
+</div>
+[[refs]]
+</article>
+</div>
