@@ -285,7 +285,7 @@ flowchart LR
 <ul>
   <li><span class="status ok">PROVED (by z3)</span>: the SMT solver <span class="cites">[<a class="cite" href="https://doi.org/10.1007/978-3-540-78800-3_24" title="L. de Moura, N. Bjørner, &quot;Z3: An Efficient SMT Solver,&quot; TACAS 2008, LNCS 4963. ">demoura2008</a>]</span> showed the negated condition unsatisfiable.</li>
   <li><span class="status bad">REFUTED</span>: a counterexample, with concrete values recovered from the solver's model, for example <code>{ x = 37 }</code>.</li>
-  <li><span class="status warn">BOUNDED (n samples)</span>: only sampled, either every combination of the parameters' sample values or, when there are more than 10,000, a fixed-seed sample of 10,000 shown as <code>n of m samples</code>. <code>bil verify</code> exits with status 1 in that case unless <code>--allow-bounded</code> is given, so sampled evidence is never mistaken for a proof.</li>
+  <li><span class="status warn">BOUNDED (n samples)</span>: only sampled, either every combination of the parameters' sample values or, when there are more than 10,000, 10,000 of them, chosen to cover every pair of parameter values where that fits, shown as <code>n of m samples</code>. <code>bil verify</code> exits with status 1 in that case unless <code>--allow-bounded</code> is given, so sampled evidence is never mistaken for a proof.</li>
 </ul>
 
 <h3>Model checking</h3>
@@ -776,8 +776,8 @@ fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -&gt; Bool
 <h2 id="limits"><span class="secno">7</span>Limitations and threats to validity</h2>
 <ul>
   <li><strong>Abstraction.</strong> Continuous quantities are integer bands and time is discrete steps. Claims are about supervisory logic and per-step bounds. Dense-time and hybrid properties need timed or hybrid automata.</li>
-  <li><strong>SMT encoding.</strong> Calls to user-defined functions are unfolded into the SMT query, together with the callee's <code>requires</code> and <code>ensures</code> checks that execution performs on every call. Recursive calls, and calls inside a quantifier to a function that has a contract, are not unfolded, so those obligations are only bounded-checked.</li>
-  <li><strong>Bounded cross-check coverage.</strong> The bounded sampler that runs beside SMT tries every combination of the parameters' sample values only while there are at most 10,000. Beyond that it evaluates a fixed-seed sample of 10,000 that uses every sample value at least once, so a counterexample that needs one particular combination can be missed. SMT remains the proof; the sampler is a cross-check and a source of readable counterexamples.</li>
+  <li><strong>SMT encoding.</strong> Calls to user-defined functions are unfolded into the SMT query, together with the callee's <code>requires</code> and <code>ensures</code> checks that execution performs on every call. A recursive call to a function that declares a <code>variant</code> is replaced by the function's own <code>ensures</code>, after checking its <code>requires</code> and that the variant decreases; that is a proof by induction. Recursive calls to a function without a <code>variant</code>, and calls inside a quantifier to a function that has a contract, are not encoded, so those obligations are only bounded-checked.</li>
+  <li><strong>Bounded cross-check coverage.</strong> The bounded sampler that runs beside SMT tries every combination of the parameters' sample values only while there are at most 10,000. Beyond that it evaluates 10,000 combinations, starting with a pairwise covering array, so every pair of sample values of every two parameters is tried together, and filling the rest with a fixed-seed sample. A counterexample that needs three or more parameters at particular values at once can still be missed. SMT remains the proof; the sampler is a cross-check and a source of readable counterexamples.</li>
   <li><strong>Arithmetic.</strong> SMT reasons over unbounded integers, while execution uses checked 64-bit integers that stop on overflow. Proofs therefore cover the intended mathematics, and execution fails loudly outside it.</li>
   <li><strong>Sources.</strong> Several standards were read only through secondary quotations, and those figures are marked in the citations. Parameters in the models are illustrative, not compliance values.</li>
   <li><strong>Assurance.</strong> <code>bil</code> is not a qualified tool under IEC 61508, ISO 26262, IEC 62304 or DO-330, and these models have not been reviewed by domain safety assessors. They demonstrate method, not certification evidence.</li>
@@ -785,8 +785,6 @@ fn high_temp_trip(t1: Int, t2: Int, t3: Int, setpoint: Int) -&gt; Bool
 
 <h2 id="roadmap"><span class="secno">8</span>Roadmap</h2>
 <ul>
-  <li>Use proved callee contracts in place of unfolding, so recursive functions can be proved modularly.</li>
-  <li>Pairwise (covering-array) sampling for the bounded cross-check above its budget, so every pair of parameter values is tried.</li>
   <li>Clocks and timed guards in <code>system</code> blocks, for response-time properties that are currently encoded as priority.</li>
   <li>A refinement path from banded models to continuous controllers, ending in Verus-checked Rust through <code>bil emit-verus</code>.</li>
   <li>Tool-qualification evidence: requirements tracing, coverage and independent test suites for the verifier itself.</li>

@@ -817,9 +817,10 @@ pub struct Samples {
 }
 
 /// Chooses which assignments (one index per domain) to evaluate. When the product of `sizes` fits
-/// `budget`, every assignment is returned in lexicographic order. Otherwise the result is a
-/// fixed-seed sample: first assignments that together use every value of every domain, then
-/// distinct pseudo-random assignments up to `budget`.
+/// `budget`, every assignment is returned in lexicographic order. Otherwise the result starts with
+/// a pairwise covering array, so every pair of values of every two domains appears together, when
+/// one fits the budget, or else with assignments that together use every value of every domain.
+/// Distinct fixed-seed pseudo-random assignments fill the rest of the budget.
 fn plan_samples(sizes: &[usize], budget: usize) -> (Vec<Vec<usize>>, usize) {
     let space = sizes.iter().fold(1usize, |acc, &n| acc.saturating_mul(n));
     if space == 0 {
@@ -847,9 +848,13 @@ fn plan_samples(sizes: &[usize], budget: usize) -> (Vec<Vec<usize>>, usize) {
 
     let mut seen = BTreeSet::new();
     let mut plan = Vec::with_capacity(budget);
-    let widest = sizes.iter().copied().max().unwrap_or(0);
-    for i in 0..widest.min(budget) {
-        let a: Vec<usize> = sizes.iter().map(|&n| i % n).collect();
+    let first = pairwise_rows(sizes, budget).unwrap_or_else(|| {
+        let widest = sizes.iter().copied().max().unwrap_or(0);
+        (0..widest.min(budget))
+            .map(|i| sizes.iter().map(|&n| i % n).collect())
+            .collect()
+    });
+    for a in first.into_iter().take(budget) {
         if seen.insert(a.clone()) {
             plan.push(a);
         }
@@ -873,6 +878,90 @@ fn plan_samples(sizes: &[usize], budget: usize) -> (Vec<Vec<usize>>, usize) {
         }
     }
     (plan, space)
+}
+
+/// A pairwise covering array over domains of `sizes`, built with the deterministic IPOG strategy
+/// (Lei and Tai): cover all pairs of the two largest domains, then add one domain at a time, first
+/// extending each row with the value that covers the most new pairs, then adding rows for the pairs
+/// still missing. `None` when the two largest domains alone need more than `budget` rows.
+fn pairwise_rows(sizes: &[usize], budget: usize) -> Option<Vec<Vec<usize>>> {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&d| std::cmp::Reverse(sizes[d]));
+    let s: Vec<usize> = order.iter().map(|&d| sizes[d]).collect();
+    if s.len() < 2 || s[0].checked_mul(s[1])? > budget {
+        return None;
+    }
+    let k = s.len();
+    let mut rows: Vec<Vec<Option<usize>>> = Vec::with_capacity(s[0] * s[1]);
+    for a in 0..s[0] {
+        for b in 0..s[1] {
+            let mut row = vec![None; k];
+            row[0] = Some(a);
+            row[1] = Some(b);
+            rows.push(row);
+        }
+    }
+    for p in 2..k {
+        let np = s[p];
+        // uncovered[j][a * np + b]: value `a` of domain `j` has not yet met value `b` of domain `p`.
+        let mut uncovered: Vec<Vec<bool>> = (0..p).map(|j| vec![true; s[j] * np]).collect();
+        for (r, row) in rows.iter_mut().enumerate() {
+            let gain = |b: usize| {
+                (0..p)
+                    .filter(|&j| row[j].is_some_and(|a| uncovered[j][a * np + b]))
+                    .count()
+            };
+            // Ties go to the first value at or after this row's position, which spreads values
+            // across rows.
+            let best = (0..np)
+                .max_by_key(|&b| (gain(b), std::cmp::Reverse((b + np - r % np) % np)))
+                .unwrap_or(0);
+            row[p] = Some(best);
+            for j in 0..p {
+                if let Some(a) = row[j] {
+                    uncovered[j][a * np + best] = false;
+                }
+            }
+        }
+        for j in 0..p {
+            for a in 0..s[j] {
+                for b in 0..np {
+                    if !uncovered[j][a * np + b] {
+                        continue;
+                    }
+                    match rows
+                        .iter_mut()
+                        .find(|row| row[p] == Some(b) && row[j].is_none())
+                    {
+                        Some(row) => row[j] = Some(a),
+                        None => {
+                            if rows.len() >= budget {
+                                return None;
+                            }
+                            let mut row = vec![None; k];
+                            row[j] = Some(a);
+                            row[p] = Some(b);
+                            rows.push(row);
+                        }
+                    }
+                    uncovered[j][a * np + b] = false;
+                }
+            }
+        }
+    }
+    // Unconstrained positions take a value that varies by row, then domains go back in input order.
+    Some(
+        rows.iter()
+            .enumerate()
+            .map(|(r, row)| {
+                let mut out = vec![0; k];
+                for (i, &d) in order.iter().enumerate() {
+                    out[d] = row[i].unwrap_or(r % s[i]);
+                }
+                out
+            })
+            .collect(),
+    )
 }
 
 /// Evaluates `check` on each planned assignment of `domains` until it reports a counterexample.
@@ -1181,6 +1270,24 @@ mod sample_plan_tests {
             assert_eq!(used.len(), n, "every value of domain {d} is tried");
         }
         assert_eq!(plan_samples(&sizes, 500).0, plan, "sampling is deterministic");
+    }
+
+    #[test]
+    fn sampled_plans_cover_every_pair_of_values() {
+        let sizes = [5, 12, 3, 9, 7, 12, 4];
+        let (plan, space) = plan_samples(&sizes, 2_000);
+        assert!(space > 2_000);
+        for d in 0..sizes.len() {
+            for e in d + 1..sizes.len() {
+                let pairs: BTreeSet<(usize, usize)> = plan.iter().map(|a| (a[d], a[e])).collect();
+                assert_eq!(pairs.len(), sizes[d] * sizes[e], "domains {d} and {e}");
+            }
+        }
+        let rows = pairwise_rows(&sizes, 2_000).unwrap();
+        assert!(rows.len() < 300, "covering array stays small: {}", rows.len());
+        assert!(pairwise_rows(&[20; 12], SAMPLE_BUDGET).unwrap().len() < 1_000);
+        // When the two largest domains alone exceed the budget, pairwise coverage is not attempted.
+        assert_eq!(pairwise_rows(&[200, 100, 3], 10_000), None);
     }
 
     #[test]
