@@ -112,6 +112,12 @@ const SEEDED: &[(&str, &str, i32, &str)] = &[
         "LTL FAILED] temporal `StopIsNotPermanent`",
     ),
     (
+        "spe_late_cutoff.bil",
+        "model-check",
+        1,
+        "Safety Invariant 'Deadline_CutOnDetect' violated",
+    ),
+    (
         "spe_overtemp_only_in_soak.bil",
         "model-check",
         1,
