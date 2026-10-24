@@ -50,6 +50,21 @@
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media print {
+  .toc { display: none; }
+  .page { display: block; max-width: none; padding: 0; }
+  body { font-size: 10.5pt; }
+  pre.code, pre.trace { white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre, figure, .table-wrap, ol.refs li, .figures { break-inside: avoid; }
+  div.table-wrap { overflow: visible; }
+  .table-wrap table { font-size: 8pt; }
+  .table-wrap th, .table-wrap td { padding: 4px 6px; }
+  .table-wrap th { white-space: normal; }
+  .table-wrap table code { white-space: nowrap; overflow-wrap: normal; word-break: normal; font-size: 7.5pt; }
+  .table-wrap table.stats td:first-child { min-width: 0; }
+  h2, h3, h4 { break-after: avoid; }
+  a { color: inherit; }
+}
 body {
   background: var(--bg);
   color: var(--ink);
@@ -347,7 +362,7 @@ flowchart LR
   <pre class="mermaid">
 stateDiagram-v2
   [*] --> Load
-  Load --> Measure: amorph := 3
+  Load --> Measure: amorphous layer of 3 units
   Measure --> Ramp: SE fit valid (se_ok)
   Measure --> Reject: SE fit rejected
   Ramp --> Soak: temp reaches window (band 6)
