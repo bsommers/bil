@@ -565,7 +565,10 @@ fn test_decide_status_covers_every_verdict_arm() {
     for smt in [Some(&unknown), Some(&skipped), None] {
         assert_eq!(
             decide_status(None, 4, smt),
-            Status::BoundedOnly { samples: 4 }
+            Status::BoundedOnly {
+                samples: 4,
+                space: 4
+            }
         );
     }
 
@@ -640,4 +643,34 @@ fn test_model_check_explores_every_list_valued_state() {
     let v = &reports[0].violations;
     assert!(!v.is_empty(), "invariant violation on [1, 2] was missed");
     assert!(v[0].state_str.contains("[1, 2]"), "{:?}", v[0]);
+}
+
+#[test]
+fn bounded_check_samples_large_spaces_within_budget_and_says_so() {
+    use bil::wp::{Status, SAMPLE_BUDGET};
+    // A List parameter keeps SMT out of it, and the product of five sample domains exceeds the budget.
+    let src = r#"
+        fn total(xs: List<Int>, a: Int, b: Int, c: Int, d: Int) -> Int
+          requires a >= 0 && b >= 0 && c >= 0 && d >= 0
+          ensures  result >= 0
+        = a + b + c + d
+
+        fn bug(xs: List<Int>, a: Int, b: Int, c: Int, d: Int) -> Int
+          requires true
+          ensures  result != 4242
+        = a + b + c + d
+    "#;
+    let obs = verify_source(src).expect("should typecheck");
+    let total = obs.iter().find(|o| o.fn_name == "total").unwrap();
+    match &total.status {
+        Status::BoundedOnly { samples, space } => {
+            assert_eq!(*samples, SAMPLE_BUDGET);
+            assert!(*space > SAMPLE_BUDGET, "{space}");
+            assert!(total.status.to_string().contains(&format!("{samples} of {space} samples")));
+        }
+        other => panic!("expected sampled BoundedOnly, got {other:?}"),
+    }
+    // The fixed-seed sample still hits a = 4242 with b + c + d = 0.
+    let bug = obs.iter().find(|o| o.fn_name == "bug").unwrap();
+    assert!(matches!(bug.status, Status::Refuted { .. }), "{:?}", bug.status);
 }

@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **SMT proofs see through calls to user-defined functions.** Before, a contract whose body or clauses called another `fn` could not be encoded for the solver, so it was only sampled (`BOUNDED`). Each call is now unfolded into the callee's body. The query also requires the callee's `requires` and `ensures` (and those of a refined `spec`) at the call site, guarded by the `&&`, `||` and `=>` short-circuits around it, because execution checks them on every call. A call that breaks the callee's precondition is therefore refuted even at values the sampler never tries. Recursive calls and calls nested more than 16 deep are not unfolded, and stay bounded. `examples/domains/process_safety_reactor.bil` now calls `vote_2oo3` instead of inlining it. The seeded bug `reactor_trip_via_call.bil`, which only documented the old limitation, is replaced by `reactor_trip_shared_input.bil`, a voter wiring fault caught through the unfolded call.
 
+### Changed
+- **The bounded cross-check has a sample budget.** It used to evaluate every combination of every parameter's sample values, which grows exponentially: a `do … od` function with a record and four `Int` parameters took 12 seconds in a release build (59 in debug). Up to 10,000 combinations are still all evaluated, in the same order as before, so existing results and counterexamples are unchanged. Above that, `bil` evaluates a fixed-seed sample of 10,000 distinct combinations that first uses every sample value of every parameter, and reports it as `BOUNDED (10000 of 19683 samples)`. The same function now verifies in 0.14 seconds. `Status::BoundedOnly` gains a `space` field (also in JSON output); `decide_status_sampled` and `SAMPLE_BUDGET` are new in `bil::wp`.
+
 ## [v0.6.0] - 2026-10-23
 
 ### Added

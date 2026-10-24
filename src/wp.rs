@@ -15,7 +15,8 @@ use std::fmt;
 pub enum Status {
     Proved { by: String },
     Refuted { counterexample: String },
-    BoundedOnly { samples: usize },
+    /// `samples` assignments were evaluated out of a space of `space` (equal when exhaustive).
+    BoundedOnly { samples: usize, space: usize },
     Unknown { reason: String },
 }
 
@@ -24,7 +25,10 @@ impl fmt::Display for Status {
         match self {
             Status::Proved { by } => write!(f, "PROVED (by {})", by),
             Status::Refuted { .. } => write!(f, "REFUTED"),
-            Status::BoundedOnly { samples } => write!(f, "BOUNDED ({} samples)", samples),
+            Status::BoundedOnly { samples, space } if space > samples => {
+                write!(f, "BOUNDED ({} of {} samples)", samples, space)
+            }
+            Status::BoundedOnly { samples, .. } => write!(f, "BOUNDED ({} samples)", samples),
             Status::Unknown { reason } => write!(f, "UNKNOWN ({})", reason),
         }
     }
@@ -35,6 +39,16 @@ pub fn decide_status(
     samples: usize,
     smt: Option<&ProverResult>,
 ) -> Status {
+    decide_status_sampled(bounded_ce, Samples { evaluated: samples, space: samples }, smt)
+}
+
+/// [`decide_status`] for a bounded check that may have sampled only part of its space.
+pub fn decide_status_sampled(
+    bounded_ce: Option<String>,
+    samples: Samples,
+    smt: Option<&ProverResult>,
+) -> Status {
+    let Samples { evaluated, space } = samples;
     if let Some(ce) = bounded_ce {
         return Status::Refuted { counterexample: ce };
     }
@@ -47,9 +61,12 @@ pub fn decide_status(
                 .unwrap_or_else(|| format!("SMT model: {}", stdout.trim())),
         },
         Some((Verdict::Skipped, _, _, _)) | Some((Verdict::Unknown, _, _, _)) | None
-            if samples > 0 =>
+            if evaluated > 0 =>
         {
-            Status::BoundedOnly { samples }
+            Status::BoundedOnly {
+                samples: evaluated,
+                space,
+            }
         }
         Some((_, _, _, detail)) => Status::Unknown {
             reason: detail.to_string(),
@@ -256,7 +273,7 @@ fn build_vc_obligation(
         (None, None, None)
     };
 
-    let status = decide_status(ce.clone(), samples, smt_res.as_ref());
+    let status = decide_status_sampled(ce.clone(), samples, smt_res.as_ref());
     let verified = matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
     let counterexample = match &status {
         Status::Refuted { counterexample } => Some(counterexample.clone()),
@@ -402,7 +419,7 @@ fn build_vc_obligations_batch(
                 None => smt_res,
             };
             let agr = evaluate_vc_agreement(bounded_ok, smt_res.verdict);
-            let status = decide_status(ce.clone(), samples, Some(&smt_res));
+            let status = decide_status_sampled(ce.clone(), samples, Some(&smt_res));
             let verified = matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
             let counterexample = match &status {
                 Status::Refuted { counterexample } => Some(counterexample.clone()),
@@ -556,7 +573,7 @@ fn verify_program_inner(
                             } else {
                                 (None, None, None)
                             };
-                        let status = decide_status(ce_post.clone(), samples_post, smt_res.as_ref());
+                        let status = decide_status_sampled(ce_post.clone(), samples_post, smt_res.as_ref());
                         let verified =
                             matches!(status, Status::Proved { .. } | Status::BoundedOnly { .. });
                         let counterexample = match &status {
@@ -752,7 +769,7 @@ fn verify_program_inner(
                                 } else {
                                     (None, None, None)
                                 };
-                            let status = decide_status(ce.clone(), samples, smt_res.as_ref());
+                            let status = decide_status_sampled(ce.clone(), samples, smt_res.as_ref());
                             let verified = matches!(
                                 status,
                                 Status::Proved { .. } | Status::BoundedOnly { .. }
@@ -788,14 +805,122 @@ fn verify_program_inner(
     obligations
 }
 
-/// Bounded symbolic/exhaustive domain solver for Verification Conditions
+/// Most parameter assignments the bounded cross-check evaluates for one obligation. Spaces up to
+/// this size are enumerated exhaustively; larger ones get a deterministic sample of this size.
+pub const SAMPLE_BUDGET: usize = 10_000;
+
+/// How many assignments a bounded check evaluated, out of how many its sample domains span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Samples {
+    pub evaluated: usize,
+    pub space: usize,
+}
+
+/// Chooses which assignments (one index per domain) to evaluate. When the product of `sizes` fits
+/// `budget`, every assignment is returned in lexicographic order. Otherwise the result is a
+/// fixed-seed sample: first assignments that together use every value of every domain, then
+/// distinct pseudo-random assignments up to `budget`.
+fn plan_samples(sizes: &[usize], budget: usize) -> (Vec<Vec<usize>>, usize) {
+    let space = sizes.iter().fold(1usize, |acc, &n| acc.saturating_mul(n));
+    if space == 0 {
+        return (Vec::new(), 0);
+    }
+    if space <= budget {
+        let mut plan = Vec::with_capacity(space);
+        let mut idx = vec![0usize; sizes.len()];
+        loop {
+            plan.push(idx.clone());
+            let mut d = sizes.len();
+            loop {
+                if d == 0 {
+                    return (plan, space);
+                }
+                d -= 1;
+                idx[d] += 1;
+                if idx[d] < sizes[d] {
+                    break;
+                }
+                idx[d] = 0;
+            }
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut plan = Vec::with_capacity(budget);
+    let widest = sizes.iter().copied().max().unwrap_or(0);
+    for i in 0..widest.min(budget) {
+        let a: Vec<usize> = sizes.iter().map(|&n| i % n).collect();
+        if seen.insert(a.clone()) {
+            plan.push(a);
+        }
+    }
+    // xorshift64*, fixed seed: the same program always gets the same samples.
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut attempts = 0;
+    while plan.len() < budget && attempts < budget * 8 {
+        attempts += 1;
+        let a: Vec<usize> = sizes
+            .iter()
+            .map(|&n| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+            })
+            .collect();
+        if seen.insert(a.clone()) {
+            plan.push(a);
+        }
+    }
+    (plan, space)
+}
+
+/// Evaluates `check` on each planned assignment of `domains` until it reports a counterexample.
+fn search_samples(
+    domains: &[(String, Vec<Value>)],
+    mut check: impl FnMut(&BTreeMap<String, Value>) -> Option<String>,
+) -> (bool, Option<String>, Samples) {
+    let sizes: Vec<usize> = domains.iter().map(|(_, vals)| vals.len()).collect();
+    let (plan, space) = plan_samples(&sizes, SAMPLE_BUDGET);
+    let samples = Samples {
+        evaluated: plan.len(),
+        space,
+    };
+    let mut env = BTreeMap::new();
+    for assignment in &plan {
+        for ((name, vals), &i) in domains.iter().zip(assignment) {
+            env.insert(name.clone(), vals[i].clone());
+        }
+        if let Some(ce) = check(&env) {
+            return (false, Some(ce), samples);
+        }
+    }
+    (true, None, samples)
+}
+
+/// Loads the program's types, functions and specs into a fresh interpreter for bounded checks.
+fn bounded_interpreter(program: &Program, ontology: &OntologyRegistry) -> Interpreter {
+    let mut interp = Interpreter::new(ontology.clone(), 42, false);
+    let _ = interp.run_program(&Program {
+        expr_spans: Vec::new(),
+        items: program
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::TypeDecl(_) | Item::FnDecl(_) | Item::Spec(_)))
+            .cloned()
+            .collect(),
+    });
+    interp
+}
+
+/// Bounded domain search for a Verification Condition
 fn check_vc_bounded(
     program: &Program,
     ontology: &OntologyRegistry,
     fn_params: &[Param],
     state_params: &[Param],
     vc: &Expr,
-) -> (bool, Option<String>, usize) {
+) -> (bool, Option<String>, Samples) {
     let mut all_params = Vec::new();
     let mut seen = BTreeSet::new();
     for p in fn_params.iter().chain(state_params.iter()) {
@@ -816,25 +941,18 @@ fn check_vc_bounded(
             )
         })
         .collect();
-    let samples = domains
-        .iter()
-        .map(|(_, vals)| vals.len().max(1))
-        .product::<usize>();
 
-    let mut interp = Interpreter::new(ontology.clone(), 42, false);
-    let _ = interp.run_program(&Program {
-        expr_spans: Vec::new(),
-        items: program
-            .items
-            .iter()
-            .filter(|i| matches!(i, Item::TypeDecl(_) | Item::FnDecl(_) | Item::Spec(_)))
-            .cloned()
-            .collect(),
-    });
-
-    let mut env = BTreeMap::new();
-    let (ok, ce) = search_counterexample(&mut interp, &domains, 0, &mut env, vc);
-    (ok, ce, samples)
+    let mut interp = bounded_interpreter(program, ontology);
+    search_samples(&domains, |env| match interp.eval_expr(vc, env) {
+        Ok(Value::Bool(true)) => None,
+        Ok(Value::Bool(false)) => Some(format_env_assignment(env)),
+        Ok(other) => Some(format!(
+            "{} -> non-boolean VC: {}",
+            format_env_assignment(env),
+            other
+        )),
+        Err(e) => Some(format!("{} -> {}", format_env_assignment(env), e)),
+    })
 }
 
 fn check_refinement_execution(
@@ -842,7 +960,7 @@ fn check_refinement_execution(
     ontology: &OntologyRegistry,
     f: &FnDecl,
     post: &Expr,
-) -> (bool, Option<String>, usize) {
+) -> (bool, Option<String>, Samples) {
     let mut extra_ints = BTreeSet::new();
     if let Some(req) = &f.requires {
         extract_int_constants(req, &mut extra_ints);
@@ -860,99 +978,25 @@ fn check_refinement_execution(
             )
         })
         .collect();
-    let samples = domains
-        .iter()
-        .map(|(_, vals)| vals.len().max(1))
-        .product::<usize>();
 
-    let mut interp = Interpreter::new(ontology.clone(), 42, false);
-    let _ = interp.run_program(&Program {
-        expr_spans: Vec::new(),
-        items: program
-            .items
-            .iter()
-            .filter(|i| matches!(i, Item::TypeDecl(_) | Item::FnDecl(_) | Item::Spec(_)))
-            .cloned()
-            .collect(),
-    });
-
+    let mut interp = bounded_interpreter(program, ontology);
     let pre = f.requires.clone().unwrap_or(Expr::Bool(true));
-    let mut env = BTreeMap::new();
-    let (ok, ce) = search_fn_post(&mut interp, &domains, 0, &mut env, f, &pre, post);
-    (ok, ce, samples)
-}
-
-fn search_fn_post(
-    interp: &mut Interpreter,
-    domains: &[(String, Vec<Value>)],
-    idx: usize,
-    env: &mut BTreeMap<String, Value>,
-    f: &FnDecl,
-    pre: &Expr,
-    post: &Expr,
-) -> (bool, Option<String>) {
-    if idx >= domains.len() {
-        if interp.eval_expr(pre, env).unwrap_or(Value::Bool(false)) != Value::Bool(true) {
-            return (true, None);
+    search_samples(&domains, |env| {
+        if interp.eval_expr(&pre, env).unwrap_or(Value::Bool(false)) != Value::Bool(true) {
+            return None;
         }
         match interp.eval_expr(&f.body, env) {
             Ok(res) => {
                 let mut post_env = env.clone();
-                post_env.insert("result".into(), res.clone());
+                post_env.insert("result".into(), res);
                 match interp.eval_expr(post, &post_env) {
-                    Ok(Value::Bool(true)) => (true, None),
-                    _ => (false, Some(format_env_assignment(&post_env))),
+                    Ok(Value::Bool(true)) => None,
+                    _ => Some(format_env_assignment(&post_env)),
                 }
             }
-            Err(e) => (false, Some(format!("{} -> {}", format_env_assignment(env), e))),
+            Err(e) => Some(format!("{} -> {}", format_env_assignment(env), e)),
         }
-    } else {
-        let (vname, vals) = &domains[idx];
-        for v in vals {
-            env.insert(vname.clone(), v.clone());
-            let (ok, ce) = search_fn_post(interp, domains, idx + 1, env, f, pre, post);
-            if !ok {
-                return (false, ce);
-            }
-        }
-        env.remove(vname);
-        (true, None)
-    }
-}
-
-fn search_counterexample(
-    interp: &mut Interpreter,
-    domains: &[(String, Vec<Value>)],
-    idx: usize,
-    env: &mut BTreeMap<String, Value>,
-    vc: &Expr,
-) -> (bool, Option<String>) {
-    if idx >= domains.len() {
-        match interp.eval_expr(vc, env) {
-            Ok(Value::Bool(true)) => (true, None),
-            Ok(Value::Bool(false)) => (false, Some(format_env_assignment(env))),
-            Ok(other) => (
-                false,
-                Some(format!(
-                    "{} -> non-boolean VC: {}",
-                    format_env_assignment(env),
-                    other
-                )),
-            ),
-            Err(e) => (false, Some(format!("{} -> {}", format_env_assignment(env), e))),
-        }
-    } else {
-        let (vname, vals) = &domains[idx];
-        for v in vals {
-            env.insert(vname.clone(), v.clone());
-            let (ok, ce) = search_counterexample(interp, domains, idx + 1, env, vc);
-            if !ok {
-                return (false, ce);
-            }
-        }
-        env.remove(vname);
-        (true, None)
-    }
+    })
 }
 
 fn format_env_assignment(env: &BTreeMap<String, Value>) -> String {
@@ -1074,5 +1118,51 @@ fn sample_domain_for_type(
             lists
         }
         _ => vec![Value::Unit],
+    }
+}
+
+#[cfg(test)]
+mod sample_plan_tests {
+    use super::*;
+
+    #[test]
+    fn small_spaces_are_enumerated_in_lexicographic_order() {
+        let (plan, space) = plan_samples(&[2, 3], 100);
+        assert_eq!(space, 6);
+        assert_eq!(
+            plan,
+            vec![
+                vec![0, 0],
+                vec![0, 1],
+                vec![0, 2],
+                vec![1, 0],
+                vec![1, 1],
+                vec![1, 2]
+            ]
+        );
+        assert_eq!(plan_samples(&[], 100), (vec![vec![]], 1));
+        assert_eq!(plan_samples(&[3, 0], 100), (vec![], 0));
+    }
+
+    #[test]
+    fn large_spaces_are_sampled_within_budget_and_cover_every_value() {
+        let sizes = [16, 3, 16, 16, 16, 9];
+        let (plan, space) = plan_samples(&sizes, 500);
+        assert_eq!(space, 16 * 3 * 16 * 16 * 16 * 9);
+        assert_eq!(plan.len(), 500);
+        let distinct: BTreeSet<_> = plan.iter().collect();
+        assert_eq!(distinct.len(), 500, "samples are distinct");
+        for (d, &n) in sizes.iter().enumerate() {
+            let used: BTreeSet<usize> = plan.iter().map(|a| a[d]).collect();
+            assert_eq!(used.len(), n, "every value of domain {d} is tried");
+        }
+        assert_eq!(plan_samples(&sizes, 500).0, plan, "sampling is deterministic");
+    }
+
+    #[test]
+    fn huge_spaces_saturate_instead_of_overflowing() {
+        let (plan, space) = plan_samples(&[1 << 20; 8], 10);
+        assert_eq!(space, usize::MAX);
+        assert_eq!(plan.len(), 10);
     }
 }

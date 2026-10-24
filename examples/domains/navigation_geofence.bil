@@ -22,9 +22,7 @@ fn in_fence(p: Pose, w: Int, h: Int) -> Bool
 // Grid waypoint follower: one cell per step along either axis (the planner may pick
 // either axis nondeterministically). The fence is the box [0, fence.x] × [0, fence.y].
 // Proved: the vehicle never leaves the geofence, the Manhattan distance strictly
-// decreases, and it arrives exactly at the waypoint. (Target and fence are records
-// rather than four Ints: bil's bounded cross-check enumerates the product of every
-// parameter's sample domain, which grows exponentially with the parameter count.)
+// decreases, and it arrives exactly at the waypoint.
 fn goto_waypoint(start: Pose, target: Pose, fence: Pose) -> Pose
   requires fence.x > 0 && fence.y > 0
            && start.x >= 0 && start.x <= fence.x && start.y >= 0 && start.y <= fence.y
