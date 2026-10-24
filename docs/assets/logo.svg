@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" role="img" aria-labelledby="t">
+  <title id="t">bil — Bounded Invariant Logic</title>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.55" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#e879f9"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#c7d2fe"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.5" r="0.55">
+      <stop offset="0" stop-color="#6366f1" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#1e293b"/>
+    </pattern>
+    <filter id="bloom" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="960" height="300" rx="28" fill="#0b0f1a"/>
+  <rect width="960" height="300" rx="28" fill="url(#dots)"/>
+  <rect width="960" height="300" rx="28" fill="url(#glow)"/>
+
+  <!-- Mark: bounds [ ], an invariant loop (do … od), and a verified diamond -->
+  <g fill="none" stroke="url(#accent)" stroke-linecap="square" filter="url(#bloom)">
+    <path d="M122 66 H96 V234 H122" stroke-width="12"/>
+    <path d="M218 66 H244 V234 H218" stroke-width="12"/>
+    <path d="M201 96.3 A62 62 0 1 1 139 96.3" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <path d="M152.5 88.5 L135.4 89.8 L144.2 103.6 Z" fill="#a78bfa"/>
+  <g filter="url(#bloom)">
+    <path d="M170 116 L204 150 L170 184 L136 150 Z" fill="url(#accent)"/>
+  </g>
+  <path d="M155 150 L165 160 L184 139" fill="none" stroke="#0b0f1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Wordmark: geometric b · i · l -->
+  <g fill="none" stroke="url(#ink)" stroke-width="22" stroke-linecap="round">
+    <path d="M345 72 V210"/>
+    <circle cx="390" cy="166" r="44"/>
+    <path d="M476 128 V210"/>
+    <path d="M536 72 V184 Q536 210 562 210"/>
+  </g>
+  <path d="M476 74 L492 90 L476 106 L460 90 Z" fill="url(#accent)" filter="url(#bloom)"/>
+
+  <text x="336" y="258" fill="#7c8db5" font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="17" letter-spacing="5.5">BOUNDED · INVARIANT · LOGIC</text>
+
+  <!-- Flavor: a guarded loop and its proof -->
+  <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="17">
+    <rect x="636" y="66" width="288" height="168" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="658" y="100" fill="#64748b">{ inv: i ≥ 0 }</text>
+    <text x="658" y="128" fill="#c4b5fd">do <tspan fill="#e2e8f0">i &gt; 0</tspan><tspan dx="10" fill="#22d3ee">→</tspan></text>
+    <text x="692" y="154" fill="#e2e8f0">i := i - 1</text>
+    <text x="658" y="180" fill="#c4b5fd">od</text>
+    <text x="658" y="214" fill="#34d399">✓ wp proved · z3</text>
+  </g>
+</svg>

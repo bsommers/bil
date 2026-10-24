@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="bil — Bounded Invariant Logic" width="720">
+</p>
+
 # `bil` — Bounded Invariant Logic
 
 `bil` is a mathematically grounded, statically typed formal verification, ontology, and functional data language written in Rust. It unifies:
