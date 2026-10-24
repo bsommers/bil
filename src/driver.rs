@@ -63,7 +63,9 @@ pub fn prove_subsumption_source(
 pub fn parse_source_typed(src: &str) -> Result<Program, crate::error::BilError> {
     let tokens = lexer::tokenize(src)?;
     let mut parser = Parser::new(tokens);
-    Ok(parser.parse_program()?)
+    let mut program = parser.parse_program()?;
+    crate::timed::lower_program(&mut program)?;
+    Ok(program)
 }
 
 pub fn check_source_typed(

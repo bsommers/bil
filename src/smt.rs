@@ -1026,6 +1026,29 @@ pub fn expr_to_smt(
 
             None
         }
+        // `if g -> a [] !g -> b fi` is deterministic, so it is an `ite`. Any other `if..fi`
+        // is nondeterministic or can abort and has no single SMT value, so it is not encoded.
+        Expr::IfFi { branches } => {
+            let [then_b, else_b] = branches.as_slice() else {
+                return None;
+            };
+            let (GclBody::Expr(a), GclBody::Expr(b)) = (&then_b.body, &else_b.body) else {
+                return None;
+            };
+            let complementary = matches!(
+                &else_b.guard,
+                Expr::Unary { op: UnaryOp::Not, expr } if **expr == then_b.guard
+            );
+            if !complementary {
+                return None;
+            }
+            Some(format!(
+                "(ite {} {} {})",
+                expr_to_smt(&then_b.guard, ontology, entity_var)?,
+                expr_to_smt(a, ontology, entity_var)?,
+                expr_to_smt(b, ontology, entity_var)?
+            ))
+        }
         Expr::Call { func, args } => {
             let b = crate::builtins::BuiltinFn::from_name(func)?;
             let mut smt_args = Vec::with_capacity(args.len());

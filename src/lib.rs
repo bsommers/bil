@@ -14,6 +14,7 @@ pub mod parser;
 pub mod semantics;
 pub mod smt;
 pub mod symbol;
+pub mod timed;
 pub mod types;
 pub mod unfold;
 pub mod verus;
