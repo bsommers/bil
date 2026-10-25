@@ -157,6 +157,10 @@ impl CompilationSession {
         model_check::model_check_program(&self.program, &self.ontology, max_states)
     }
 
+    pub fn symbolic_bmc_unencodable(&self, k: usize) -> Vec<String> {
+        model_check::symbolic_bmc_unencodable(&self.program, &self.ontology, k)
+    }
+
     pub fn symbolic_bmc(&self, k: usize, prover: Prover) -> Vec<model_check::SymbolicBmcReport> {
         model_check::symbolic_bmc_program(&self.program, &self.ontology, k, prover)
     }

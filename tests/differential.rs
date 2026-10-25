@@ -290,7 +290,8 @@ fn test_v050_p1_1_p1_2_p2_1_expr_utils_incremental_vc_and_cli_bmc() {
         "--bmc".into(),
         "3".into(),
     ]);
-    assert_eq!(exit_code, 0);
+    // mutex_protocol has a non-Int/Bool state, so --bmc cannot encode it: that is an error, not a pass.
+    assert_eq!(exit_code, 1);
 
     let exit_code_json = bil::cli::run_cli(&[
         "bil".into(),
@@ -299,7 +300,7 @@ fn test_v050_p1_1_p1_2_p2_1_expr_utils_incremental_vc_and_cli_bmc() {
         "--bmc=3".into(),
         "--json".into(),
     ]);
-    assert_eq!(exit_code_json, 0);
+    assert_eq!(exit_code_json, 1);
 }
 
 

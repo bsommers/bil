@@ -201,3 +201,19 @@ fn lowered_system_keeps_span_table_aligned() {
     program.for_each_expr_postorder(&mut |_| nodes += 1);
     assert_eq!(program.expr_spans.len(), nodes);
 }
+
+#[test]
+fn bmc_reports_systems_it_cannot_encode() {
+    let src = "type Ph = A | B
+system Mixed {
+  state phase: Ph = A
+  state ok: Bool = true
+  invariant Fine: ok
+  transition
+     phase == A -> phase := B
+}
+";
+    let (code, t) = run_with("model-check", &["--bmc", "4"], "bmc_enum", src);
+    assert_ne!(code, Some(0), "{t}");
+    assert!(t.contains("BMC not applicable"), "{t}");
+}
