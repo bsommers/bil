@@ -903,6 +903,27 @@ pub fn symbolic_bmc_program(
     reports
 }
 
+/// Names of systems that have invariants but that `--bmc` cannot encode (a state that is not
+/// `Int`/`Bool`, or an expression outside the SMT subset). They get no report, so the caller
+/// must say so rather than let silence read as "safe".
+pub fn symbolic_bmc_unencodable(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    k: usize,
+) -> Vec<String> {
+    program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::System(sys)
+                if !sys.invariants.is_empty() && emit_symbolic_bmc_smt2(sys, ontology, k).is_none() =>
+            {
+                Some(sys.name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

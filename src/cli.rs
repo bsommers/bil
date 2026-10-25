@@ -542,7 +542,14 @@ pub fn run_cli(args: &[String]) -> i32 {
                             }
                         }
                     }
-                    if any_unsat_violation {
+                    let unencodable = session.symbolic_bmc_unencodable(k);
+                    for name in &unencodable {
+                        eprintln!(
+                            "error: BMC not applicable to system `{name}`: it has a state or expression \
+                             outside the Int/Bool SMT subset, so no verdict was produced"
+                        );
+                    }
+                    if any_unsat_violation || !unencodable.is_empty() {
                         return 1;
                     }
                 } else {

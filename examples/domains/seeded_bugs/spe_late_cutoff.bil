@@ -1,0 +1,197 @@
+// SEEDED BUG — variant of ../semiconductor_se_spe.bil
+// The regrowth bookkeeping step is not held back once the SE signal is latched, so the cut-off can be delayed past its 3 ms bound. Expected: Deadline_CutOnDetect violated.
+// ============================================================================
+// Domain: Semiconductor Manufacturing — Spectroscopic ellipsometry (SE) gating
+// of a solid-phase epitaxy (SPE) anneal, and the high-speed thermal control that
+// drives the amorphous→crystalline state change.
+//
+// Flow: an implant-amorphized Si layer is measured by SE (fit of Ψ(λ), Δ(λ) to an
+// a-Si / c-Si layer model gives the amorphous thickness and a fit MSE). Only wafers
+// with a trustworthy fit enter the anneal. During the soak, in-situ SE tracks the
+// regrowth front; the anneal ends when no amorphous layer remains. The thermal
+// controller must hold the SPE window: too cold and regrowth stalls, too hot and
+// random nucleation turns the layer polycrystalline, and in a pulsed/laser anneal
+// a-Si melting can trigger explosive crystallization.
+//
+// Sources: see docs/whitepaper/CITATIONS.md for every [key] below.
+//   [lohner1996] https://doi.org/10.1143/JJAP.35.5929 — SE multilayer models give the
+//       amorphous/damaged layer thickness of implanted Si, and track it through annealing
+//   [holgado1995] https://doi.org/10.1007/BF01538413 — SE study of a-Si regrowth after implant
+//   [fujiwara1998] https://doi.org/10.1557/PROC-507-939 — real-time SE gives near-surface
+//       temperature and crystalline fraction during solid phase crystallization
+//   [roth1990] APL 57, 1340 (1990), via [johnson2007] https://doi.org/10.1103/PhysRevB.76.045216 —
+//       intrinsic Si SPE: v = 4.64e16 Å/s · exp(-2.7 eV / kT)
+//   [olsonroth1988] https://www.sciencedirect.com/science/article/pii/S0920230788800057 — random
+//       nucleation Ea ≈ 4 eV vs SPE 2.7 eV: nucleation gains on SPE as temperature rises
+//   [thompson1984] https://link.aps.org/doi/10.1103/PhysRevLett.52.2360 — a-Si melts 200±50 K below
+//       c-Si; explosive crystallization at 10–20 m/s leaves fine-grained poly-Si
+//   [norman1991] https://web.stanford.edu/~boyd/papers/temperature_uniformity.html — ramp-rate
+//       limits from slip caused by temperature non-uniformity
+// ============================================================================
+
+concept SeSite {
+  wafer: String,
+  site: Int,
+  a_si_thickness_a: Int,   // amorphous layer thickness from the fit (Å)
+  mse_milli: Int,          // fit mean-squared error × 1000
+  converged: Bool
+}
+
+// Physical plausibility of every SE result, whatever the fitter returned.
+axiom SeThicknessNonNegative:
+  ∀ s ∈ SeSite : s.a_si_thickness_a >= 0
+
+type Disposition = Release | Rework | Scrap
+
+// A site is usable when the regression converged, the fit is good, and the
+// thickness is within the implant recipe's expected amorphization depth. The MSE gate
+// matters: with an unsuitable dielectric-function model SE can overestimate damage
+// [lohner1996], and a converged-but-poor fit is not a measurement.
+fn se_site_valid(s: SeSite, mse_max: Int, t_min: Int, t_max: Int) -> Bool
+  requires mse_max > 0 && 0 <= t_min && t_min < t_max
+  ensures  result <=> (s.converged && s.mse_milli <= mse_max
+                       && s.a_si_thickness_a >= t_min && s.a_si_thickness_a <= t_max)
+=
+  s.converged && s.mse_milli <= mse_max
+  && s.a_si_thickness_a >= t_min && s.a_si_thickness_a <= t_max
+
+// Wafer disposition from the site statistics: at least 80% usable sites and a
+// uniform amorphous layer release the wafer; too few usable fits send it back to
+// metrology; a non-uniform layer (bad implant) is scrapped.
+fn disposition(valid_sites: Int, total_sites: Int, uniform: Bool) -> Disposition
+  requires total_sites > 0 && valid_sites >= 0 && valid_sites <= total_sites
+  ensures  (valid_sites * 10 < total_sites * 8 => result == Rework)
+           && (valid_sites * 10 >= total_sites * 8 && uniform => result == Release)
+           && (valid_sites * 10 >= total_sites * 8 && !uniform => result == Scrap)
+=
+  if valid_sites * 10 < total_sites * 8                   -> Rework
+  [] valid_sites * 10 >= total_sites * 8 && uniform       -> Release
+  [] valid_sites * 10 >= total_sites * 8 && !uniform      -> Scrap
+  fi
+
+// SPE regrowth velocity of intrinsic Si(100), tabulated from the Arrhenius law
+// v = 4.64e16 Å/s · exp(-2.7 eV / kT) [roth1990]: 1.4 Å/s at 550 °C, 12.1 at 600 °C,
+// 84 at 650 °C. Each band uses the rate at its lower edge (rounded down), so the
+// regrowth time computed from it is never optimistic. Above the recipe's upper limit
+// the rate is treated as unusable: random nucleation (Ea ≈ 4 eV) gains on SPE
+// (Ea ≈ 2.7 eV) as temperature rises [olsonroth1988].
+fn spe_rate(temp_c: Int, t_upper: Int) -> Int
+  requires t_upper > 650
+  ensures  result >= 0 && (temp_c < 550 => result == 0) && (temp_c >= t_upper => result == 0)
+           && (temp_c >= 550 && temp_c < t_upper => result > 0)
+=
+  if temp_c < 550                          -> 0
+  [] temp_c >= 550 && temp_c < 600         -> 1
+  [] temp_c >= 600 && temp_c < 650         -> 12
+  [] temp_c >= 650 && temp_c < t_upper     -> 84
+  [] temp_c >= t_upper                     -> 0
+  fi
+
+// Regrowth endpoint: integrate the front velocity tick by tick until the in-situ
+// SE thickness reaches zero. Proved to terminate and to consume the whole layer.
+fn regrowth_ticks(thickness_a: Int, rate: Int) -> Int
+  requires thickness_a >= 0 && rate > 0
+  ensures  result >= 0 && (thickness_a > 0 => result > 0)
+=
+  do rem = thickness_a, ticks = 0
+    invariant rem >= 0 && rem <= thickness_a && ticks >= 0
+              && (rem < thickness_a => ticks > 0)
+    variant   rem
+  :
+     rem >= rate            -> rem := rem - rate, ticks := ticks + 1
+  [] rem < rate && rem > 0  -> rem := 0, ticks := ticks + 1
+  od
+  then ticks
+
+// High-speed lamp/laser setpoint update (one control tick, °C). The new setpoint is
+// slew-limited, because ramp-induced non-uniformity causes slip [norman1991] (RTP ramps
+// typically run 20–100 °C/s [uspto6034356]), and it never exceeds the hard limit,
+// whatever the outer loop demands.
+fn thermal_setpoint(cur: Int, demand: Int, max_step: Int, t_hard: Int) -> Int
+  requires max_step > 0 && cur <= t_hard
+  ensures  result <= t_hard && result - cur <= max_step && cur - result <= max_step
+=
+  if demand > cur + max_step && cur + max_step <= t_hard   -> cur + max_step
+  [] demand > cur + max_step && cur + max_step > t_hard    -> t_hard
+  [] demand < cur - max_step                               -> cur - max_step
+  [] demand >= cur - max_step && demand <= cur + max_step && demand <= t_hard -> demand
+  [] demand >= cur - max_step && demand <= cur + max_step && demand > t_hard  -> t_hard
+  fi
+
+type SpePhase = Load | Measure | Ramp | Soak | Cool | Done | Reject
+
+// Anneal chamber. temp is a band: 0 ambient, 1..5 ramp, 6 SPE window,
+// 7 over-temperature (nucleation risk [olsonroth1988]), 8 a-Si melt: amorphous Si melts
+// ~200 K below crystalline Si and can crystallize explosively [thompson1984].
+// The in-situ SE endpoint (amorph == 0) follows real-time SE practice [fujiwara1998].
+// `excursions` bounds how often lamp drift / latent-heat release can kick the wafer
+// out of the window; the controller must pull it back within one tick each time.
+system SpeAnneal {
+  state phase: SpePhase = Load
+  state se_ok: Bool = false
+  state amorph: Int = 0
+  state temp: Int = 0
+  state lamp: Bool = false
+  state pyro_ok: Bool = true
+  state excursions: Int = 0
+  state detected: Bool = false
+
+  invariant NeverMeltAmorphousSi:   temp <= 7
+  invariant NoAnnealWithoutSe:      (phase == Ramp || phase == Soak) => se_ok
+  invariant NoHeatOnPyrometerFault: !pyro_ok => !lamp
+  invariant RegrowthOnlyAfterSe:    amorph < 3 => se_ok || phase == Load || phase == Measure
+  // Over-temperature only arises from a soak excursion. A pyrometer fault in the middle
+  // of one drops straight to Cool with the lamp off, so the wafer can still be at
+  // band 7 in Cool (the model checker found that trace for a stricter `phase == Soak`).
+  invariant OverTempIsTransient:    temp == 7 => ((phase == Soak || phase == Cool) && excursions >= 1)
+
+  // Scan-cycle timing. The in-situ SE detection signal is latched (`detected`) until a scan
+  // reads it, and the controller must then have the lamp off within the deadline. The 1 ms scan
+  // period and the 3 ms bound are illustrative placeholders, not process figures. Once the
+  // signal is latched, no other Soak step may run ahead of the cut-off (the `!(detected && lamp)`
+  // guards), which is what lets the deadline be proved over every interleaving.
+  clock scan period 1ms
+  deadline CutOnDetect: detected => !lamp within 3ms in phase == Soak
+
+  terminal phase == Done || phase == Reject
+
+  temporal AnnealFinishes: (phase == Ramp) ~> (phase == Done || phase == Reject)
+
+  transition
+     phase == Load                                  -> phase := Measure, amorph := 3
+  [] phase == Measure                               -> se_ok := true, phase := Ramp
+  [] phase == Measure                               -> phase := Reject
+  [] phase == Ramp && pyro_ok && temp < 6           -> temp := temp + 1, lamp := true
+  [] phase == Ramp && temp == 6                     -> phase := Soak
+  [] phase == Soak && temp == 6 && amorph > 0       -> amorph := amorph - 1
+  [] phase == Soak && temp == 6 && excursions < 2 && !(detected && lamp)   -> temp := 7, excursions := excursions + 1
+  [] phase == Soak && temp == 7 && !(detected && lamp)                     -> temp := 6
+  [] phase == Soak && !detected                     -> detected := true
+  [] phase == Soak && detected && lamp              -> lamp := false
+  [] phase == Soak && temp == 6 && amorph == 0      -> phase := Cool, lamp := false
+  [] (phase == Ramp || phase == Soak) && pyro_ok    -> pyro_ok := false, lamp := false, phase := Cool
+  [] phase == Cool && temp > 0                      -> temp := temp - 1
+  [] phase == Cool && temp == 0 && amorph == 0      -> phase := Done
+  [] phase == Cool && temp == 0 && amorph > 0       -> phase := Reject
+}
+
+let sites = [
+  SeSite { wafer: "W07", site: 1, a_si_thickness_a: 412, mse_milli: 1800, converged: true },
+  SeSite { wafer: "W07", site: 2, a_si_thickness_a: 405, mse_milli: 2100, converged: true },
+  SeSite { wafer: "W07", site: 3, a_si_thickness_a: 418, mse_milli: 1650, converged: true },
+  SeSite { wafer: "W07", site: 4, a_si_thickness_a: 409, mse_milli: 9400, converged: true },
+  SeSite { wafer: "W07", site: 5, a_si_thickness_a: 0,   mse_milli: 0,    converged: false }
+]
+
+let good = sites |> where(se_site_valid(_, 3000, 300, 600))
+let thick = good |> map(_.a_si_thickness_a) |> sort_by(_)
+let uniform = ∀ a ∈ thick : ∀ b ∈ thick : a - b <= 25
+let verdict = disposition(count(good), count(sites), uniform)
+let mean_a = (thick |> sum()) / count(thick)
+let ticks_600c = regrowth_ticks(mean_a, spe_rate(600, 680))
+let sp = thermal_setpoint(590, 900, 15, 680)
+
+assert count(good) == 3
+assert verdict == Rework
+assert spe_rate(720, 680) == 0 && spe_rate(625, 680) == 12
+assert sp == 605

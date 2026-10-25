@@ -132,6 +132,7 @@ system SpeAnneal {
   state lamp: Bool = false
   state pyro_ok: Bool = true
   state excursions: Int = 0
+  state detected: Bool = false
 
   invariant NeverMeltAmorphousSi:   temp <= 7
   invariant NoAnnealWithoutSe:      (phase == Ramp || phase == Soak) => se_ok
@@ -141,6 +142,14 @@ system SpeAnneal {
   // of one drops straight to Cool with the lamp off, so the wafer can still be at
   // band 7 in Cool (the model checker found that trace for a stricter `phase == Soak`).
   invariant OverTempIsTransient:    temp == 7 => ((phase == Soak || phase == Cool) && excursions >= 1)
+
+  // Scan-cycle timing. The in-situ SE detection signal is latched (`detected`) until a scan
+  // reads it, and the controller must then have the lamp off within the deadline. The 1 ms scan
+  // period and the 3 ms bound are illustrative placeholders, not process figures. Once the
+  // signal is latched, no other Soak step may run ahead of the cut-off (the `!(detected && lamp)`
+  // guards), which is what lets the deadline be proved over every interleaving.
+  clock scan period 1ms
+  deadline CutOnDetect: detected => !lamp within 3ms in phase == Soak
 
   terminal phase == Done || phase == Reject
 
@@ -152,9 +161,11 @@ system SpeAnneal {
   [] phase == Measure                               -> phase := Reject
   [] phase == Ramp && pyro_ok && temp < 6           -> temp := temp + 1, lamp := true
   [] phase == Ramp && temp == 6                     -> phase := Soak
-  [] phase == Soak && temp == 6 && amorph > 0       -> amorph := amorph - 1
-  [] phase == Soak && temp == 6 && excursions < 2   -> temp := 7, excursions := excursions + 1
-  [] phase == Soak && temp == 7                     -> temp := 6
+  [] phase == Soak && temp == 6 && amorph > 0 && !(detected && lamp)       -> amorph := amorph - 1
+  [] phase == Soak && temp == 6 && excursions < 2 && !(detected && lamp)   -> temp := 7, excursions := excursions + 1
+  [] phase == Soak && temp == 7 && !(detected && lamp)                     -> temp := 6
+  [] phase == Soak && !detected                     -> detected := true
+  [] phase == Soak && detected && lamp              -> lamp := false
   [] phase == Soak && temp == 6 && amorph == 0      -> phase := Cool, lamp := false
   [] (phase == Ramp || phase == Soak) && pyro_ok    -> pyro_ok := false, lamp := false, phase := Cool
   [] phase == Cool && temp > 0                      -> temp := temp - 1

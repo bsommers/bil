@@ -63,7 +63,9 @@ pub fn prove_subsumption_source(
 pub fn parse_source_typed(src: &str) -> Result<Program, crate::error::BilError> {
     let tokens = lexer::tokenize(src)?;
     let mut parser = Parser::new(tokens);
-    Ok(parser.parse_program()?)
+    let mut program = parser.parse_program()?;
+    crate::timed::lower_program(&mut program)?;
+    Ok(program)
 }
 
 pub fn check_source_typed(
@@ -153,6 +155,10 @@ impl CompilationSession {
 
     pub fn model_check(&self, max_states: usize) -> Result<Vec<ModelCheckReport>, String> {
         model_check::model_check_program(&self.program, &self.ontology, max_states)
+    }
+
+    pub fn symbolic_bmc_unencodable(&self, k: usize) -> Vec<String> {
+        model_check::symbolic_bmc_unencodable(&self.program, &self.ontology, k)
     }
 
     pub fn symbolic_bmc(&self, k: usize, prover: Prover) -> Vec<model_check::SymbolicBmcReport> {

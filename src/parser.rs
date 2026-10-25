@@ -60,6 +60,45 @@ impl Parser {
         Ok((e, self.node_spans.split_off(mark)))
     }
 
+    /// `<n><unit>` with unit `us`, `ms` or `s`, as microseconds. Zero is rejected.
+    fn parse_duration_us(&mut self) -> Result<i64, ParseError> {
+        let span = self.span();
+        let n = match self.peek().clone() {
+            Token::Int(n) => {
+                self.advance();
+                n
+            }
+            other => {
+                return Err(ParseError {
+                    message: format!("Expected a duration such as `3ms`, found {:?}", other),
+                    span,
+                })
+            }
+        };
+        let scale = match self.peek().clone() {
+            Token::Ident(u) if u == "us" => 1,
+            Token::Ident(u) if u == "ms" => 1_000,
+            Token::Ident(u) if u == "s" => 1_000_000,
+            other => {
+                return Err(ParseError {
+                    message: format!("Unknown time unit {:?} (expected us, ms or s)", other),
+                    span: self.span(),
+                })
+            }
+        };
+        self.advance();
+        if n <= 0 {
+            return Err(ParseError {
+                message: "Duration must be positive".to_string(),
+                span,
+            });
+        }
+        n.checked_mul(scale).ok_or(ParseError {
+            message: "Duration overflows".to_string(),
+            span,
+        })
+    }
+
     fn span(&self) -> Span {
         self.tokens[self.pos].span
     }
@@ -343,6 +382,8 @@ impl Parser {
         let mut variant = None;
         let mut terminal = None;
         let mut transitions = Vec::new();
+        let (mut clocks, mut deadlines) = (Vec::new(), Vec::new());
+        let mut dl_sp = Vec::new();
         // Members are parsed in source order but stored grouped by kind, so collect each
         // group's expression spans separately and lay them out in field order at the end
         // (see `Program::for_each_expr_postorder`).
@@ -429,6 +470,64 @@ impl Parser {
                         }
                     }
                 }
+                Token::Ident(kw) if kw == "clock" => {
+                    let cspan = self.advance().span;
+                    let cname = self.expect_ident()?;
+                    match self.peek().clone() {
+                        Token::Ident(p) if p == "period" => {
+                            self.advance();
+                        }
+                        other => {
+                            return Err(ParseError {
+                                message: format!("Expected `period`, found {:?}", other),
+                                span: self.span(),
+                            })
+                        }
+                    }
+                    let period_us = self.parse_duration_us()?;
+                    clocks.push(ClockDecl {
+                        name: cname,
+                        period_us,
+                        span: cspan,
+                    });
+                }
+                Token::Ident(kw) if kw == "deadline" => {
+                    let dspan = self.advance().span;
+                    let dname = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let mark = self.node_spans.len();
+                    // Above `=>` in precedence, so the arrow separates latch from response.
+                    let latch = self.parse_expr(7)?;
+                    self.expect(&Token::Implies)?;
+                    let response = self.parse_expr(7)?;
+                    match self.peek().clone() {
+                        Token::Ident(w) if w == "within" => {
+                            self.advance();
+                        }
+                        other => {
+                            return Err(ParseError {
+                                message: format!("Expected `within`, found {:?}", other),
+                                span: self.span(),
+                            })
+                        }
+                    }
+                    let within_us = self.parse_duration_us()?;
+                    let phase = if self.peek() == &Token::In {
+                        self.advance();
+                        Some(self.parse_expr(0)?)
+                    } else {
+                        None
+                    };
+                    dl_sp.extend(self.node_spans.split_off(mark));
+                    deadlines.push(DeadlineDecl {
+                        name: dname,
+                        latch,
+                        response,
+                        within_us,
+                        phase,
+                        span: dspan,
+                    });
+                }
                 other => {
                     return Err(ParseError {
                         message: format!("Unexpected token in system block: {:?}", other),
@@ -440,11 +539,13 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
         self.node_spans.truncate(base);
-        for group in [state_sp, inv_sp, temp_sp, variant_sp, terminal_sp, trans_sp] {
+        for group in [state_sp, inv_sp, temp_sp, variant_sp, terminal_sp, trans_sp, dl_sp] {
             self.node_spans.extend(group);
         }
         Ok(SystemDecl {
             name,
+            clocks,
+            deadlines,
             states,
             invariants,
             temporals,

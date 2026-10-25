@@ -14,7 +14,7 @@
    - Guarded alternatives (`[]`) evaluate all guards simultaneously and choose nondeterministically among enabled branches—verified demonically at proof time and explored exhaustively at model-check time.
    - Nondeterministic selection (`choose x in S : P(x)`) defers implementation details in high-level designs.
 3. **Foundation for Formal Methods (`system` & Explicit-State Model Checking)**:
-   - Reactive concurrent state machines (`system`) with `state`, `invariant`, `variant`, `terminal`, and interleaved guarded `transition` blocks (SPIN / Promela style).
+   - Reactive concurrent state machines (`system`) with `state`, `invariant`, `variant`, `terminal`, and interleaved guarded `transition` blocks (SPIN / Promela style). A `clock` and per-phase `deadline`s state response times in controller scans, checked by the same model checkers.
    - Exhaustive BFS state-space explorer (`bil model-check`) checking safety invariants, deadlock freedom ($\neg BB$), and progress variants with shortest-path counterexample traces.
 4. **OntoLogic Taxonomies, First-Order Logic & Functional Pipelines**:
    - BFO-compatible `concept` hierarchies (`<:`) with compile-time DAG cycle linting and nominal subtyping inside Hindley-Milner type inference.
