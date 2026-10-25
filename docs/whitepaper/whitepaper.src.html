@@ -250,7 +250,7 @@ ol.refs li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap
 <section class="abstract" id="abstract">
   <h2>Abstract</h2>
   <p>Accident and recall investigations keep finding the same class of defect: interlocks, alarms and protocol state machines whose logic was wrong in the design, long before any code ran. <code>bil</code> (Bounded Invariant Logic) is a statically typed language that puts domain ontologies, first-order specifications, Dijkstra's guarded commands and reactive state machines in one source file, and checks them with weakest-precondition proofs, SMT solving and explicit-state model checking. The same file then runs on an interpreter, a bytecode VM or as a native binary.</p>
-  <p>This paper applies <code>bil</code> to fourteen domains, from semiconductor anneal control after spectroscopic ellipsometry to surgical teleoperation, process safety instrumented systems and TLS-style handshakes. Each model encodes requirements taken from standards, regulator reports and peer-reviewed physics, and each source is graded and cited. Across the suite, z3 proves all [[total:proved]] verification obligations with none left to sampling, the model checker explores [[total:states]] states in [[total:systems]] systems and proves [[total:ltl]] liveness properties, and all three execution back ends print identical results. Ten one-line seeded bugs, each modeled on a documented failure mode, are all caught with a concrete counterexample. The research also corrected four of our own first drafts, which is the strongest argument in the paper for tying formal models to primary sources.</p>
+  <p>This paper applies <code>bil</code> to fourteen domains, from semiconductor anneal control after spectroscopic ellipsometry to surgical teleoperation, process safety instrumented systems and TLS-style handshakes. Each model encodes requirements taken from standards, regulator reports and peer-reviewed physics, and each source is graded and cited. Across the suite, z3 proves all [[total:proved]] verification obligations with none left to sampling, the model checker explores [[total:states]] states in [[total:systems]] systems and proves [[total:ltl]] liveness properties, and all three execution back ends print identical results. Eleven one-line seeded bugs, each modeled on a documented failure mode, are all caught with a concrete counterexample. The research also corrected four of our own first drafts, which is the strongest argument in the paper for tying formal models to primary sources.</p>
 </section>
 
 <div class="figures" role="list" aria-label="Headline results">
@@ -324,10 +324,11 @@ flowchart LR
 <h2 id="results"><span class="secno">4</span>Results</h2>
 <p>Every model below verifies with all obligations proved by SMT, model-checks without violation, and gives the same output under the interpreter, the VM and a native build. Verifying and model-checking the whole suite takes under two seconds with a release build.</p>
 [[stats]]
-<p>Ten seeded bugs, each caught:</p>
+<p>Eleven seeded bugs, each caught:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Seeded bug</th><th>What changed</th><th>How <code>bil</code> rejects it</th></tr></thead>
 <tbody>
+<tr><td><code>spe_late_cutoff</code></td><td>Regrowth bookkeeping step not held back after the SE signal is latched, so the cut-off misses its 3 ms deadline</td><td><span class="status bad">VIOLATION</span> Deadline_CutOnDetect, 14-step trace</td></tr>
 <tr><td><code>spe_slow_thermal_loop</code></td><td>Thermal loop one tick too slow during an over-temperature excursion</td><td><span class="status bad">VIOLATION</span> NeverMeltAmorphousSi, 11-step trace</td></tr>
 <tr><td><code>spe_overtemp_only_in_soak</code></td><td>Over-strict invariant</td><td><span class="status bad">VIOLATION</span> OverTempIsTransient via a pyrometer fault</td></tr>
 <tr><td><code>reactor_slow_sis</code></td><td>Heating not pre-empted at the trip point</td><td><span class="status bad">VIOLATION</span> BelowDesignTemperature, temp = 9</td></tr>
