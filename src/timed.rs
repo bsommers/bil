@@ -168,7 +168,11 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
     }
     let mut seen = std::collections::BTreeSet::new();
     for d in deadlines {
-        for generated in [format!("Deadline_{}", d.name), format!("Latch_{}", d.name)] {
+        for generated in [
+            format!("Deadline_{}", d.name),
+            format!("Latch_{}", d.name),
+            format!("Stall_{}", d.name),
+        ] {
             if sys.invariants.iter().any(|i| i.name == generated) {
                 return Err(err(
                     format!("invariant `{generated}` collides with the one generated for deadline `{}`", d.name),
@@ -212,6 +216,18 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
                 },
             ],
         };
+        // A pending timer needs another scan to advance. If no transition is enabled (a terminal
+        // or deadlocked state) the counter would freeze below the bound and `Deadline_` never fire.
+        let enabled = sys
+            .transitions
+            .iter()
+            .map(|tr| tr.guard.clone())
+            .reduce(|a, b| bin(BinOp::Or, a, b))
+            .unwrap_or(Expr::Bool(false));
+        sys.invariants.push(NamedInvariant {
+            name: format!("Stall_{}", d.name),
+            formula: bin(BinOp::Implies, pending.clone(), enabled),
+        });
         for tr in &mut sys.transitions {
             tr.updates.push((run.clone(), pending.clone()));
             tr.updates.push((t.clone(), counter.clone()));

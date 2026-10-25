@@ -254,3 +254,21 @@ fn huge_within_does_not_overflow() {
     assert!(!t.contains("overflow"), "{t}");
     assert_ne!(code, Some(101), "{t}");
 }
+
+#[test]
+fn halted_with_latch_set_and_no_response_fails() {
+    // After `detected` nothing is enabled (and the state is declared terminal, so no deadlock is reported), so the counter can never reach the bound.
+    let src = "system Epi {
+  state detected: Bool = false
+  state heater_off: Bool = false
+  clock scan period 1ms
+  deadline Cut: detected => heater_off within 3ms
+  terminal detected
+  transition
+     !detected -> detected := true
+}
+";
+    let (code, t) = run("model-check", "halted", src);
+    assert_eq!(code, Some(1), "{t}");
+    assert!(t.contains("Stall_Cut"), "{t}");
+}

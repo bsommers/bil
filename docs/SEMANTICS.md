@@ -91,5 +91,8 @@ The pass runs right after parsing and lowers each deadline $D$ into ordinary sta
 - `__run_D` $\leftarrow (\texttt{run} \vee (G \wedge L)) \wedge \neg R$ — the timer is pending. $G$ is read only to *start* it, so a phase change does not stop a running timer and the bound of the phase that saw the latch keeps applying.
 - `__t_D` $\leftarrow$ `__t_D + 1` if pending, else $0$ — consecutive pending scans.
 - Invariant `Deadline_D`: `__t_D >= n => R`. Invariant `Latch_D`: `__run_D => (L || R)`, so a latch cleared before the response is a violation.
+- Invariant `Stall_D`: pending $\Rightarrow$ some transition guard is enabled. The counter only advances when a transition fires, so a terminal or deadlocked state with the latch set and no response would otherwise freeze it below $n$ and pass.
 
-The latch is a `Bool` state variable declared by the user; setting it while already set changes nothing, which models a latched, synchronous signal that is never lost. Both the explicit-state search and `model-check --bmc` check the lowered invariants. For `--bmc`, the two-branch `if g -> a [] !g -> b fi` that the counter uses is encoded as `ite`; any other `if … fi` is still not encoded, and `--bmc` prints nothing for a system it cannot encode.
+The `__` prefix is reserved in a system that declares a deadline (no state or update may use it), and a user invariant may not be named `Deadline_D`, `Latch_D` or `Stall_D`.
+
+The latch is a `Bool` state variable declared by the user; setting it while already set changes nothing, which models a latched, synchronous signal that is never lost. Both the explicit-state search and `model-check --bmc` check the lowered invariants. For `--bmc`, the two-branch `if g -> a [] !g -> b fi` that the counter uses is encoded as `ite`; any other `if … fi` is still not encoded. `--bmc` reports `BMC not applicable to system …` and exits 1 for a system it cannot encode, rather than staying silent.

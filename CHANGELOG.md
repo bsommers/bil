@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **The bounded cross-check has a sample budget.** It used to evaluate every combination of every parameter's sample values, which grows exponentially: a `do … od` function with a record and four `Int` parameters took 12 seconds in a release build (59 in debug). Up to 10,000 combinations are still all evaluated, in the same order as before, so existing results and counterexamples are unchanged. Above that, `bil` evaluates 10,000 distinct combinations and reports them as `BOUNDED (10000 of 19683 samples)`. They start with a pairwise covering array (built with the IPOG strategy), so every pair of sample values of every two parameters is tried together; a fixed-seed pseudo-random sample fills the rest. When the two largest sample domains alone have more than 10,000 combinations, the sample instead starts with combinations that use every value of every parameter. The same function now verifies in 0.14 seconds. `Status::BoundedOnly` gains a `space` field (also in JSON output); `decide_status_sampled` and `SAMPLE_BUDGET` are new in `bil::wp`.
 
+### Fixed
+- `model-check --bmc` now prints `BMC not applicable to system …` and exits 1 for a system it cannot encode (a non-`Int`/`Bool` state), instead of printing nothing and exiting 0.
+- Timed guards: a terminal or deadlocked state with the latch set and no response is reported (`Stall_<name>`); the `__` prefix and the `Deadline_`/`Latch_`/`Stall_` invariant names are reserved in a system with a deadline; deadline rounding no longer overflows.
+
 ## [v0.6.0] - 2026-10-23
 
 ### Added
