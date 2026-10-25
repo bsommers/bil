@@ -152,8 +152,30 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
         ));
     };
 
+    let at = deadlines[0].span;
+    for st in &sys.states {
+        if st.name.starts_with("__") {
+            return Err(err(
+                format!("state `{}` uses the reserved `__` prefix (timed guards generate `__run_*`/`__t_*`)", st.name),
+                at,
+            ));
+        }
+    }
+    for tr in &sys.transitions {
+        if let Some((name, _)) = tr.updates.iter().find(|(n, _)| n.starts_with("__")) {
+            return Err(err(format!("update of `{name}` uses the reserved `__` prefix"), at));
+        }
+    }
     let mut seen = std::collections::BTreeSet::new();
     for d in deadlines {
+        for generated in [format!("Deadline_{}", d.name), format!("Latch_{}", d.name)] {
+            if sys.invariants.iter().any(|i| i.name == generated) {
+                return Err(err(
+                    format!("invariant `{generated}` collides with the one generated for deadline `{}`", d.name),
+                    d.span,
+                ));
+            }
+        }
         if !seen.insert(d.name.clone()) {
             return Err(err(format!("duplicate deadline `{}`", d.name), d.span));
         }
@@ -166,7 +188,7 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
                 d.span,
             ));
         }
-        let n = (d.within_us + clock.period_us - 1) / clock.period_us;
+        let n = d.within_us / clock.period_us + i64::from(d.within_us % clock.period_us != 0);
         let (run, t) = (format!("__run_{}", d.name), format!("__t_{}", d.name));
         let started = bin(
             BinOp::And,

@@ -217,3 +217,40 @@ system Mixed {
     assert_ne!(code, Some(0), "{t}");
     assert!(t.contains("BMC not applicable"), "{t}");
 }
+
+#[test]
+fn reserved_prefix_state_is_rejected() {
+    let src = system(&deadline("1ms", "3ms"), 2).replace(
+        "state wait: Int = 0",
+        "state wait: Int = 0\n  state __t_Cut: Int = 0",
+    );
+    let (code, t) = run("check", "reserved_state", &src);
+    assert_ne!(code, Some(0), "{t}");
+    assert!(t.contains("reserved"), "{t}");
+}
+
+#[test]
+fn reserved_prefix_update_is_rejected() {
+    let src = system(&deadline("1ms", "3ms"), 2)
+        .replace("wait := wait + 1", "wait := wait + 1, __t_Cut := 0");
+    let (code, t) = run("check", "reserved_update", &src);
+    assert_ne!(code, Some(0), "{t}");
+    assert!(t.contains("reserved"), "{t}");
+}
+
+#[test]
+fn invariant_named_like_generated_one_is_rejected() {
+    let src = system(&deadline("1ms", "3ms"), 2)
+        .replace("terminal heater_off", "invariant Deadline_Cut: true\n  terminal heater_off");
+    let (code, t) = run("check", "name_clash", &src);
+    assert_ne!(code, Some(0), "{t}");
+    assert!(t.contains("Deadline_Cut"), "{t}");
+}
+
+#[test]
+fn huge_within_does_not_overflow() {
+    let src = system(&deadline("9223372036854775807us", "9223372036854775807us"), 2);
+    let (code, t) = run("check", "huge", &src);
+    assert!(!t.contains("overflow"), "{t}");
+    assert_ne!(code, Some(101), "{t}");
+}
