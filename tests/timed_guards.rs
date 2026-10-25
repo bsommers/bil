@@ -203,6 +203,15 @@ fn lowered_system_keeps_span_table_aligned() {
 }
 
 #[test]
+fn type_error_in_a_deadline_points_at_the_deadline() {
+    let src = system("clock scan period 1ms\n  deadline Cut: wait => heater_off within 3ms", 1);
+    let line = src.lines().position(|l| l.contains("deadline Cut")).unwrap() + 1;
+    let (code, t) = run("check", "type_error_span", &src);
+    assert_ne!(code, Some(0), "{t}");
+    assert!(t.contains(&format!("{line}:")), "expected line {line} in: {t}");
+}
+
+#[test]
 fn bmc_reports_systems_it_cannot_encode() {
     let src = "type Ph = A | B
 system Mixed {

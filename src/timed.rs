@@ -82,7 +82,7 @@ fn counts(sys: &SystemDecl) -> Counts {
 }
 
 /// Lowers every system in `program`, keeping `expr_spans` aligned with the expression walk:
-/// generated nodes take the span of their system. Programs without `clock`/`deadline` are
+/// generated nodes take the span of their deadline. Programs without `clock`/`deadline` are
 /// untouched.
 pub fn lower_program(program: &mut Program) -> Result<(), ParseError> {
     let spanned = !program.expr_spans.is_empty();
@@ -103,9 +103,9 @@ pub fn lower_program(program: &mut Program) -> Result<(), ParseError> {
             continue;
         }
         let before = counts(sys);
-        lower_system(sys)?;
+        let generated = lower_system(sys)?;
         if spanned {
-            out.extend(rebuild_spans(slice, &before, &counts(sys), sys.span));
+            out.extend(rebuild_spans(slice, &before, &counts(sys), sys.span, &generated));
         }
     }
     if spanned {
@@ -115,8 +115,15 @@ pub fn lower_program(program: &mut Program) -> Result<(), ParseError> {
 }
 
 /// The span slice of a lowered system: original nodes keep their spans, nodes added at the end
-/// of a state, invariant or transition take `fallback`, and the consumed deadlines' spans go.
-fn rebuild_spans(old: &[Span], before: &Counts, after: &Counts, fallback: Span) -> Vec<Span> {
+/// of a state, invariant or transition take the span of the deadline that generated them
+/// (`fallback`, the system's, for the generated clock states), and the consumed deadlines' spans go.
+fn rebuild_spans(
+    old: &[Span],
+    before: &Counts,
+    after: &Counts,
+    fallback: Span,
+    generated: &[Generated],
+) -> Vec<Span> {
     let mut out = Vec::new();
     let mut at = 0;
     let list = |old_counts: &[usize], new_counts: &[usize], out: &mut Vec<Span>, at: &mut usize| {
@@ -128,15 +135,43 @@ fn rebuild_spans(old: &[Span], before: &Counts, after: &Counts, fallback: Span) 
         }
     };
     list(&before.states, &after.states, &mut out, &mut at);
-    list(&before.invariants, &after.invariants, &mut out, &mut at);
+    let kept = before.invariants.len();
+    for &n in &before.invariants {
+        out.extend_from_slice(&old[at..at + n]);
+        at += n;
+    }
+    for g in generated {
+        for n in g.invariants {
+            out.extend(std::iter::repeat_n(g.span, n));
+        }
+    }
+    debug_assert_eq!(after.invariants.len(), kept + 3 * generated.len());
     out.extend_from_slice(&old[at..at + before.middle]);
     at += before.middle;
-    list(&before.transitions, &after.transitions, &mut out, &mut at);
+    for (i, &new) in after.transitions.iter().enumerate() {
+        let kept = before.transitions[i];
+        out.extend_from_slice(&old[at..at + kept]);
+        at += kept;
+        for g in generated {
+            out.extend(std::iter::repeat_n(g.span, g.updates));
+        }
+        debug_assert_eq!(new, kept + generated.iter().map(|g| g.updates).sum::<usize>());
+    }
     debug_assert_eq!(at + before.deadlines, old.len());
     out
 }
 
-fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
+/// What lowering one deadline appended, so its generated nodes can take the deadline's span.
+struct Generated {
+    span: Span,
+    /// Node counts of the `Stall_`, `Deadline_` and `Latch_` invariants, in that order.
+    invariants: [usize; 3],
+    /// Node count of the two updates appended to every transition.
+    updates: usize,
+}
+
+fn lower_system(sys: &mut SystemDecl) -> Result<Vec<Generated>, ParseError> {
+    let mut generated_by = Vec::new();
     let clocks = std::mem::take(&mut sys.clocks);
     let deadlines = std::mem::take(&mut sys.deadlines);
     if clocks.len() > 1 {
@@ -224,6 +259,7 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
             .map(|tr| tr.guard.clone())
             .reduce(|a, b| bin(BinOp::Or, a, b))
             .unwrap_or(Expr::Bool(false));
+        let first_invariant = sys.invariants.len();
         sys.invariants.push(NamedInvariant {
             name: format!("Stall_{}", d.name),
             formula: bin(BinOp::Implies, pending.clone(), enabled),
@@ -258,6 +294,12 @@ fn lower_system(sys: &mut SystemDecl) -> Result<(), ParseError> {
                 bin(BinOp::Or, d.latch.clone(), d.response.clone()),
             ),
         });
+        let sizes = |i: usize| count(&sys.invariants[first_invariant + i].formula);
+        generated_by.push(Generated {
+            span: d.span,
+            invariants: [sizes(0), sizes(1), sizes(2)],
+            updates: count(&pending) + count(&counter),
+        });
     }
-    Ok(())
+    Ok(generated_by)
 }
