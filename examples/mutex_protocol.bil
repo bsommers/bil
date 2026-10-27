@@ -19,6 +19,13 @@ system PetersonMutex {
   invariant ValidTurn:
     turn == 0 || turn == 1
 
+  // Helper invariants that make MutualExclusion inductive (needed by the Verus step proofs;
+  // the model checker does not need them): the loser of a contested entry holds the turn.
+  invariant TurnWhileP1Critical:
+    (p1 == Critical && p0 == Trying) => turn == 1
+  invariant TurnWhileP0Critical:
+    (p0 == Critical && p1 == Trying) => turn == 0
+
   // LTL Liveness Property 1 (Starvation Freedom for P0):
   // Whenever P0 enters Trying, it eventually enters Critical (□(p0 == Trying => ◇(p0 == Critical)))
   temporal StarvationFreeP0:
