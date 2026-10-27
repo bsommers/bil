@@ -385,12 +385,12 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
         } => {
             let mut out = String::new();
             for (vname, iexpr) in inits {
-                out.push_str(&format!(
-                    "{}let mut {} = {};\n",
-                    pad,
-                    vname,
-                    verus_expr(iexpr, false)
-                ));
+                // `.bil` integer literals are `Int`; a suffix keeps invariants like `ticks + rem` inferable.
+                let init = match iexpr {
+                    Expr::Int(v) => format!("{v}i64"),
+                    other => verus_expr(other, false),
+                };
+                out.push_str(&format!("{}let mut {} = {};\n", pad, vname, init));
             }
             let bb: Vec<String> = branches
                 .iter()
