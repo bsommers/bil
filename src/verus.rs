@@ -282,6 +282,42 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 ));
             }
             out.push_str("        }\n    }\n");
+
+            // One step per guarded transition. Updates are simultaneous: every right-hand side
+            // is evaluated on the pre-state before any field is assigned.
+            for (i, tr) in sys.transitions.iter().enumerate() {
+                out.push_str(&format!("\n    pub fn step_{i}(&mut self)\n"));
+                out.push_str("        requires\n            old(self).invariant(),\n");
+                out.push_str(&format!(
+                    "            {},\n",
+                    verus_state_expr(&tr.guard, &sys.states, "old(self)", true)
+                ));
+                out.push_str("        ensures\n            final(self).invariant(),\n");
+                for st in &sys.states {
+                    match tr.updates.iter().find(|(v, _)| *v == st.name) {
+                        Some((_, e)) => out.push_str(&format!(
+                            "            final(self).{} == {},\n",
+                            st.name,
+                            verus_state_expr(e, &sys.states, "old(self)", true)
+                        )),
+                        None => out.push_str(&format!(
+                            "            final(self).{n} == old(self).{n},\n",
+                            n = st.name
+                        )),
+                    }
+                }
+                out.push_str("    {\n");
+                for (j, (_, e)) in tr.updates.iter().enumerate() {
+                    out.push_str(&format!(
+                        "        let _n{j} = {};\n",
+                        verus_state_expr(e, &sys.states, "self", false)
+                    ));
+                }
+                for (j, (v, _)) in tr.updates.iter().enumerate() {
+                    out.push_str(&format!("        self.{v} = _n{j};\n"));
+                }
+                out.push_str("    }\n");
+            }
             out.push_str("}\n\n");
         }
     }
@@ -560,15 +596,35 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
                 format!("{}({})", qualify_variant(func), a.join(", "))
             }
         }
+        // Value-position `if..fi` (e.g. timed-lowering counters); like fn bodies, the last branch is the `else`.
+        Expr::IfFi { branches } if branches.iter().all(|b| matches!(b.body, GclBody::Expr(_))) => {
+            let mut out = String::new();
+            for (i, b) in branches.iter().enumerate() {
+                let GclBody::Expr(e) = &b.body else { unreachable!() };
+                let val = verus_expr(e, in_spec);
+                if i + 1 == branches.len() {
+                    out.push_str(&if i == 0 { val } else { format!("else {{ {val} }}") });
+                } else {
+                    let kw = if i == 0 { "if" } else { "else if" };
+                    out.push_str(&format!("{kw} {} {{ {val} }} ", verus_expr(&b.guard, in_spec)));
+                }
+            }
+            format!("({out})")
+        }
         _ => "()".into(),
     }
 }
 
 fn verus_self_expr(expr: &Expr, states: &[StateVarDecl]) -> String {
+    verus_state_expr(expr, states, "self", true)
+}
+
+/// `expr` with every state variable read as a field of `base` (`self`, `old(self)`).
+fn verus_state_expr(expr: &Expr, states: &[StateVarDecl], base: &str, in_spec: bool) -> String {
     let mut map = std::collections::BTreeMap::new();
     for st in states {
-        map.insert(st.name.clone(), Expr::Var(format!("self.{}", st.name)));
+        map.insert(st.name.clone(), Expr::Var(format!("{base}.{}", st.name)));
     }
     let substituted = crate::expr_utils::subst_expr(expr, &map);
-    verus_expr(&substituted, true)
+    verus_expr(&substituted, in_spec)
 }
