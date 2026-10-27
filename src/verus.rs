@@ -357,6 +357,33 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 }
                 out.push_str("    }\n");
             }
+
+            // Transition relation: some branch is enabled in `pre` and `post` is its simultaneous update.
+            out.push_str(&format!(
+                "\n    pub open spec fn next(pre: {n}State, post: {n}State) -> bool {{\n",
+                n = sys.name
+            ));
+            if sys.transitions.is_empty() {
+                out.push_str("        false\n");
+            } else {
+                let branches: Vec<String> = sys
+                    .transitions
+                    .iter()
+                    .map(|tr| {
+                        let mut parts = vec![verus_state_expr(&tr.guard, &sys.states, "pre", true)];
+                        for st in &sys.states {
+                            let rhs = match tr.updates.iter().find(|(v, _)| *v == st.name) {
+                                Some((_, e)) => verus_state_expr(e, &sys.states, "pre", true),
+                                None => format!("pre.{}", st.name),
+                            };
+                            parts.push(format!("post.{} == {}", st.name, rhs));
+                        }
+                        format!("({})", parts.join(" && "))
+                    })
+                    .collect();
+                out.push_str(&format!("        {}\n", branches.join("\n        || ")));
+            }
+            out.push_str("    }\n");
             out.push_str("}\n\n");
         }
     }

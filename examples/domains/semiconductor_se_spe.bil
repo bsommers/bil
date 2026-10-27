@@ -152,6 +152,13 @@ system SpeAnneal {
   clock scan period 1ms
   deadline CutOnDetect: detected => !lamp within 3ms in phase == Soak
 
+  // Inductive strengthening for Verus: while the deadline timer is running with the lamp still
+  // on, the controller is in Soak with the signal latched, so every enabled step cuts the lamp.
+  invariant CutOnDetectRunning: __run_CutOnDetect && lamp => phase == Soak && detected
+
+  invariant ExcursionsNonNegative:  excursions >= 0
+  invariant MeasureAfterLoad:       phase == Measure => amorph == 3
+
   terminal phase == Done || phase == Reject
 
   temporal AnnealFinishes: (phase == Ramp) ~> (phase == Done || phase == Reject)

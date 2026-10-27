@@ -9,10 +9,7 @@ const BIL: &str = env!("CARGO_BIN_EXE_bil");
 
 /// Domain examples whose emission is known not to verify yet, each with the reason.
 /// This list only shrinks.
-const ALLOWLIST: &[(&str, &str)] = &[(
-    "semiconductor_se_spe",
-    "timed-lowered Deadline_/Stall_ invariants are not inductive on their own; Task 3",
-)];
+const ALLOWLIST: &[(&str, &str)] = &[];
 
 fn verus_bin() -> Option<PathBuf> {
     let candidate = std::env::var_os("VERUS")
@@ -128,4 +125,24 @@ fn mutex_protocol_emits_one_verified_step_per_transition() {
     };
     let n = emit_and_verify(&verus, &path).unwrap_or_else(|e| panic!("{e}"));
     assert!(n >= 6, "expected the six steps among the verified items, got {n}");
+}
+
+#[test]
+fn timed_system_emits_lowered_invariants_and_next_relation() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/domains/semiconductor_se_spe.bil");
+    let emitted = Command::new(BIL).arg("emit-verus").arg(&path).output().unwrap();
+    let text = String::from_utf8_lossy(&emitted.stdout);
+    for needle in [
+        "/* Deadline_CutOnDetect */",
+        "/* Latch_CutOnDetect */",
+        "/* Stall_CutOnDetect */",
+        "pub open spec fn next(pre: SpeAnnealState, post: SpeAnnealState) -> bool",
+    ] {
+        assert!(text.contains(needle), "missing `{needle}`");
+    }
+    let Some(verus) = verus_bin() else {
+        eprintln!("verus: skipped (no Verus binary; set $VERUS)");
+        return;
+    };
+    emit_and_verify(&verus, &path).unwrap_or_else(|e| panic!("{e}"));
 }
