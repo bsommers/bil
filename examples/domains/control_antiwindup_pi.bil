@@ -58,6 +58,9 @@ system HysteresisThermostat {
 
   invariant ComfortBand: temp >= 17 && temp <= 23
   invariant HeaterLogic: (temp <= 17 => heater) || (temp > 17)
+  // Helper invariants (inductive strengthening for the Verus step proofs): the heater switches at 22 and 18.
+  invariant HeaterOnBelow23: heater => temp <= 22
+  invariant HeaterOffAbove17: !heater => temp >= 18
 
   temporal NoLatchOn:  heater ~> !heater
   temporal NoLatchOff: !heater ~> heater

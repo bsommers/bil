@@ -60,6 +60,8 @@ system ClientHandshake {
 
   invariant NoDataBeforeFinished:  app_data_sent => hs == Finished
   invariant NoDataToUnverifiedPeer: app_data_sent => cert_ok
+  // Helper invariant (inductive strengthening for the Verus step proofs): only a verified cert reaches Finished.
+  invariant FinishedHasCert:       (hs == CertVerified || hs == Finished) => cert_ok
   terminal hs == Aborted || app_data_sent
 
   transition

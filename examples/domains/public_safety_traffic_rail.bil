@@ -23,6 +23,8 @@ system Intersection {
 
   invariant NoConflictingGreens: ns == Red || ew == Red
   invariant PreemptionClears:    preempt => (ns != Green && ew != Green)
+  // Helper invariants (inductive strengthening for the Verus step proofs).
+  invariant PreemptionAllRed:    preempt => (ns == Red && ew == Red)
 
   temporal PreemptionEnds:  preempt ~> !preempt
   temporal NorthSouthServed: (ns == Red && !preempt) ~> (ns == Green || preempt)

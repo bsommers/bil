@@ -41,6 +41,9 @@ system ReactorSis {
 
   invariant BelowDesignTemperature: temp <= 8
   invariant TripStopsFeed:          tripped => !feed
+  // Helper invariants (inductive strengthening for the Verus step proofs).
+  invariant UntrippedBelow8:        !tripped => temp <= 7
+  invariant TrippedPreResidual:     (tripped && !residual) => temp <= 7
 
   temporal TripIsReset:  tripped ~> !tripped
 

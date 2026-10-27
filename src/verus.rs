@@ -4,6 +4,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 thread_local! {
+    /// User fns with a spec twin (`spec_<name>`), mapped to which params are `Int` (the twin
+    /// takes `int`, so spec-context call sites cast those arguments).
+    static SPEC_TWINS: RefCell<BTreeMap<String, Vec<bool>>> = const { RefCell::new(BTreeMap::new()) };
     /// The enclosing fn's `requires`, restated on its loops: Verus does not carry preconditions into `while` invariants.
     static FN_REQUIRES: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Names of user-declared `fn`s, which shadow the built-in `max`/`min`/`abs` helpers.
@@ -32,6 +35,20 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 _ => None,
             })
             .collect();
+    });
+    SPEC_TWINS.with(|t| {
+        let mut t = t.borrow_mut();
+        t.clear();
+        for item in &program.items {
+            if let Item::FnDecl(f) = item {
+                if has_spec_twin(f) {
+                    t.insert(
+                        f.name.clone(),
+                        f.params.iter().map(|p| is_int_ty(&p.ty)).collect(),
+                    );
+                }
+            }
+        }
     });
     VARIANT_OWNER.with(|m| {
         let mut m = m.borrow_mut();
@@ -209,6 +226,20 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 .iter()
                 .map(|p| format!("{}: {}", p.name, verus_type(&p.ty)))
                 .collect();
+            if has_spec_twin(f) {
+                let tparams: Vec<String> = f
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, spec_ty(&p.ty)))
+                    .collect();
+                out.push_str(&format!(
+                    "pub open spec fn spec_{}({}) -> {} {{\n    {}\n}}\n\n",
+                    f.name,
+                    tparams.join(", "),
+                    spec_ty(&f.ret_ty),
+                    verus_expr(&f.body, true)
+                ));
+            }
             out.push_str(&format!(
                 "pub fn {}({}) -> (result: {})\n",
                 f.name,
@@ -222,6 +253,14 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
             let mut ensures_clauses = Vec::new();
             if let Some(ens) = &f.ensures {
                 ensures_clauses.push(verus_expr(ens, true));
+            }
+            if has_spec_twin(f) {
+                let args: Vec<String> = f
+                    .params
+                    .iter()
+                    .map(|p| if is_int_ty(&p.ty) { format!("{} as int", p.name) } else { p.name.clone() })
+                    .collect();
+                ensures_clauses.push(format!("result == spec_{}({})", f.name, args.join(", ")));
             }
             if let Some(spec_name) = &f.refines {
                 let mut call_args: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
@@ -342,6 +381,25 @@ fn assign_stmt(pad: &str, v: &str, ue: &Expr) -> String {
         }
     }
     format!("{pad}{v} = {};\n", verus_expr(ue, false))
+}
+
+fn is_int_ty(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Named(n) if n == "Int" || n == "Integer")
+}
+
+/// Spec-context type of a twin's parameter/result: `Int` is unbounded `int`.
+fn spec_ty(ty: &TypeExpr) -> String {
+    if is_int_ty(ty) { "int".into() } else { verus_type(ty) }
+}
+
+/// A user fn gets a `spec_<name>` twin when its body is a plain expression (no loops or matches),
+/// so spec contexts (guards, invariants) can call it.
+fn has_spec_twin(f: &FnDecl) -> bool {
+    match &f.body {
+        Expr::DoOd { .. } | Expr::Match { .. } => false,
+        Expr::IfFi { branches } => branches.iter().all(|b| matches!(b.body, GclBody::Expr(_))),
+        _ => true,
+    }
 }
 
 fn mentions_string(ty: &TypeExpr) -> bool {
@@ -588,6 +646,18 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
         }
         Expr::Call { func, args } => {
             let a: Vec<String> = args.iter().map(|x| verus_expr(x, in_spec)).collect();
+            let twin = in_spec.then(|| SPEC_TWINS.with(|t| t.borrow().get(func).cloned())).flatten();
+            if let Some(int_params) = twin {
+                let a: Vec<String> = args
+                    .iter()
+                    .zip(int_params.iter().chain(std::iter::repeat(&false)))
+                    .map(|(x, is_int)| {
+                        let e = verus_expr(x, true);
+                        if *is_int { format!("({e}) as int") } else { e }
+                    })
+                    .collect();
+                return format!("spec_{func}({})", a.join(", "));
+            }
             let builtin = matches!(func.as_str(), "max" | "min" | "abs")
                 && !USER_FNS.with(|u| u.borrow().contains(func));
             if builtin && in_spec {

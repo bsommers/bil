@@ -9,25 +9,10 @@ const BIL: &str = env!("CARGO_BIN_EXE_bil");
 
 /// Domain examples whose emission is known not to verify yet, each with the reason.
 /// This list only shrinks.
-const ALLOWLIST: &[(&str, &str)] = &[
-    (
-        "control_antiwindup_pi",
-        "step_1: ComfortBand is not inductive (temp 23 with heater on steps to 24); needs `heater => temp <= 22`",
-    ),
-    ("cybersecurity_zero_trust", "step proof fails: declared invariants are not inductive over the transitions (true on reachable states only); needs strengthening invariants. Not yet triaged per step."),
-    ("iiot_mqtt_qos2", "step proof fails: declared invariants are not inductive over the transitions (true on reachable states only); needs strengthening invariants. Not yet triaged per step."),
-    (
-        "navigation_geofence",
-        "guards call user `fn must_return`, an exec fn, from spec context; needs a spec twin per user fn",
-    ),
-    ("process_safety_reactor", "step proof fails: declared invariants are not inductive over the transitions (true on reachable states only); needs strengthening invariants. Not yet triaged per step."),
-    ("public_safety_traffic_rail", "step proof fails: declared invariants are not inductive over the transitions (true on reachable states only); needs strengthening invariants. Not yet triaged per step."),
-    (
-        "semiconductor_se_spe",
-        "timed-lowered Deadline_/Stall_ invariants are not inductive on their own; Task 3",
-    ),
-    ("surgical_teleoperation", "step proof fails: declared invariants are not inductive over the transitions (true on reachable states only); needs strengthening invariants. Not yet triaged per step."),
-];
+const ALLOWLIST: &[(&str, &str)] = &[(
+    "semiconductor_se_spe",
+    "timed-lowered Deadline_/Stall_ invariants are not inductive on their own; Task 3",
+)];
 
 fn verus_bin() -> Option<PathBuf> {
     let candidate = std::env::var_os("VERUS")

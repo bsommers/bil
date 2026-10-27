@@ -56,6 +56,8 @@ system Teleoperation {
 
   invariant MotionOnlyWhileFollowing: moving => (clutch && link_ok && mode == Following)
   invariant NoMotionWithoutReengage:  moving => !needs_reengage
+  // Helper invariants (inductive strengthening for the Verus step proofs).
+  invariant FollowingMeansEngaged:    mode == Following => (clutch && link_ok && !needs_reengage)
 
   temporal HoldIsLeftWhenLinkIsUp: (mode == Hold && link_ok && !clutch) ~> (mode == Following || !link_ok)
 

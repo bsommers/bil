@@ -30,6 +30,15 @@ system MqttQos2 {
 
   invariant ExactlyOnceSafety: delivered <= 1
   invariant DoneMeansDelivered: s == Done => delivered == 1
+  // Helper invariants (inductive strengthening for the Verus step proofs). The store/deliver
+  // count tracks the sender phase, and a cleared store only happens after retransmission stops.
+  invariant DeliveredNonNegative: delivered >= 0
+  invariant StoredMeansDelivered: stored => delivered == 1
+  invariant EarlyStoreMatchesCount: (s == SendPub || s == WaitRec) => (stored <=> delivered == 1)
+  invariant ClearedStoreHasNoPub: (!stored && delivered == 1) => !net_pub
+  invariant RelOnlyLate: net_rel => (s == WaitComp || s == Done)
+  invariant LateMeansDelivered: (s == WaitComp || s == Done) => delivered == 1
+  invariant RecMeansDelivered: net_rec => delivered == 1
 
   terminal s == Done && !net_pub && !net_rec && !net_rel && !net_comp
 
