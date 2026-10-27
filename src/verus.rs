@@ -4,6 +4,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 thread_local! {
+    /// The enclosing fn's `requires`, restated on its loops: Verus does not carry preconditions into `while` invariants.
+    static FN_REQUIRES: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Names of user-declared `fn`s, which shadow the built-in `max`/`min`/`abs` helpers.
     static USER_FNS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Variant name -> owning enum, so `Soak` is emitted as `Phase::Soak` (Rust has no bare variants).
@@ -213,6 +215,7 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 params.join(", "),
                 verus_type(&f.ret_ty)
             ));
+            FN_REQUIRES.with(|r| *r.borrow_mut() = f.requires.as_ref().map(|q| verus_expr(q, true)));
             if let Some(req) = &f.requires {
                 out.push_str(&format!("    requires\n        {},\n", verus_expr(req, true)));
             }
@@ -239,6 +242,7 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
             }
             out.push_str("{\n");
             out.push_str(&verus_fn_body(&f.body, 1));
+            FN_REQUIRES.with(|r| *r.borrow_mut() = None);
             out.push_str("}\n\n");
         }
     }
@@ -284,6 +288,24 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
 
     out.push_str("} // verus!\n");
     out
+}
+
+/// `v := e` as a Rust statement. `v := v with {..}` updates the fields in place (via temporaries,
+/// so every right-hand side sees the old value): Verus gives `clone()` no spec, losing the fields.
+fn assign_stmt(pad: &str, v: &str, ue: &Expr) -> String {
+    if let Expr::RecordWith { base, updates } = ue {
+        if matches!(&**base, Expr::Var(b) if b == v) {
+            let mut out = String::new();
+            for (i, (_, e)) in updates.iter().enumerate() {
+                out.push_str(&format!("{pad}let _u{i} = {};\n", verus_expr(e, false)));
+            }
+            for (i, (k, _)) in updates.iter().enumerate() {
+                out.push_str(&format!("{pad}{v}.{k} = _u{i};\n"));
+            }
+            return out;
+        }
+    }
+    format!("{pad}{v} = {};\n", verus_expr(ue, false))
 }
 
 fn mentions_string(ty: &TypeExpr) -> bool {
@@ -344,7 +366,7 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
                     }
                     GclBody::Updates(ups) => {
                         for (v, ue) in ups {
-                            out.push_str(&format!("{}    {} = {};\n", pad, v, verus_expr(ue, false)));
+                            out.push_str(&assign_stmt(&format!("{}    ", pad), v, ue));
                         }
                     }
                     GclBody::Skip => out.push_str(&format!("{}    ()\n", pad)),
@@ -375,13 +397,13 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
                 .map(|b| format!("({})", verus_expr(&b.guard, false)))
                 .collect();
             out.push_str(&format!("{}while {}\n", pad, bb.join(" || ")));
-            if let Some(inv) = invariant {
-                out.push_str(&format!(
-                    "{}    invariant\n{}        {},\n",
-                    pad,
-                    pad,
-                    verus_expr(inv, true)
-                ));
+            let mut invs: Vec<String> = invariant.iter().map(|i| verus_expr(i, true)).collect();
+            invs.extend(FN_REQUIRES.with(|r| r.borrow().clone()));
+            if !invs.is_empty() {
+                out.push_str(&format!("{}    invariant\n", pad));
+                for i in invs {
+                    out.push_str(&format!("{}        {},\n", pad, i));
+                }
             }
             if let Some(var_e) = variant {
                 out.push_str(&format!(
@@ -403,12 +425,7 @@ fn verus_fn_body(expr: &Expr, indent: usize) -> String {
                 match &br.body {
                     GclBody::Updates(ups) => {
                         for (v, ue) in ups {
-                            out.push_str(&format!(
-                                "{}        {} = {};\n",
-                                pad,
-                                v,
-                                verus_expr(ue, false)
-                            ));
+                            out.push_str(&assign_stmt(&format!("{}        ", pad), v, ue));
                         }
                     }
                     GclBody::Expr(e) => {
