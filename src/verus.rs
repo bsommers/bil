@@ -529,9 +529,9 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
             let b = verus_expr(base, in_spec);
             let us: Vec<String> = updates
                 .iter()
-                .map(|(k, v)| format!("{}: {}", k, verus_expr(v, in_spec)))
+                .map(|(k, v)| format!("_tmp.{} = {};", k, verus_expr(v, in_spec)))
                 .collect();
-            format!("{{ let mut _tmp = {}.clone(); {} .._tmp }}", b, us.join(", "))
+            format!("{{ let mut _tmp = {}.clone(); {} _tmp }}", b, us.join(" "))
         }
         Expr::Call { func, args } => {
             let a: Vec<String> = args.iter().map(|x| verus_expr(x, in_spec)).collect();
