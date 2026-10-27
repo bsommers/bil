@@ -11,11 +11,12 @@
 //       verified in UPPAAL against FDA's generic safety requirements
 //   [gpca_umn] https://crisys.cs.umn.edu/gpca.shtml — GPCA requirements documents
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 // A bolus is granted only after the lockout interval and only if it keeps the
 // rolling one-hour total under the prescribed cap (µg).
 fn bolus_allowed(min_since_last: Int, lockout_min: Int, given_hr: Int, bolus: Int, hourly_max: Int) -> Bool
-  requires min_since_last >= 0 && lockout_min > 0 && given_hr >= 0 && bolus > 0 && hourly_max > 0
+  requires min_since_last >= 0 && lockout_min > 0 && given_hr >= 0 && bolus > 0 && hourly_max > 0 && given_hr <= 1000000 && bolus <= 1000000
   ensures  result <=> (min_since_last >= lockout_min && given_hr + bolus <= hourly_max)
 =
   min_since_last >= lockout_min && given_hr + bolus <= hourly_max

@@ -10,6 +10,7 @@
 //   [iso13855] ISO 13855 safety distance S = K·T + C (secondary sources, e.g.
 //       https://www.issa.int/sites/default/files/documents/prevention/2Light_Curtain_2011_en-36159.pdf)
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 type Ram = Up | Descending | Returning
 
@@ -26,7 +27,7 @@ fn two_hand_ok(t_left_ms: Int, t_right_ms: Int) -> Bool
 // (curtain + relay + press), in ms, so K·T = 2·T mm. Sources disagree on when K may
 // be reduced to 1600 mm/s, so this always uses K = 2000 (the larger distance).
 fn light_curtain_distance(t_stop_ms: Int, d_mm: Int) -> Int
-  requires t_stop_ms > 0 && d_mm >= 14 && d_mm <= 40
+  requires t_stop_ms > 0 && d_mm >= 14 && d_mm <= 40 && t_stop_ms <= 1000000
   ensures  result == 2 * t_stop_ms + 8 * (d_mm - 14) && result >= 2 * t_stop_ms
 =
   2 * t_stop_ms + 8 * (d_mm - 14)

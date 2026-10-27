@@ -8,6 +8,7 @@
 //       back-calculation are the two basic anti-windup schemes; `integrate` is the former
 //   [astrom_murray] Åström & Murray, Feedback Systems — integrator windup under saturation
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 // Actuator saturation: output always within the actuator's physical range.
 fn saturate(u: Int, umin: Int, umax: Int) -> Int
@@ -23,7 +24,7 @@ fn saturate(u: Int, umin: Int, umax: Int) -> Int
 // Conditional integration (clamping anti-windup): the integrator only accumulates
 // while doing so cannot push it past its bound. The bound holds for every input.
 fn integrate(acc: Int, err: Int, imax: Int) -> Int
-  requires imax > 0 && acc >= 0 - imax && acc <= imax
+  requires imax > 0 && acc >= 0 - imax && acc <= imax && imax <= 1000000 && err >= 0 - 1000000 && err <= 1000000
   ensures  result >= 0 - imax && result <= imax
 =
   if acc + err > imax                          -> imax
@@ -34,7 +35,7 @@ fn integrate(acc: Int, err: Int, imax: Int) -> Int
 // Setpoint ramp: move the reference toward the target by at most `rate` per tick.
 // Proved: never overshoots, always terminates, and lands exactly on target.
 fn ramp_to(start: Int, target: Int, rate: Int) -> Int
-  requires rate > 0
+  requires rate > 0 && rate <= 1000000 && start >= 0 - 1000000 && start <= 1000000 && target >= 0 - 1000000 && target <= 1000000
   ensures  result == target
 =
   do r = start

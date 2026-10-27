@@ -26,6 +26,7 @@
 //   [norman1991] https://web.stanford.edu/~boyd/papers/temperature_uniformity.html — ramp-rate
 //       limits from slip caused by temperature non-uniformity
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 concept SeSite {
   wafer: String,
@@ -57,7 +58,7 @@ fn se_site_valid(s: SeSite, mse_max: Int, t_min: Int, t_max: Int) -> Bool
 // uniform amorphous layer release the wafer; too few usable fits send it back to
 // metrology; a non-uniform layer (bad implant) is scrapped.
 fn disposition(valid_sites: Int, total_sites: Int, uniform: Bool) -> Disposition
-  requires total_sites > 0 && valid_sites >= 0 && valid_sites <= total_sites
+  requires total_sites > 0 && valid_sites >= 0 && valid_sites <= total_sites && total_sites <= 1000000
   ensures  (valid_sites * 10 < total_sites * 8 => result == Rework)
            && (valid_sites * 10 >= total_sites * 8 && uniform => result == Release)
            && (valid_sites * 10 >= total_sites * 8 && !uniform => result == Scrap)
@@ -88,11 +89,11 @@ fn spe_rate(temp_c: Int, t_upper: Int) -> Int
 // Regrowth endpoint: integrate the front velocity tick by tick until the in-situ
 // SE thickness reaches zero. Proved to terminate and to consume the whole layer.
 fn regrowth_ticks(thickness_a: Int, rate: Int) -> Int
-  requires thickness_a >= 0 && rate > 0
+  requires thickness_a >= 0 && rate > 0 && thickness_a <= 1000000
   ensures  result >= 0 && (thickness_a > 0 => result > 0)
 =
   do rem = thickness_a, ticks = 0
-    invariant rem >= 0 && rem <= thickness_a && ticks >= 0
+    invariant rem >= 0 && rem <= thickness_a && ticks >= 0 && ticks + rem <= thickness_a
               && (rem < thickness_a => ticks > 0)
     variant   rem
   :
@@ -106,7 +107,7 @@ fn regrowth_ticks(thickness_a: Int, rate: Int) -> Int
 // typically run 20–100 °C/s [uspto6034356]), and it never exceeds the hard limit,
 // whatever the outer loop demands.
 fn thermal_setpoint(cur: Int, demand: Int, max_step: Int, t_hard: Int) -> Int
-  requires max_step > 0 && cur <= t_hard
+  requires max_step > 0 && cur <= t_hard && max_step <= 1000000 && cur >= 0 - 1000000 && t_hard <= 1000000 && demand >= 0 - 1000000 && demand <= 1000000
   ensures  result <= t_hard && result - cur <= max_step && cur - result <= max_step
 =
   if demand > cur + max_step && cur + max_step <= t_hard   -> cur + max_step

@@ -9,6 +9,7 @@
 //       SSM protective separation distance
 //   [iso10218] 250 mm/s reduced speed (secondary sources; check the current ISO 10218 edition)
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 type RobotMode = Auto | Reduced | ProtectiveStop
 
@@ -18,7 +19,7 @@ type RobotMode = Auto | Reduced | ProtectiveStop
 // [iso10218]. Real SSM computes the protective distance from speeds, reaction and
 // braking times; here it is an input.
 fn ssm_speed_limit(sep_mm: Int, protective_mm: Int, vmax: Int) -> Int
-  requires protective_mm > 0 && vmax >= 250 && sep_mm >= 0
+  requires protective_mm > 0 && vmax >= 250 && sep_mm >= 0 && protective_mm <= 1000000 && sep_mm <= 1000000 && vmax <= 1000000
   ensures  result >= 0 && result <= vmax
            && (sep_mm <= protective_mm => result == 0)
            && (sep_mm < protective_mm + 500 => result <= 250)

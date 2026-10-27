@@ -10,6 +10,7 @@
 //       voltage fails to decay after the contactor is commanded open
 //   [uspto12077054] https://patents.google.com/patent/US12077054 — inrush-based weld detection
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 concept CellPair {
   a: Int,
@@ -21,7 +22,7 @@ concept CellPair {
 // Proved: total charge is conserved (no charge is invented or lost by the
 // algorithm), neither cell goes negative, and the cells end up balanced.
 fn balance(c0: CellPair) -> CellPair
-  requires c0.a >= 0 && c0.b >= 0
+  requires c0.a >= 0 && c0.b >= 0 && c0.a <= 1000000 && c0.b <= 1000000
   ensures  result.a + result.b == c0.a + c0.b
            && result.a >= 0 && result.b >= 0
            && abs(result.a - result.b) <= 1

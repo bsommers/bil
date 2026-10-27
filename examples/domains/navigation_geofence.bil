@@ -7,6 +7,7 @@
 //       stay-in / stay-out geofencing independent of the autopilot, with boundary-violation
 //       detection proved in PVS (https://ntrs.nasa.gov/api/citations/20170009617/downloads/20170009617.pdf)
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 concept Pose {
   x: Int,
@@ -42,7 +43,7 @@ fn goto_waypoint(start: Pose, target: Pose, fence: Pose) -> Pose
 
 // Return-to-home decision: 2 battery units per cell of distance plus a fixed reserve.
 fn must_return(battery: Int, dist_home: Int, reserve: Int) -> Bool
-  requires battery >= 0 && dist_home >= 0 && reserve >= 0
+  requires battery >= 0 && dist_home >= 0 && reserve >= 0 && battery <= 1000000 && dist_home <= 1000000 && reserve <= 1000000
   ensures  result <=> (battery - 2 <= 2 * (dist_home + 1) + reserve)
 =
   battery - 2 <= 2 * (dist_home + 1) + reserve

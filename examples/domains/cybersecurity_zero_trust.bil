@@ -10,11 +10,12 @@
 //       attacker skip messages (SKIP-TLS CVE-2014-6593, FREAK CVE-2015-0204 [ncc_smack])
 //   [nist80053ac5] NIST SP 800-53 AC-5 Separation of Duties
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 // Token-bucket rate limiter: refill then spend. The bucket never overflows its
 // capacity and never goes negative, for every input.
 fn refill(tokens: Int, cap: Int, add: Int) -> Int
-  requires cap > 0 && tokens >= 0 && tokens <= cap && add >= 0
+  requires cap > 0 && tokens >= 0 && tokens <= cap && add >= 0 && cap <= 1000000 && add <= 1000000
   ensures  result >= 0 && result <= cap && result >= tokens
 =
   if tokens + add > cap  -> cap

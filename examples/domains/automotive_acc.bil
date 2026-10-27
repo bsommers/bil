@@ -10,13 +10,14 @@
 //       minimum selectable time gaps of 0.8 s and 1 s in two standards; Fancher et al.
 //       recommend 1–2 s. This model uses 1.5 s.
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 // Minimum safe gap: a 1.5 s time gap [bernsteiner2016] plus a 50 dm standstill margin,
 // i.e. 2·gap ≥ 3·speed + 100. (The draft used a "2-second rule"; the sources put
 // standard minimum time gaps at 0.8–1 s and recommended settings at 1–2 s.)
 // Written inline in contracts below: the SMT encoding does not unfold user calls.
 fn time_gap_ok(gap: Int, speed: Int) -> Bool
-  requires speed >= 0 && gap >= 0
+  requires speed >= 0 && gap >= 0 && speed <= 1000000 && gap <= 1000000
   ensures  result <=> (2 * gap >= 3 * speed + 100)
 =
   2 * gap >= 3 * speed + 100
@@ -24,7 +25,7 @@ fn time_gap_ok(gap: Int, speed: Int) -> Bool
 // ACC acceleration request. Comfort limits are +200 / -350 cm/s²; inside half the
 // safe gap the AEB path commands -900 regardless of the driver's set speed.
 fn acc_command(gap: Int, speed: Int, set_speed: Int) -> Int
-  requires speed >= 0 && gap >= 0 && set_speed >= 0
+  requires speed >= 0 && gap >= 0 && set_speed >= 0 && speed <= 1000000 && gap <= 1000000 && set_speed <= 1000000
   ensures  result >= 0 - 900 && result <= 200
            && (2 * gap < 3 * speed + 100 => result < 0)
            && (4 * gap < 3 * speed + 100 => result == 0 - 900)

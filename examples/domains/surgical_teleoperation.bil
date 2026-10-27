@@ -10,13 +10,14 @@
 //   [iec80601277] IEC 80601-2-77 — basic safety and essential performance of robotically
 //       assisted surgical equipment; https://www.iso.org/standard/68473.html
 // ============================================================================
+// Range bounds of 1000000 in `requires` are illustrative; they keep the emitted i64 arithmetic overflow-free.
 
 type TeleMode = Following | Hold
 
 // Virtual fixture: the tool tip may not advance past `limit` (µm) along the
 // approach axis toward a critical structure. Retraction is never restricted.
 fn fixture_step(depth: Int, step: Int, limit: Int) -> Int
-  requires depth <= limit
+  requires depth <= limit && depth >= 0 - 1000000 && limit <= 1000000 && step >= 0 - 1000000 && step <= 1000000
   ensures  depth + result <= limit
            && (step <= 0 => result == step)
            && (step > 0 => (result >= 0 && result <= step))
