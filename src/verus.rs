@@ -4,6 +4,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 thread_local! {
+    /// Names of user-declared `fn`s, which shadow the built-in `max`/`min`/`abs` helpers.
+    static USER_FNS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Variant name -> owning enum, so `Soak` is emitted as `Phase::Soak` (Rust has no bare variants).
     static VARIANT_OWNER: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -19,6 +21,16 @@ fn qualify_variant(name: &str) -> String {
 /// Bridges OntoLogic concepts/axioms, Dijkstra GCL (`if..fi`, `do..od`), `spec`/`refines`,
 /// and `system` state machines directly to Verus's `spec fn`, `proof`, and `exec fn` model.
 pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String {
+    USER_FNS.with(|u| {
+        *u.borrow_mut() = program
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::FnDecl(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
+    });
     VARIANT_OWNER.with(|m| {
         let mut m = m.borrow_mut();
         m.clear();
@@ -59,6 +71,39 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
                 }
             }
             out.push_str("}\n\n");
+        }
+    }
+
+    // Built-in numeric helpers the `.bil` expression language provides; skipped when user-defined.
+    // Spec contexts call `spec_*` (unbounded int); exec bodies call the i64 exec fns.
+    let user_fns: Vec<&str> = program
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::FnDecl(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let builtins = [
+        (
+            "max",
+            "pub open spec fn spec_max(a: int, b: int) -> int {\n    if a >= b { a } else { b }\n}\n\n\
+             pub fn max(a: i64, b: i64) -> (r: i64)\n    ensures r == spec_max(a as int, b as int),\n{\n    if a >= b { a } else { b }\n}\n\n",
+        ),
+        (
+            "min",
+            "pub open spec fn spec_min(a: int, b: int) -> int {\n    if a <= b { a } else { b }\n}\n\n\
+             pub fn min(a: i64, b: i64) -> (r: i64)\n    ensures r == spec_min(a as int, b as int),\n{\n    if a <= b { a } else { b }\n}\n\n",
+        ),
+        (
+            "abs",
+            "pub open spec fn spec_abs(a: int) -> int {\n    if a >= 0 { a } else { -a }\n}\n\n\
+             pub fn abs(a: i64) -> (r: i64)\n    requires a > i64::MIN,\n    ensures r == spec_abs(a as int),\n{\n    if a >= 0 { a } else { -a }\n}\n\n",
+        ),
+    ];
+    for (name, src) in builtins {
+        if !user_fns.contains(&name) {
+            out.push_str(src);
         }
     }
 
@@ -466,7 +511,13 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
         }
         Expr::Call { func, args } => {
             let a: Vec<String> = args.iter().map(|x| verus_expr(x, in_spec)).collect();
-            format!("{}({})", qualify_variant(func), a.join(", "))
+            let builtin = matches!(func.as_str(), "max" | "min" | "abs")
+                && !USER_FNS.with(|u| u.borrow().contains(func));
+            if builtin && in_spec {
+                format!("spec_{}({})", func, a.join(", "))
+            } else {
+                format!("{}({})", qualify_variant(func), a.join(", "))
+            }
         }
         _ => "()".into(),
     }
