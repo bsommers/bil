@@ -49,7 +49,8 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
 
     // 1. Emit OntoLogic Concepts as Rust structs with inherited fields
     for (cname, cinfo) in &ontology.concepts {
-        out.push_str("#[derive(PartialEq, Eq, Structural, Clone)]\n");
+        let structural = if cinfo.all_fields.iter().any(|(_, t)| mentions_string(t)) { "" } else { "Structural, " };
+        out.push_str(&format!("#[derive(PartialEq, Eq, {structural}Clone)]\n"));
         out.push_str(&format!("pub struct {} {{\n", cname));
         for (fname, fty) in &cinfo.all_fields {
             out.push_str(&format!("    pub {}: {},\n", fname, verus_type(fty)));
@@ -60,7 +61,10 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
     // 2. Emit Algebraic Data Types (ADTs)
     for item in &program.items {
         if let Item::TypeDecl(adt) = item {
-            out.push_str("#[derive(PartialEq, Eq, Structural, Clone, Copy)]\n");
+            // `String` is neither `Structural` nor `Copy` in vstd/std.
+            let has_string = adt.variants.iter().any(|v| v.payload.iter().any(mentions_string));
+            let derives = if has_string { "PartialEq, Eq, Clone" } else { "PartialEq, Eq, Structural, Clone, Copy" };
+            out.push_str(&format!("#[derive({derives})]\n"));
             out.push_str(&format!("pub enum {} {{\n", adt.name));
             for v in &adt.variants {
                 if v.payload.is_empty() {
@@ -282,6 +286,15 @@ pub fn emit_verus_rust(program: &Program, ontology: &OntologyRegistry) -> String
     out
 }
 
+fn mentions_string(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Named(n) => matches!(n.as_str(), "String" | "Str"),
+        TypeExpr::List(i) => mentions_string(i),
+        TypeExpr::Map(k, v) => mentions_string(k) || mentions_string(v),
+        TypeExpr::Fn(a, r) => a.iter().any(mentions_string) || mentions_string(r),
+    }
+}
+
 fn verus_type(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(n) => match n.as_str() {
@@ -435,6 +448,17 @@ fn verus_expr(expr: &Expr, in_spec: bool) -> String {
             UnaryOp::Not => format!("!({})", verus_expr(inner, in_spec)),
             UnaryOp::Neg => format!("-({})", verus_expr(inner, in_spec)),
         },
+        // Spec code cannot build a `String`; compare views (`Seq<char>`) against the literal instead.
+        Expr::Binary { op: op @ (BinOp::Eq | BinOp::Neq), left, right }
+            if in_spec && (matches!(**left, Expr::Str(_)) || matches!(**right, Expr::Str(_))) =>
+        {
+            let view = |e: &Expr| match e {
+                Expr::Str(s) => format!("{:?}@", s),
+                other => format!("{}@", verus_expr(other, in_spec)),
+            };
+            let op_str = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+            format!("({} {} {})", view(left), op_str, view(right))
+        }
         Expr::Binary { op, left, right } => {
             let l = verus_expr(left, in_spec);
             let r = verus_expr(right, in_spec);
