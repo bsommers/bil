@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Local CI gate for bil. There is no hosted CI: run this before pushing.
 #
-#   scripts/ci.sh                 clippy, tests under coverage (75% line floor), cargo audit
+#   scripts/ci.sh                 clippy, tests under coverage (78% line floor), cargo audit,
+#                                 and the Verus emit tests when verus is found (else "verus: skipped")
 #   scripts/ci.sh --fuzz [SECS]   also fuzz lex/parse/check for SECS seconds each (default 300)
 #
 # Needs: cargo-llvm-cov, cargo-audit, z3 on PATH or in ~/.local/bin;
+# optionally verus (version pinned in scripts/VERUS_VERSION; $VERUS or PATH);
 # for --fuzz, a nightly toolchain and cargo-fuzz.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,7 +20,7 @@ while (($#)); do
       if [[ ${2:-} =~ ^[0-9]+$ ]]; then fuzz_secs=$2; shift; fi
       ;;
     -h | --help)
-      sed -n '2,9p' "$0"
+      sed -n '2,10p' "$0"
       exit 0
       ;;
     *)
@@ -47,6 +49,20 @@ step "tests under coverage (floor ${COVERAGE_FLOOR}% lines)"
 CARGO_LLVM_COV_TARGET_DIR=target/ci-cov \
   cargo llvm-cov --lcov --output-path target/ci-cov/lcov.info --fail-under-lines "$COVERAGE_FLOOR"
 CARGO_LLVM_COV_TARGET_DIR=target/ci-cov cargo llvm-cov report --summary-only | tail -n1
+
+step "verus (emitted code must verify; seeded safety bugs must be rejected)"
+verus_bin=${VERUS:-$(command -v verus || true)}
+if [[ -z $verus_bin || ! -x $verus_bin ]]; then
+  echo "verus: skipped (not found; set VERUS or put verus on PATH; pinned $(cat scripts/VERUS_VERSION))"
+else
+  verus_want=$(cat scripts/VERUS_VERSION)
+  verus_have=$("$verus_bin" --version | sed -n 's/^ *Version: *//p' | head -n1)
+  if [[ $verus_have != *"$verus_want"* ]]; then
+    echo "ci.sh: verus version '${verus_have:-unknown}' differs from pinned $verus_want" >&2
+    exit 1
+  fi
+  VERUS=$verus_bin cargo test -q --test verus_emit
+fi
 
 step "cargo audit"
 cargo audit

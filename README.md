@@ -34,23 +34,27 @@ cargo run -- run <file.bil> [--seed N] [--trace] # Tree-walk interpreter with no
 cargo run -- vm <file.bil> [--dump-bytecode]     # Execute Ghost-Erased LIR on the Register/Stack Bytecode VM
 cargo run -- build <file.bil> [-o <out_bin>]     # Compile Ghost-Erased LIR to a standalone native ELF binary
 cargo run -- dump-ir <file.bil> [--level all]    # Inspect 3-Level IR (HIR -> VIR -> LIR)
-cargo run -- emit-verus <file.bil>               # Emit Verus Rust verification code (`verus! { ... }`)
+cargo run -- emit-verus <file.bil>               # Emit Verus Rust verification code (`verus! { ... }`); a `system` becomes a `step_<i>` fn per transition plus a `next` relation
 cargo run -- import-ontologic <file.logic>       # Transpile OntoLogic .logic files into .bil
 cargo run -- all <file.bil> [--seed N] [--trace] # Run check + verify + model-check + run
 cargo run -- repl                                # Interactive REPL
 ```
+
+## What `emit-verus` proves for a `system`
+
+For each `system`, `bil emit-verus` emits one `step_<i>(&mut self)` function per transition (it requires the invariants and the guard, and ensures the invariants and the updates) and a `next(pre, post)` relation. When Verus accepts the file, every safety `invariant` is inductive over the emitted steps. Not covered: LTL liveness properties (`~>`, `eventually`), which stay with `model-check`; bugs in `axiom`s that only hold at runtime; and the link from `next` to your own hand-written Rust, which is left to you (prove that your code refines `next`). All 14 `examples/domains` systems verify; the numbers in them are illustrative. Of the 11 seeded bugs in `examples/domains/seeded_bugs`, Verus rejects the 6 safety bugs (`tests/verus_emit.rs`); the other 5 are out of scope (2 violate LTL liveness, 3 are runtime-axiom bugs the transition system does not contain). See `docs/ARCHITECTURE_AND_VERUS.md` §3.
 
 ## Local CI
 
 There is no hosted CI. Run the gate before pushing:
 
 ```bash
-scripts/ci.sh              # clippy -D warnings, tests under coverage (78% line floor), cargo audit
+scripts/ci.sh              # clippy -D warnings, tests under coverage (78% line floor), Verus emit tests (or `verus: skipped`), cargo audit
 scripts/ci.sh --fuzz 300   # also fuzz lex/parse/check for 300 s each (nightly + cargo-fuzz)
 git config core.hooksPath .githooks   # optional: run scripts/ci.sh automatically on git push
 ```
 
-Requires `cargo-llvm-cov`, `cargo-audit` and z3 (on `PATH` or in `~/.local/bin`).
+Requires `cargo-llvm-cov`, `cargo-audit` and z3 (on `PATH` or in `~/.local/bin`). Verus is optional: with `verus` on `PATH` (or `$VERUS`) the gate also checks the emitted Verus code, and fails if its version differs from the one pinned in `scripts/VERUS_VERSION`; without it the step prints `verus: skipped`.
 
 ## Practical Application Examples (`examples/`)
 

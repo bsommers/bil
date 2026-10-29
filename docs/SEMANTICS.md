@@ -96,3 +96,8 @@ The pass runs right after parsing and lowers each deadline $D$ into ordinary sta
 The `__` prefix is reserved in a system that declares a deadline (no state or update may use it), and a user invariant may not be named `Deadline_D`, `Latch_D` or `Stall_D`.
 
 The latch is a `Bool` state variable declared by the user; setting it while already set changes nothing, which models a latched, synchronous signal that is never lost. Both the explicit-state search and `model-check --bmc` check the lowered invariants. For `--bmc`, the two-branch `if g -> a [] !g -> b fi` that the counter uses is encoded as `ite`; any other `if … fi` is still not encoded. `--bmc` reports `BMC not applicable to system …` and exits 1 for a system it cannot encode, rather than staying silent.
+
+## 5. Verus Refinement of `system` (`bil emit-verus`, `src/verus.rs`)
+For a `system` $S$ with invariant $I$ and transitions $t_i$ (guard $g_i$, update $u_i$), the emitted `step_<i>` states $\{I \wedge g_i\}\ u_i\ \{I \wedge post_i\}$ and Verus proves it, so $I$ is inductive over the steps. Together with $I$ holding at initialization, $I$ is a safety invariant of every behaviour of `next`, the disjunction of the transition relations.
+
+Not covered: liveness (LTL `~>`, `eventually`), which needs fairness and is checked only by `model-check`; `axiom`s that are assumed, not proved, so a wrong axiom is a runtime bug outside the transition system; and a proof that hand-written Rust refines `next` (the user's follow-on). Integers are mathematical in the spec and `i64` in the emitted code, so overflow is checked by Verus on the exec side.
