@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.0] - 2026-10-29
+
 ### Added
 - **`bil emit-verus` refines a `system`.** Each transition is emitted as `step_<i>(&mut self)` with the invariants and guard as `requires` and the invariants and updates as `ensures`, plus a `next(pre, post)` relation, `spec_<name>` twins for pure user `fn`s, and the lowered `Deadline_`/`Latch_`/`Stall_` invariants of timed systems. All 14 `examples/domains` emit Verus that verifies; helper invariants were added where the original ones were not inductive (e.g. `mutex_protocol`). Verus rejects the 6 seeded safety bugs with "postcondition not satisfied"; the 5 others are out of scope (2 LTL liveness, 3 runtime-axiom bugs) and recorded with reasons in `tests/verus_emit.rs`. Not proved: LTL liveness, and that hand-written Rust refines `next`. `scripts/ci.sh` runs the Verus tests when `verus` is found (else prints `verus: skipped`) and checks the version against `scripts/VERUS_VERSION` (0.2026.10.26.d17fbd0). Docs: `README.md`, `docs/SEMANTICS.md` §5, `docs/ARCHITECTURE_AND_VERUS.md` §3.
 
