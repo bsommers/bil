@@ -47,11 +47,11 @@ No known CVEs or RustSec advisories were detected across any direct or transitiv
 
 ## 3. 📜 License Compliance Scorecard
 
-All `11` dependencies in `Cargo.lock` use permissive, OSI-approved licenses compatible with `bil`'s `MIT` license ([Cargo.toml](file:///home/bill/src/lang/bil/Cargo.toml#L6)). Zero copyleft (`GPL`, `LGPL`, `AGPL`, `MPL`) or non-commercial licenses are present.
+All `11` dependencies in `Cargo.lock` use permissive, OSI-approved licenses compatible with `bil`'s `Apache-2.0` license ([Cargo.toml](file:///home/bill/src/lang/bil/Cargo.toml#L6)). Zero copyleft (`GPL`, `LGPL`, `AGPL`, `MPL`) or non-commercial licenses are present.
 
 | Crate | SPDX License Expression | Category | Compliance Verdict |
 | :--- | :--- | :--- | :--- |
-| `bil` (root) | `MIT` | Permissive | ✅ Compliant |
+| `bil` (root) | `Apache-2.0` | Permissive | ✅ Compliant |
 | `serde` (`1.0.229`) | `MIT OR Apache-2.0` | Permissive | ✅ Compliant |
 | `serde_json` (`1.0.154`) | `MIT OR Apache-2.0` | Permissive | ✅ Compliant |
 | `serde_core` (`1.0.229`) | `MIT OR Apache-2.0` | Permissive | ✅ Compliant |

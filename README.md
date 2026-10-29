@@ -63,3 +63,7 @@ Requires `cargo-llvm-cov`, `cargo-audit` and z3 (on `PATH` or in `~/.local/bin`)
 - [`examples/arbiter_controller.bil`](examples/arbiter_controller.bil) — **Hardware & Digital Controllers**: Dual-channel asynchronous bus arbiter with overlapping nondeterministic request guards and progress `variant`.
 - [`examples/gcd_refinement.bil`](examples/gcd_refinement.bil) — **Verified Algorithms & Refinement**: Dijkstra's GCL greatest-common-divisor proved to refine an abstract FOL specification (`refines gcd_spec`).
 - [`examples/security_policy.bil`](examples/security_policy.bil) — **Zero-Trust Cloud Policy Auditing**: FOL compliance axioms and nondeterministic failover selection (`choose`).
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
