@@ -182,8 +182,8 @@ footer .r{margin-left:auto}
   <header class="hero">
     <div>
       <p class="eyebrow">[ Bounded · Invariant · Logic ]</p>
-      <h1>State the bound.<br><span class="g">Prove the invariant.</span></h1>
-      <p class="lede">bil is a statically typed language for specifications you can check. Dijkstra guarded commands, refinement, first-order logic and reactive <code>system</code> models, verified by weakest preconditions, Z3 and exhaustive model checking, and exported to Verus.</p>
+      <h1>Write the specification.<br><span class="g">Check it.</span></h1>
+      <p class="lede">bil is a statically typed language for writing a specification next to its implementation and checking that they agree. It has guarded commands (<code>if … fi</code>, <code>do … od</code>), refinement, first-order logic, and <code>system</code> models of concurrent state machines. Checks run through weakest preconditions, the Z3 solver, and an explicit-state model checker. It can also emit Verus code.</p>
       <div class="cta">
         <a class="btn pri" href="https://github.com/bsommers/bil">View on GitHub →</a>
         <a class="btn" href="whitepaper/bil-white-paper.html">White paper</a>
@@ -192,14 +192,17 @@ footer .r{margin-left:auto}
       <div class="install"><b>$ </b>cargo run -- verify examples/gcd_refinement.bil</div>
     </div>
 
-    <figure class="triple" style="margin:0" aria-label="A Hoare triple">
-      <div class="bar"><span>{ P } S { Q }</span><span>gcl</span></div>
-<pre><span class="c">{ inv: i ≥ 0 }</span>
-<span class="k">do</span> i &gt; 0 <span class="a">→</span>
-    i := i - 1
-<span class="k">od</span>
-<span class="c">{ i = 0 }</span></pre>
-      <div class="res">✓ wp proved · z3</div>
+    <figure class="triple" style="margin:0" aria-label="Excerpt from examples/gcd_refinement.bil and its verify output">
+      <div class="bar"><span>examples/gcd_refinement.bil</span><span>excerpt</span></div>
+<pre><span class="k">do</span> x = a, y = b
+  <span class="k">invariant</span> x &gt; 0 &amp;&amp; y &gt; 0
+            &amp;&amp; gcd_val(x, y) == gcd_val(a, b)
+  <span class="k">variant</span>   x + y
+:
+  x &gt; y <span class="a">-&gt;</span> x := x - y
+<span class="a">[]</span> y &gt; x <span class="a">-&gt;</span> y := y - x
+<span class="k">od</span></pre>
+      <div class="res" style="color:var(--dim)"><span class="s">[PROVED (by z3)]</span> refinement of <code>gcd_spec</code><br><span class="w">[BOUNDED (6561 samples)]</span> invariant preservation</div>
     </figure>
   </header>
 
@@ -208,8 +211,8 @@ footer .r{margin-left:auto}
 <!-- 1 · the name, as three judgments -->
 <section id="name">
 <div class="wrap">
-  <div class="sec-h"><span class="no">§1</span><h2>Three words, three obligations</h2></div>
-  <p class="sub">The name is the method. Every claim bil makes is bounded in what it covers, anchored by an invariant, and stated in logic.</p>
+  <div class="sec-h"><span class="no">§1</span><h2>What the name means</h2></div>
+  <p class="sub">Each word in the name maps to a part of the language.</p>
 
   <div class="three">
     <div>
@@ -220,8 +223,8 @@ footer .r{margin-left:auto}
         <circle cx="60" cy="28" r="4" fill="url(#g1)" stroke="none"/>
       </svg>
       <div class="tag">Bounded</div>
-      <h3>Honest about reach</h3>
-      <p>Each proof obligation is either <code>PROVED</code> by Z3 or reported as <code>BOUNDED</code> with the number of samples tried. <code>bil verify</code> exits 1 on a bounded-only result unless you pass <code>--allow-bounded</code>.</p>
+      <h3>Proved or sampled, and it says which</h3>
+      <p>Each proof obligation is reported as <code>PROVED</code> (Z3) or <code>BOUNDED</code>, with the number of samples tried. <code>bil verify</code> exits 1 when a result is only <code>BOUNDED</code>, unless you pass <code>--allow-bounded</code>.</p>
     </div>
     <div>
       <svg class="glyph" viewBox="0 0 120 56" fill="none" stroke="url(#g2)" stroke-width="3" stroke-linecap="round" aria-hidden="true">
@@ -231,8 +234,8 @@ footer .r{margin-left:auto}
         <path d="M60 18L74 32L60 46L46 32Z" fill="url(#g2)" stroke="none"/>
       </svg>
       <div class="tag">Invariant</div>
-      <h3>True before, true after</h3>
-      <p>Loops carry an <code>invariant</code> and a <code>variant</code>. A <code>system</code> carries invariants that must hold initially and survive every nondeterministic transition. A failure comes back with a shortest counterexample trace.</p>
+      <h3>Conditions that must keep holding</h3>
+      <p>A loop has an <code>invariant</code> and a <code>variant</code>. A <code>system</code> has invariants that must hold in the initial state and after every transition. A violation is reported with the shortest trace that reaches it.</p>
     </div>
     <div>
       <svg class="glyph" viewBox="0 0 120 56" fill="none" stroke="url(#g3)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -241,8 +244,8 @@ footer .r{margin-left:auto}
         <path d="M70 12V44M70 28H104M96 20L104 28L96 36" stroke-linecap="square"/>
       </svg>
       <div class="tag">Logic</div>
-      <h3>First-order, typed, ontological</h3>
-      <p><code>forall</code> / <code>exists</code> over ranges and <code>concept</code> hierarchies (BFO-compatible), inside Hindley–Milner type inference. ASCII or Unicode: <code>=&gt;</code> and <code>⇒</code>, <code>forall</code> and <code>∀</code>.</p>
+      <h3>First-order logic and types</h3>
+      <p>Conditions use <code>forall</code> and <code>exists</code>. <code>concept</code> hierarchies (<code>&lt;:</code>) are checked for cycles and used as types, with Hindley–Milner inference. Either ASCII or Unicode works: <code>=&gt;</code> or <code>⇒</code>, <code>forall</code> or <code>∀</code>.</p>
     </div>
   </div>
 </div>
@@ -251,21 +254,21 @@ footer .r{margin-left:auto}
 <!-- 2 · pipeline -->
 <section id="pipeline">
 <div class="wrap">
-  <div class="sec-h"><span class="no">§2</span><h2>One source, one IR stack, many checkers</h2></div>
-  <p class="sub">A program lowers through three IRs. Ghost code (<code>spec</code>, <code>requires</code>, <code>ensures</code>, <code>invariant</code>, <code>variant</code>) is erased before execution, so a proof costs nothing at runtime.</p>
+  <div class="sec-h"><span class="no">§2</span><h2>How a program is processed</h2></div>
+  <p class="sub">A program is converted to three intermediate representations (IRs) in turn. Specification code (<code>spec</code>, <code>requires</code>, <code>ensures</code>, <code>invariant</code>, <code>variant</code>) is removed in the last one, so it is not in the code that runs. <code>bil dump-ir</code> prints each level.</p>
 
   <div class="flow">
     <div class="node"><div class="t">.bil</div><p>Concepts, axioms, specs, <code>fn</code>, <code>proof</code>, <code>system</code>.</p></div>
     <div class="arrow">→</div>
-    <div class="node"><div class="t">HIR</div><p>Typed AST. Ontology DAG and contradiction lint.</p></div>
+    <div class="node"><div class="t">HIR</div><p>Resolved types, flattened <code>concept</code> inheritance, desugared <code>|&gt;</code> pipelines.</p></div>
     <div class="arrow">→</div>
-    <div class="node"><div class="t">VIR</div><p>Ghost / proof / exec modes, with verification conditions.</p></div>
+    <div class="node"><div class="t">VIR</div><p>Marks each node as spec, proof or exec. Holds the verification conditions and system transitions.</p></div>
     <div class="arrow">→</div>
     <div class="outs">
       <div class="node"><div class="t">verify</div><span>wp · z3</span></div>
       <div class="node"><div class="t">model-check</div><span>BFS · LTL</span></div>
       <div class="node"><div class="t">emit-verus</div><span>step_i · next</span></div>
-      <div class="node"><div class="t">vm · build</div><span>LIR · ELF</span></div>
+      <div class="node"><div class="t">vm · build</div><span>from LIR</span></div>
     </div>
   </div>
 </div>
@@ -274,8 +277,8 @@ footer .r{margin-left:auto}
 <!-- 3 · proof by example (real output) -->
 <section id="proof">
 <div class="wrap">
-  <div class="sec-h"><span class="no">§3</span><h2>Source, then judgment</h2></div>
-  <p class="sub">Both panels are real: source from <code>examples/</code>, output trimmed from the CLI. Nothing here is mocked.</p>
+  <div class="sec-h"><span class="no">§3</span><h2>Example: source and output</h2></div>
+  <p class="sub">The source is from <code>examples/</code>. The output is copied from the CLI, with lines cut where marked.</p>
 
   <div class="pair">
     <div class="term">
@@ -309,7 +312,7 @@ footer .r{margin-left:auto}
     Invariant Initialization (Pre =&gt; I)
 <span class="w">[BOUNDED (6561 samples)]</span> fn `gcd` — do..od
     Invariant Preservation Branch #1 (I ∧ G1 =&gt; wp(S1, I))</pre>
-      <div class="bar" style="border-top:1px solid var(--line);border-bottom:0"><span>The refinement is proved. The loop invariant is sampled, and says so.</span></div>
+      <div class="bar" style="border-top:1px solid var(--line);border-bottom:0"><span>The refinement is proved. The loop invariant is only sampled.</span></div>
     </div>
   </div>
 
@@ -343,7 +346,7 @@ Max depth: 3 | Max nondeterministic branching: 2
 <span class="s">[VERIFIED]</span> All safety invariants, LTL temporal
            properties, deadlock-freedom (BB),
            and variant bounds hold.</pre>
-      <div class="bar" style="border-top:1px solid var(--line);border-bottom:0"><span>Break a deadline and the checker returns the trace that breaks it.</span></div>
+      <div class="bar" style="border-top:1px solid var(--line);border-bottom:0"><span>For a violation, see seeded_bugs/spe_late_cutoff.bil: model-check prints a 14-step trace.</span></div>
     </div>
   </div>
 </div>
@@ -374,13 +377,13 @@ Max depth: 3 | Max nondeterministic branching: 2
 <section id="scope">
 <div class="wrap">
   <div class="sec-h"><span class="no">§5</span><h2>What <code>emit-verus</code> proves, and what it does not</h2></div>
-  <p class="sub">For each <code>system</code>, Verus checks every emitted transition step. We state the boundary plainly.</p>
+  <p class="sub">For each <code>system</code>, <code>emit-verus</code> writes one function per transition. Verus then checks each function.</p>
 
   <div class="scope">
     <div class="yes">
       <h3>Proved</h3>
       <ul>
-        <li>Each safety <code>invariant</code> is <strong>inductive</strong> over the emitted <code>step_&lt;i&gt;</code> functions.</li>
+        <li>Every <code>step_&lt;i&gt;</code> function keeps the system's <code>invariant</code>s true: if they hold before the step, they hold after it.</li>
         <li>All 14 <code>examples/domains</code> systems emit Verus that verifies.</li>
         <li>Verus rejects the <strong>6</strong> seeded safety bugs with “postcondition not satisfied”.</li>
       </ul>
@@ -388,27 +391,27 @@ Max depth: 3 | Max nondeterministic branching: 2
     <div class="no">
       <h3>Not covered</h3>
       <ul>
-        <li><strong>LTL liveness</strong> (<code>~&gt;</code>, <code>eventually</code>). That stays with <code>model-check</code>.</li>
-        <li><strong>Runtime-axiom bugs.</strong> An <code>axiom</code> is assumed, not proved.</li>
-        <li>That your hand-written Rust <strong>refines</strong> <code>next</code>. That proof is yours.</li>
+        <li><strong>Liveness</strong> (“this eventually happens”, written <code>~&gt;</code> or <code>eventually</code>). Only <code>model-check</code> checks these.</li>
+        <li><strong>Wrong axioms.</strong> An <code>axiom</code> is assumed true and never proved.</li>
+        <li>That your own Rust code <strong>matches</strong> the <code>next</code> relation. You prove that yourself.</li>
       </ul>
     </div>
   </div>
-  <p class="note">Of the 11 seeded bugs, 6 are in scope. The other 5 are classified out of scope with reasons in <a href="https://github.com/bsommers/bil/blob/main/tests/verus_emit.rs"><code>tests/verus_emit.rs</code></a>: 2 violate liveness and 3 are runtime-axiom bugs. Pinned Verus: <code>0.2026.10.26.d17fbd0</code>. Numbers inside example models are illustrative.</p>
+  <p class="note">Of the 11 seeded bugs, Verus is expected to reject 6. The other 5 are listed with reasons in <a href="https://github.com/bsommers/bil/blob/main/tests/verus_emit.rs"><code>tests/verus_emit.rs</code></a>: 2 break a liveness property and 3 are wrong-axiom bugs that the model checker does not see. Verus version: <code>0.2026.10.26.d17fbd0</code>. Numbers inside the example models are illustrative.</p>
 </div>
 </section>
 
 <!-- 6 · domains -->
 <section id="domains">
 <div class="wrap">
-  <div class="sec-h"><span class="no">§6</span><h2>Worked domains</h2></div>
-  <p class="sub">Each model ships with seeded-bug variants the checkers must catch.</p>
+  <div class="sec-h"><span class="no">§6</span><h2>Example systems</h2></div>
+  <p class="sub">Models in <code>examples/domains/</code>. The seeded-bug files are copies with one fault added.</p>
 
   <div class="stats">
     <div><b>14</b><span>domain systems that emit verifying Verus</span></div>
-    <div><b>11</b><span>seeded bugs, each classified</span></div>
-    <div><b>6</b><span>rejected by Verus (safety)</span></div>
-    <div><b>83%</b><span>line coverage, gated in local CI</span></div>
+    <div><b>11</b><span>seeded bugs; the test suite checks each is caught</span></div>
+    <div><b>6</b><span>of those are also rejected by Verus</span></div>
+    <div><b>83%</b><span>line coverage (CI floor is 78%)</span></div>
   </div>
 
   <div class="chips">
@@ -427,7 +430,7 @@ Max depth: 3 | Max nondeterministic branching: 2
     <a class="chip" href="https://github.com/bsommers/bil/blob/main/examples/domains/semiconductor_se_spe.bil">semiconductor SPE</a>
     <a class="chip" href="https://github.com/bsommers/bil/blob/main/examples/domains/surgical_teleoperation.bil">surgical teleop</a>
   </div>
-  <p class="note">These are modelling demonstrations, not certified safety cases. Domain claims are cited in <a href="https://github.com/bsommers/bil/blob/main/docs/whitepaper/CITATIONS.md"><code>CITATIONS.md</code></a> where the repo makes them.</p>
+  <p class="note">These are models, not certified safety cases. Sources for domain details are in <a href="https://github.com/bsommers/bil/blob/main/docs/whitepaper/CITATIONS.md"><code>CITATIONS.md</code></a>.</p>
 </div>
 </section>
 </main>
