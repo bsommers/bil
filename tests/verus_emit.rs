@@ -146,3 +146,81 @@ fn timed_system_emits_lowered_invariants_and_next_relation() {
     };
     emit_and_verify(&verus, &path).unwrap_or_else(|e| panic!("{e}"));
 }
+
+/// Seeded bugs whose violated property is a safety invariant: Verus must reject the
+/// emitted `step_*` (a "postcondition not satisfied" error). Arithmetic-overflow
+/// errors do not count; these files carry no range bounds, so they appear regardless.
+const SEEDED_SAFETY: &[&str] = &[
+    "bms_fault_always_opens",
+    "mqtt_unordered_transport",
+    "reactor_slow_sis",
+    "spe_late_cutoff",
+    "spe_overtemp_only_in_soak",
+    "spe_slow_thermal_loop",
+];
+
+/// Seeded bugs outside the discrete safety refinement, each with the reason.
+const SEEDED_OUT_OF_SCOPE: &[(&str, &str)] = &[
+    ("infusion_alarm_always_cleared", "violates an LTL liveness property; step functions only prove safety"),
+    ("robotics_stop_always_clears", "violates an LTL liveness property; step functions only prove safety"),
+    ("cyber_noncompliant_grant", "model-check passes; the bug is in a runtime axiom, not the transition system"),
+    ("reactor_trip_shared_input", "model-check passes; the bug is in a runtime axiom, not the transition system"),
+    ("tls_early_finished", "model-check passes; the bug is in a runtime axiom, not the transition system"),
+];
+
+fn seeded_bug_files() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/domains/seeded_bugs");
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "bil"))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn every_seeded_bug_is_classified() {
+    let names: Vec<String> = seeded_bug_files()
+        .iter()
+        .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        .collect();
+    for n in &names {
+        let in_scope = SEEDED_SAFETY.contains(&n.as_str());
+        let out = SEEDED_OUT_OF_SCOPE.iter().any(|(o, _)| o == n);
+        assert!(in_scope ^ out, "{n} must be in exactly one of SEEDED_SAFETY / SEEDED_OUT_OF_SCOPE");
+    }
+    for n in SEEDED_SAFETY.iter().copied().chain(SEEDED_OUT_OF_SCOPE.iter().map(|(n, _)| *n)) {
+        assert!(names.iter().any(|x| x == n), "unknown seeded bug {n}");
+    }
+    assert!(SEEDED_OUT_OF_SCOPE.iter().all(|(_, why)| !why.is_empty()));
+}
+
+#[test]
+fn verus_rejects_seeded_safety_bugs() {
+    let Some(verus) = verus_bin() else {
+        eprintln!("verus: skipped (no Verus binary; set $VERUS)");
+        return;
+    };
+    let dir = std::env::temp_dir().join("bil_verus_emit_neg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut missed = Vec::new();
+    for name in SEEDED_SAFETY {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("examples/domains/seeded_bugs/{name}.bil"));
+        let emitted = Command::new(BIL).arg("emit-verus").arg(&src).output().unwrap();
+        assert!(emitted.status.success(), "{name}: emit-verus failed");
+        let rs = dir.join(format!("{name}.rs"));
+        std::fs::write(&rs, &emitted.stdout).unwrap();
+        let out = Command::new(&verus).arg(&rs).arg("--crate-type=lib").output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if !text.contains("postcondition not satisfied") {
+            missed.push(*name);
+        }
+    }
+    assert!(missed.is_empty(), "Verus did not reject seeded bug(s): {missed:?}");
+}
