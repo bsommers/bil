@@ -34,3 +34,35 @@ flowchart LR
 
 ### Phase 4: Native AOT Compiler (`bil build`) & Register Bytecode VM
 - **Goal**: Lower Ghost-Erased `LIR` into standalone native binaries (via `rustc`/LLVM) and a fast register bytecode VM.
+
+---
+
+## Planned: Solver independence (option D in `docs/SOLVER-CONSIDERATIONS.md`)
+
+Status: planned, not started. Effort figures are estimates (8-16 weeks total).
+
+- **Goal**: `bil verify` can produce PROVED results with no external solver installed, for the queries it can decide. z3, cvc5 and vampire remain the default and the fallback for everything else.
+- **Non-goals**: beating z3; a general SMT solver (option E); removing the external provers.
+
+### Step 0: Measure (about 1 day, no changes to `src/`)
+- Run the 14 domain examples and record which SMT features each emitted query uses (`Int`, `Real`, `forall`, `exists`, uninterpreted sorts and functions).
+- Record what `solve` and `model-check --bmc` do with no solver installed.
+- Decision gate: build D only if the decidable fragment covers most queries. Otherwise stop and reconsider options B, C or F.
+
+### Step 1: Fragment and interface
+- Define the fragment D decides (candidate: quantifier-free linear integer and real arithmetic, booleans, bounded finite domains).
+- Add a `bil-smt` backend behind the same `--prover` interface in `src/smt.rs`. Outside the fragment it returns `unknown`, never a guess.
+
+### Step 2: Decision procedure
+- Implement the procedure for the fragment; unit-test against z3's answers on the same queries.
+
+### Step 3: Soundness gate
+- Differential test: every query in the repo's examples and tests must give the same sat/unsat answer as z3, and any disagreement fails CI.
+- Seeded-bug suite (`tests/domain_examples.rs`) must still be caught with `bil-smt` as the only prover.
+
+### Step 4: Wire-in
+- `--prover auto` tries an installed solver first, then `bil-smt`. Results are labelled `PROVED (by bil-smt)`.
+- Update README solver wording, CHANGELOG, `docs/SEMANTICS.md`.
+
+### Later (not scheduled)
+- Option F: check proof certificates from z3 inside bil.
