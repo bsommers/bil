@@ -6,7 +6,7 @@ Planning IDs are `N.P.T` = Milestone.Phase.Task (for example `7.3.4` is Mileston
 
 Release versions line up with milestones: **Milestone N ships as release `v0.N.0`.** A fix released between milestones is `v0.N.Z` with `Z` counting patches (this `Z` is a release patch number, not a task number).
 
-Milestones 1 to 6 are already released and match the git tags `v0.1.0` to `v0.6.0`. Milestone 7 is implemented on `main` but not yet released. The crate version in `Cargo.toml` is 0.6.0 and will move to 0.7.0 when Milestone 7 is released.
+Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.7.1` is a patch release of Milestone 7 that carries the Apache-2.0 license in `Cargo.toml` (the `v0.7.0` tag still says MIT).
 
 | Milestone | Release | Name | Status |
 |---|---|---|---|
@@ -16,7 +16,7 @@ Milestones 1 to 6 are already released and match the git tags `v0.1.0` to `v0.6.
 | 4 | v0.4.0 | Verification Depth & Performance | Released |
 | 5 | v0.5.0 | Strict Exit Codes, CLI Validation & Type Soundness | Released |
 | 6 | v0.6.0 | CI Gate, Counterexample Values & Hardening | Released |
-| 7 | v0.7.0 | Timed Guards, SMT Unfolding, Recursion & System to Verus Refinement | Implemented on `main`, not released |
+| 7 | v0.7.0 | Timed Guards, SMT Unfolding, Recursion & System to Verus Refinement | Released 2026-10-29 (patch v0.7.1) |
 | 8 | v0.8.0 | Solver independence | Planned |
 
 Milestones 3 to 6 were not in the earlier roadmap. They are filled in from `CHANGELOG.md` and the git tags. Task lines for them are shortened summaries; the CHANGELOG entry for each release has the detail.
@@ -145,7 +145,7 @@ flowchart LR
 
 ## Milestone 7 (v0.7.0): Timed Guards, SMT Unfolding, Recursion & System to Verus Refinement
 
-Implemented on `main`; listed under `[Unreleased]` in `CHANGELOG.md`. Not tagged. Releasing needs the user's go-ahead.
+Released as `v0.7.0` on 2026-10-29. Patch `v0.7.1` changes only the license metadata.
 
 ### Phase 7.1: Timed guards
 - 7.1.1 `clock` and `deadline` in `system` blocks, lowered to `Deadline_`/`Latch_`/`Stall_` invariants (`bil::timed`)

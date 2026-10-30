@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.1] - 2026-10-29
+
+### Changed
+- **License is Apache-2.0.** `LICENSE` and `NOTICE` are added and `Cargo.toml` says `Apache-2.0`. The `v0.7.0` tag still declares MIT. No code changes.
+
 ## [v0.7.0] - 2026-10-29
 
 ### Added

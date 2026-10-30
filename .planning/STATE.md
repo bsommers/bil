@@ -2,7 +2,7 @@
 
 Numbering and release mapping: see `.planning/ROADMAP.md`. Milestone N ships as release `v0.N.0`.
 
-- **Current Milestone**: 7 (`v0.7.0`) — released 2026-10-29
+- **Current Milestone**: 7 (`v0.7.0`, patch `v0.7.1`) — released 2026-10-29
 - **Released**: Milestones 1 to 7 (`v0.1.0` to `v0.7.0`)
   - 1 (v0.1.0): lexer/parser, OntoLogic, HM types, weakest-precondition verifier, model checker, Verus backend, interpreter
   - 2 (v0.2.0): 3-level IR (`src/ir/`), SMT-LIB2 bridge (`src/smt.rs`), LTL model checking with fairness, bytecode VM, native compiler

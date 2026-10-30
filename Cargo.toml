@@ -1,6 +1,6 @@
 [package]
 name = "bil"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Bounded Invariant Logic (bil): OntoLogic + First-Order Logic + Guarded Command Language + Formal Verification & Data Pipelines"
 license = "Apache-2.0"
