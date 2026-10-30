@@ -3,7 +3,7 @@ name = "bil"
 version = "0.7.0"
 edition = "2021"
 description = "Bounded Invariant Logic (bil): OntoLogic + First-Order Logic + Guarded Command Language + Formal Verification & Data Pipelines"
-license = "MIT"
+license = "Apache-2.0"
 
 [[bin]]
 name = "bil"
