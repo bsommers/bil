@@ -1,5 +1,5 @@
-//! Fragment classifier, finite `Entity` quantifier instantiator, and interface for the in-repo
-//! `bil-smt` backend (Roadmap 8.1.2).
+//! Fragment classifier, finite `Entity` quantifier instantiator, and decision procedure for the
+//! in-repo `bil-smt` backend (Roadmap 8.1.2 & 8.1.3).
 //!
 //! ## Decidable Fragment (`Fragment`)
 //! An SMT-LIB2 script is in the `bil-smt` fragment iff:
@@ -15,7 +15,7 @@
 //!    - `(declare-fun <id> (Entity ... Entity) Int|Bool|String)` (at least 1 arg, all args `Entity`;
 //!      no uninterpreted function may return `Entity`)
 //! 3. **Commands**: `(assert <term>)`, `(push 1)` / `(push)`, `(pop 1)` / `(pop)`, `(check-sat)`,
-//!    and `(get-model)` (ignored or handled by the solver).
+//!    and `(get-model)`.
 //! 4. **Terms & Formulas**:
 //!    - Boolean connectives: `true`, `false`, `not`, `and`, `or`, `=>`, `=` (on `Bool`, `Int`,
 //!      `Entity`, or `String`), `distinct` (on `Bool`, `Int`, `Entity`, or `String`), `ite`.
@@ -35,14 +35,12 @@
 //! universe for sort `Entity` is finite and consists of the declared `Entity` constants (or a single
 //! fresh witness constant if none are declared). Replacing each `(forall ((x Entity)) body)` with the
 //! conjunction of its instances over those constants is equisatisfiable and produces a quantifier-free
-//! `QF_UFLIA` script (or pure `QF_LIA` after Ackermannization / constant specialization when all
-//! `Entity` arguments are ground constants).
-//!
-//! In 8.1.2, `run_bil_smt` validates that the input script is in this fragment, performs the finite
-//! `Entity` instantiation, and returns `Verdict::Unknown` (never a guess; decision procedure is 8.1.3).
+//! `QF_UFLIA` script, which is then lowered via Ackermannization and solved by DPLL(T) + exact `QF_LIA`
+//! (bound propagation + exact Fourier-Motzkin / Omega elimination with model verification).
 
 use crate::smt::{parse_sexprs, ProverResult, SExpr, Verdict};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmtSort {
@@ -120,6 +118,7 @@ struct Scope {
     defined_ints: BTreeMap<String, i64>,
     funs: BTreeMap<String, FunSig>,
     entity_consts: Vec<String>,
+    assertions: Vec<SExpr>,
 }
 
 /// Checks whether `smt2_input` belongs to the `bil-smt` decidable fragment and, if so, returns the
@@ -725,37 +724,2076 @@ fn render_sexpr(s: &SExpr) -> String {
     }
 }
 
+// ============================================================================
+// Decision Procedure for `bil-smt` (Roadmap 8.1.3)
+// ============================================================================
+
+/// Linear integer expression: `constant + sum_i coeffs[v_i] * x_{v_i}`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LinExpr {
+    coeffs: BTreeMap<usize, i128>,
+    constant: i128,
+}
+
+impl LinExpr {
+    fn from_const(c: i128) -> Self {
+        Self {
+            coeffs: BTreeMap::new(),
+            constant: c,
+        }
+    }
+
+    fn from_var(v: usize) -> Self {
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(v, 1);
+        Self {
+            coeffs,
+            constant: 0,
+        }
+    }
+
+    fn neg(&self) -> Option<Self> {
+        let mut coeffs = BTreeMap::new();
+        for (&v, &c) in &self.coeffs {
+            coeffs.insert(v, c.checked_neg()?);
+        }
+        Some(Self {
+            coeffs,
+            constant: self.constant.checked_neg()?,
+        })
+    }
+
+    fn add(&self, other: &Self) -> Option<Self> {
+        let mut coeffs = self.coeffs.clone();
+        for (&v, &c) in &other.coeffs {
+            let next = coeffs.get(&v).copied().unwrap_or(0).checked_add(c)?;
+            if next == 0 {
+                coeffs.remove(&v);
+            } else {
+                coeffs.insert(v, next);
+            }
+        }
+        Some(Self {
+            coeffs,
+            constant: self.constant.checked_add(other.constant)?,
+        })
+    }
+
+    fn sub(&self, other: &Self) -> Option<Self> {
+        self.add(&other.neg()?)
+    }
+
+    fn scale(&self, k: i128) -> Option<Self> {
+        if k == 0 {
+            return Some(Self::from_const(0));
+        }
+        let mut coeffs = BTreeMap::new();
+        for (&v, &c) in &self.coeffs {
+            let sc = c.checked_mul(k)?;
+            if sc != 0 {
+                coeffs.insert(v, sc);
+            }
+        }
+        Some(Self {
+            coeffs,
+            constant: self.constant.checked_mul(k)?,
+        })
+    }
+}
+
+/// Canonical linear integer inequality: `sum_i a_i * x_i <= rhs`, with `gcd(|a_i|) == 1`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LeqConstraint {
+    coeffs: BTreeMap<usize, i128>,
+    rhs: i128,
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+#[derive(Debug, Clone)]
+enum NormLeq {
+    AlwaysTrue,
+    AlwaysFalse,
+    Constraint(LeqConstraint),
+}
+
+/// Normalizes `expr <= 0` into `sum a_i x_i <= -constant` with GCD tightening.
+fn normalize_leq_zero(expr: &LinExpr) -> Option<NormLeq> {
+    let rhs = expr.constant.checked_neg()?;
+    if expr.coeffs.is_empty() {
+        return Some(if 0 <= rhs {
+            NormLeq::AlwaysTrue
+        } else {
+            NormLeq::AlwaysFalse
+        });
+    }
+    let mut g: u128 = 0;
+    for &c in expr.coeffs.values() {
+        g = gcd_u128(g, c.unsigned_abs());
+    }
+    let g_i128 = i128::try_from(g).ok()?;
+    let mut coeffs = BTreeMap::new();
+    for (&v, &c) in &expr.coeffs {
+        if c != 0 {
+            coeffs.insert(v, c / g_i128);
+        }
+    }
+    let tightened_rhs = rhs.div_euclid(g_i128);
+    Some(NormLeq::Constraint(LeqConstraint {
+        coeffs,
+        rhs: tightened_rhs,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Formula {
+    True,
+    False,
+    BoolVar(usize, bool),
+    Leq(LeqConstraint),
+    Not(Box<Formula>),
+    And(Vec<Formula>),
+    Or(Vec<Formula>),
+}
+
+impl Formula {
+    fn not(f: Formula) -> Formula {
+        match f {
+            Formula::True => Formula::False,
+            Formula::False => Formula::True,
+            Formula::BoolVar(v, pol) => Formula::BoolVar(v, !pol),
+            Formula::Not(inner) => *inner,
+            Formula::Leq(c) => {
+                // !(sum a_i x_i <= rhs)  <=>  sum (-a_i) x_i <= -rhs - 1
+                let mut neg_coeffs = BTreeMap::new();
+                for (&v, &a) in &c.coeffs {
+                    neg_coeffs.insert(v, -a);
+                }
+                Formula::Leq(LeqConstraint {
+                    coeffs: neg_coeffs,
+                    rhs: -c.rhs - 1,
+                })
+            }
+            other => Formula::Not(Box::new(other)),
+        }
+    }
+
+    fn and(items: Vec<Formula>) -> Formula {
+        let mut flat = Vec::new();
+        for it in items {
+            match it {
+                Formula::False => return Formula::False,
+                Formula::True => {}
+                Formula::And(sub) => flat.extend(sub),
+                other => {
+                    if !flat.contains(&other) {
+                        flat.push(other);
+                    }
+                }
+            }
+        }
+        match flat.len() {
+            0 => Formula::True,
+            1 => flat.into_iter().next().unwrap(),
+            _ => Formula::And(flat),
+        }
+    }
+
+    fn or(items: Vec<Formula>) -> Formula {
+        let mut flat = Vec::new();
+        for it in items {
+            match it {
+                Formula::True => return Formula::True,
+                Formula::False => {}
+                Formula::Or(sub) => flat.extend(sub),
+                other => {
+                    if !flat.contains(&other) {
+                        flat.push(other);
+                    }
+                }
+            }
+        }
+        match flat.len() {
+            0 => Formula::False,
+            1 => flat.into_iter().next().unwrap(),
+            _ => Formula::Or(flat),
+        }
+    }
+
+    fn implies(a: Formula, b: Formula) -> Formula {
+        Formula::or(vec![Formula::not(a), b])
+    }
+
+    fn iff(a: Formula, b: Formula) -> Formula {
+        Formula::and(vec![
+            Formula::implies(a.clone(), b.clone()),
+            Formula::implies(b, a),
+        ])
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LoweredTerm {
+    Bool(Formula),
+    Int(LinExpr),
+}
+
+struct LoweringCtx<'a> {
+    scope: &'a Scope,
+    entity_equality_used: bool,
+    int_var_ids: BTreeMap<String, usize>,
+    int_var_names: Vec<String>,
+    bool_var_ids: BTreeMap<String, usize>,
+    bool_var_names: Vec<String>,
+    string_lit_ids: BTreeMap<String, i128>,
+    string_vars: BTreeSet<usize>,
+    entity_const_ids: BTreeMap<String, i128>,
+    entity_vars: BTreeMap<String, usize>,
+    uf_apps: BTreeMap<String, Vec<(Vec<LinExpr>, LoweredTerm)>>,
+    ite_cache: BTreeMap<(Formula, LinExpr, LinExpr), usize>,
+    abs_cache: BTreeMap<LinExpr, usize>,
+    divmod_cache: BTreeMap<(LinExpr, i128), (usize, usize)>,
+    side_constraints: Vec<Formula>,
+}
+
+impl<'a> LoweringCtx<'a> {
+    fn new(scope: &'a Scope, entity_equality_used: bool) -> Self {
+        let mut entity_const_ids = BTreeMap::new();
+        for (idx, name) in scope.entity_consts.iter().enumerate() {
+            entity_const_ids.insert(name.clone(), idx as i128);
+        }
+        Self {
+            scope,
+            entity_equality_used,
+            int_var_ids: BTreeMap::new(),
+            int_var_names: Vec::new(),
+            bool_var_ids: BTreeMap::new(),
+            bool_var_names: Vec::new(),
+            string_lit_ids: BTreeMap::new(),
+            string_vars: BTreeSet::new(),
+            entity_const_ids,
+            entity_vars: BTreeMap::new(),
+            uf_apps: BTreeMap::new(),
+            ite_cache: BTreeMap::new(),
+            abs_cache: BTreeMap::new(),
+            divmod_cache: BTreeMap::new(),
+            side_constraints: Vec::new(),
+        }
+    }
+
+    fn get_or_alloc_int_var(&mut self, name: &str) -> usize {
+        if let Some(&id) = self.int_var_ids.get(name) {
+            return id;
+        }
+        let id = self.int_var_names.len();
+        self.int_var_names.push(name.to_string());
+        self.int_var_ids.insert(name.to_string(), id);
+        id
+    }
+
+    fn fresh_int_var(&mut self, prefix: &str) -> usize {
+        let name = format!("__{}_{}", prefix, self.int_var_names.len());
+        self.get_or_alloc_int_var(&name)
+    }
+
+    fn get_or_alloc_bool_var(&mut self, name: &str) -> usize {
+        if let Some(&id) = self.bool_var_ids.get(name) {
+            return id;
+        }
+        let id = self.bool_var_names.len();
+        self.bool_var_names.push(name.to_string());
+        self.bool_var_ids.insert(name.to_string(), id);
+        id
+    }
+
+    fn fresh_bool_var(&mut self, prefix: &str) -> usize {
+        let name = format!("__{}_{}", prefix, self.bool_var_names.len());
+        self.get_or_alloc_bool_var(&name)
+    }
+
+    fn make_leq_zero(&self, expr: &LinExpr) -> Option<Formula> {
+        Some(match normalize_leq_zero(expr)? {
+            NormLeq::AlwaysTrue => Formula::True,
+            NormLeq::AlwaysFalse => Formula::False,
+            NormLeq::Constraint(c) => Formula::Leq(c),
+        })
+    }
+
+    fn make_leq(&self, lhs: &LinExpr, rhs: &LinExpr) -> Option<Formula> {
+        let diff = lhs.sub(rhs)?;
+        self.make_leq_zero(&diff)
+    }
+
+    fn make_lt(&self, lhs: &LinExpr, rhs: &LinExpr) -> Option<Formula> {
+        // lhs < rhs  <=>  lhs - rhs + 1 <= 0
+        let diff = lhs.sub(rhs)?.add(&LinExpr::from_const(1))?;
+        self.make_leq_zero(&diff)
+    }
+
+    fn make_eq_int(&self, lhs: &LinExpr, rhs: &LinExpr) -> Option<Formula> {
+        Some(Formula::and(vec![
+            self.make_leq(lhs, rhs)?,
+            self.make_leq(rhs, lhs)?,
+        ]))
+    }
+
+    fn lower_entity_const(&mut self, name: &str) -> LinExpr {
+        if self.entity_equality_used {
+            let v = self.get_or_alloc_int_var(&format!("__ent_{}", name));
+            if !self.entity_vars.contains_key(name) {
+                self.entity_vars.insert(name.to_string(), v);
+                let max_e = (self.scope.entity_consts.len().saturating_sub(1)) as i128;
+                let ve = LinExpr::from_var(v);
+                if let Some(f_lo) = self.make_leq(&LinExpr::from_const(0), &ve) {
+                    self.side_constraints.push(f_lo);
+                }
+                if let Some(f_hi) = self.make_leq(&ve, &LinExpr::from_const(max_e)) {
+                    self.side_constraints.push(f_hi);
+                }
+            }
+            LinExpr::from_var(v)
+        } else {
+            let id = self.entity_const_ids.get(name).copied().unwrap_or(0);
+            LinExpr::from_const(id)
+        }
+    }
+
+    fn lower_term(
+        &mut self,
+        expr: &SExpr,
+        locals: &BTreeMap<String, LoweredTerm>,
+    ) -> Option<LoweredTerm> {
+        match expr {
+            SExpr::Atom(a) => {
+                if a == "true" {
+                    return Some(LoweredTerm::Bool(Formula::True));
+                }
+                if a == "false" {
+                    return Some(LoweredTerm::Bool(Formula::False));
+                }
+                if let Ok(n) = a.parse::<i64>() {
+                    return Some(LoweredTerm::Int(LinExpr::from_const(i128::from(n))));
+                }
+                if a.starts_with('"') {
+                    let next_id = self.string_lit_ids.len() as i128;
+                    let id = *self.string_lit_ids.entry(a.clone()).or_insert(next_id);
+                    return Some(LoweredTerm::Int(LinExpr::from_const(id)));
+                }
+                if let Some(bound) = locals.get(a) {
+                    return Some(bound.clone());
+                }
+                if let Some(&k) = self.scope.defined_ints.get(a) {
+                    return Some(LoweredTerm::Int(LinExpr::from_const(i128::from(k))));
+                }
+                match self.scope.consts.get(a)? {
+                    SmtSort::Bool => {
+                        let v = self.get_or_alloc_bool_var(a);
+                        Some(LoweredTerm::Bool(Formula::BoolVar(v, true)))
+                    }
+                    SmtSort::Int => {
+                        let v = self.get_or_alloc_int_var(a);
+                        Some(LoweredTerm::Int(LinExpr::from_var(v)))
+                    }
+                    SmtSort::String => {
+                        let v = self.get_or_alloc_int_var(a);
+                        if self.string_vars.insert(v) {
+                            let ve = LinExpr::from_var(v);
+                            let f_lo = self.make_leq(&LinExpr::from_const(0), &ve)?;
+                            self.side_constraints.push(f_lo);
+                        }
+                        Some(LoweredTerm::Int(LinExpr::from_var(v)))
+                    }
+                    SmtSort::Entity => Some(LoweredTerm::Int(self.lower_entity_const(a))),
+                }
+            }
+            SExpr::List(items) => {
+                let SExpr::Atom(head) = items.first()? else {
+                    return None;
+                };
+                match head.as_str() {
+                    "not" => {
+                        let LoweredTerm::Bool(f) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        Some(LoweredTerm::Bool(Formula::not(f)))
+                    }
+                    "and" => {
+                        let mut fs = Vec::with_capacity(items.len() - 1);
+                        for arg in &items[1..] {
+                            let LoweredTerm::Bool(f) = self.lower_term(arg, locals)? else {
+                                return None;
+                            };
+                            fs.push(f);
+                        }
+                        Some(LoweredTerm::Bool(Formula::and(fs)))
+                    }
+                    "or" => {
+                        let mut fs = Vec::with_capacity(items.len() - 1);
+                        for arg in &items[1..] {
+                            let LoweredTerm::Bool(f) = self.lower_term(arg, locals)? else {
+                                return None;
+                            };
+                            fs.push(f);
+                        }
+                        Some(LoweredTerm::Bool(Formula::or(fs)))
+                    }
+                    "=>" => {
+                        let mut fs = Vec::with_capacity(items.len() - 1);
+                        for arg in &items[1..] {
+                            let LoweredTerm::Bool(f) = self.lower_term(arg, locals)? else {
+                                return None;
+                            };
+                            fs.push(f);
+                        }
+                        let mut acc = fs.pop()?;
+                        while let Some(prev) = fs.pop() {
+                            acc = Formula::implies(prev, acc);
+                        }
+                        Some(LoweredTerm::Bool(acc))
+                    }
+                    "=" | "distinct" => {
+                        let l = self.lower_term(&items[1], locals)?;
+                        let r = self.lower_term(&items[2], locals)?;
+                        let eq_f = match (l, r) {
+                            (LoweredTerm::Bool(fb1), LoweredTerm::Bool(fb2)) => {
+                                Formula::iff(fb1, fb2)
+                            }
+                            (LoweredTerm::Int(le1), LoweredTerm::Int(le2)) => {
+                                self.make_eq_int(&le1, &le2)?
+                            }
+                            _ => return None,
+                        };
+                        let res = if head == "=" {
+                            eq_f
+                        } else {
+                            Formula::not(eq_f)
+                        };
+                        Some(LoweredTerm::Bool(res))
+                    }
+                    "<" | "<=" | ">" | ">=" => {
+                        let LoweredTerm::Int(l) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        let LoweredTerm::Int(r) = self.lower_term(&items[2], locals)? else {
+                            return None;
+                        };
+                        let f = match head.as_str() {
+                            "<=" => self.make_leq(&l, &r)?,
+                            "<" => self.make_lt(&l, &r)?,
+                            ">=" => self.make_leq(&r, &l)?,
+                            ">" => self.make_lt(&r, &l)?,
+                            _ => unreachable!(),
+                        };
+                        Some(LoweredTerm::Bool(f))
+                    }
+                    "+" => {
+                        let mut acc = LinExpr::from_const(0);
+                        for arg in &items[1..] {
+                            let LoweredTerm::Int(le) = self.lower_term(arg, locals)? else {
+                                return None;
+                            };
+                            acc = acc.add(&le)?;
+                        }
+                        Some(LoweredTerm::Int(acc))
+                    }
+                    "-" => {
+                        if items.len() == 2 {
+                            let LoweredTerm::Int(le) = self.lower_term(&items[1], locals)? else {
+                                return None;
+                            };
+                            Some(LoweredTerm::Int(le.neg()?))
+                        } else {
+                            let LoweredTerm::Int(mut acc) =
+                                self.lower_term(&items[1], locals)?
+                            else {
+                                return None;
+                            };
+                            for arg in &items[2..] {
+                                let LoweredTerm::Int(le) = self.lower_term(arg, locals)? else {
+                                    return None;
+                                };
+                                acc = acc.sub(&le)?;
+                            }
+                            Some(LoweredTerm::Int(acc))
+                        }
+                    }
+                    "*" => {
+                        let LoweredTerm::Int(l) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        let LoweredTerm::Int(r) = self.lower_term(&items[2], locals)? else {
+                            return None;
+                        };
+                        if l.coeffs.is_empty() {
+                            Some(LoweredTerm::Int(r.scale(l.constant)?))
+                        } else if r.coeffs.is_empty() {
+                            Some(LoweredTerm::Int(l.scale(r.constant)?))
+                        } else {
+                            None
+                        }
+                    }
+                    "abs" => {
+                        let LoweredTerm::Int(e) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        if e.coeffs.is_empty() {
+                            return Some(LoweredTerm::Int(LinExpr::from_const(
+                                e.constant.checked_abs()?,
+                            )));
+                        }
+                        if let Some(&v) = self.abs_cache.get(&e) {
+                            return Some(LoweredTerm::Int(LinExpr::from_var(v)));
+                        }
+                        let v = self.fresh_int_var("abs");
+                        self.abs_cache.insert(e.clone(), v);
+                        let ve = LinExpr::from_var(v);
+                        let zero = LinExpr::from_const(0);
+                        let neg_e = e.neg()?;
+                        // v >= 0
+                        let f_nonneg = self.make_leq(&zero, &ve)?;
+                        // e >= 0 => v == e
+                        let cond_pos = self.make_leq(&zero, &e)?;
+                        let eq_pos = self.make_eq_int(&ve, &e)?;
+                        // e < 0 => v == -e
+                        let cond_neg = self.make_lt(&e, &zero)?;
+                        let eq_neg = self.make_eq_int(&ve, &neg_e)?;
+                        self.side_constraints.push(f_nonneg);
+                        self.side_constraints
+                            .push(Formula::implies(cond_pos, eq_pos));
+                        self.side_constraints
+                            .push(Formula::implies(cond_neg, eq_neg));
+                        Some(LoweredTerm::Int(ve))
+                    }
+                    "div" | "mod" => {
+                        let LoweredTerm::Int(e) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        let LoweredTerm::Int(d_expr) = self.lower_term(&items[2], locals)? else {
+                            return None;
+                        };
+                        if !d_expr.coeffs.is_empty() || d_expr.constant <= 0 {
+                            return None;
+                        }
+                        let d = d_expr.constant;
+                        if e.coeffs.is_empty() {
+                            let val = if head == "div" {
+                                e.constant.div_euclid(d)
+                            } else {
+                                e.constant.rem_euclid(d)
+                            };
+                            return Some(LoweredTerm::Int(LinExpr::from_const(val)));
+                        }
+                        let (q, r) = if let Some(&pair) = self.divmod_cache.get(&(e.clone(), d)) {
+                            pair
+                        } else {
+                            let q = self.fresh_int_var("div_q");
+                            let r = self.fresh_int_var("mod_r");
+                            self.divmod_cache.insert((e.clone(), d), (q, r));
+                            let qe = LinExpr::from_var(q);
+                            let re = LinExpr::from_var(r);
+                            // e == d * q + r
+                            let dq_plus_r = qe.scale(d)?.add(&re)?;
+                            let eq_divmod = self.make_eq_int(&e, &dq_plus_r)?;
+                            let r_ge_0 = self.make_leq(&LinExpr::from_const(0), &re)?;
+                            let r_le_d1 = self.make_leq(&re, &LinExpr::from_const(d - 1))?;
+                            self.side_constraints.push(eq_divmod);
+                            self.side_constraints.push(r_ge_0);
+                            self.side_constraints.push(r_le_d1);
+                            (q, r)
+                        };
+                        if head == "div" {
+                            Some(LoweredTerm::Int(LinExpr::from_var(q)))
+                        } else {
+                            Some(LoweredTerm::Int(LinExpr::from_var(r)))
+                        }
+                    }
+                    "ite" => {
+                        let LoweredTerm::Bool(cond) = self.lower_term(&items[1], locals)? else {
+                            return None;
+                        };
+                        let t_branch = self.lower_term(&items[2], locals)?;
+                        let e_branch = self.lower_term(&items[3], locals)?;
+                        match (t_branch, e_branch) {
+                            (LoweredTerm::Bool(tb), LoweredTerm::Bool(eb)) => {
+                                Some(LoweredTerm::Bool(Formula::and(vec![
+                                    Formula::implies(cond.clone(), tb),
+                                    Formula::implies(Formula::not(cond), eb),
+                                ])))
+                            }
+                            (LoweredTerm::Int(ti), LoweredTerm::Int(ei)) => {
+                                if ti == ei {
+                                    return Some(LoweredTerm::Int(ti));
+                                }
+                                let key = (cond.clone(), ti.clone(), ei.clone());
+                                if let Some(&v) = self.ite_cache.get(&key) {
+                                    return Some(LoweredTerm::Int(LinExpr::from_var(v)));
+                                }
+                                let v = self.fresh_int_var("ite");
+                                self.ite_cache.insert(key, v);
+                                let ve = LinExpr::from_var(v);
+                                let eq_t = self.make_eq_int(&ve, &ti)?;
+                                let eq_e = self.make_eq_int(&ve, &ei)?;
+                                self.side_constraints
+                                    .push(Formula::implies(cond.clone(), eq_t));
+                                self.side_constraints
+                                    .push(Formula::implies(Formula::not(cond), eq_e));
+                                Some(LoweredTerm::Int(ve))
+                            }
+                            _ => None,
+                        }
+                    }
+                    "let" => {
+                        let SExpr::List(bindings) = &items[1] else {
+                            return None;
+                        };
+                        let mut next_locals = locals.clone();
+                        for b in bindings {
+                            let SExpr::List(pair) = b else {
+                                return None;
+                            };
+                            let SExpr::Atom(vname) = &pair[0] else {
+                                return None;
+                            };
+                            let val = self.lower_term(&pair[1], locals)?;
+                            next_locals.insert(vname.clone(), val);
+                        }
+                        self.lower_term(&items[2], &next_locals)
+                    }
+                    other => {
+                        let sig = self.scope.funs.get(other)?.clone();
+                        let mut arg_exprs = Vec::with_capacity(sig.args.len());
+                        for a in &items[1..] {
+                            let LoweredTerm::Int(le) = self.lower_term(a, locals)? else {
+                                return None;
+                            };
+                            arg_exprs.push(le);
+                        }
+                        if let Some(existing_list) = self.uf_apps.get(other) {
+                            for (prev_args, prev_term) in existing_list {
+                                if *prev_args == arg_exprs {
+                                    return Some(prev_term.clone());
+                                }
+                            }
+                        }
+                        let fresh_term = match sig.ret {
+                            SmtSort::Bool => {
+                                let b = self.fresh_bool_var(&format!("uf_{}", other));
+                                LoweredTerm::Bool(Formula::BoolVar(b, true))
+                            }
+                            SmtSort::Int => {
+                                let v = self.fresh_int_var(&format!("uf_{}", other));
+                                LoweredTerm::Int(LinExpr::from_var(v))
+                            }
+                            SmtSort::String => {
+                                let v = self.fresh_int_var(&format!("uf_str_{}", other));
+                                let ve = LinExpr::from_var(v);
+                                let f_lo = self.make_leq(&LinExpr::from_const(0), &ve)?;
+                                self.side_constraints.push(f_lo);
+                                LoweredTerm::Int(ve)
+                            }
+                            SmtSort::Entity => return None,
+                        };
+                        // Add Ackermann congruence axioms against previous applications of `other`
+                        // whenever arguments are not provably distinct constants.
+                        let prev_entries =
+                            self.uf_apps.get(other).cloned().unwrap_or_default();
+                        for (prev_args, prev_term) in prev_entries {
+                            let mut definitely_distinct = false;
+                            let mut arg_eqs = Vec::with_capacity(arg_exprs.len());
+                            for (a1, a2) in arg_exprs.iter().zip(prev_args.iter()) {
+                                if a1.coeffs.is_empty()
+                                    && a2.coeffs.is_empty()
+                                    && a1.constant != a2.constant
+                                {
+                                    definitely_distinct = true;
+                                    break;
+                                }
+                                arg_eqs.push(self.make_eq_int(a1, a2)?);
+                            }
+                            if !definitely_distinct {
+                                let premise = Formula::and(arg_eqs);
+                                let concl = match (&fresh_term, &prev_term) {
+                                    (LoweredTerm::Bool(b1), LoweredTerm::Bool(b2)) => {
+                                        Formula::iff(b1.clone(), b2.clone())
+                                    }
+                                    (LoweredTerm::Int(i1), LoweredTerm::Int(i2)) => {
+                                        self.make_eq_int(i1, i2)?
+                                    }
+                                    _ => return None,
+                                };
+                                self.side_constraints
+                                    .push(Formula::implies(premise, concl));
+                            }
+                        }
+                        self.uf_apps
+                            .entry(other.to_string())
+                            .or_default()
+                            .push((arg_exprs, fresh_term.clone()));
+                        Some(fresh_term)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn expr_uses_entity_equality_or_ite(
+    expr: &SExpr,
+    scope: &Scope,
+    locals: &BTreeMap<String, SmtSort>,
+) -> bool {
+    let SExpr::List(items) = expr else {
+        return false;
+    };
+    let Some(SExpr::Atom(head)) = items.first() else {
+        return false;
+    };
+    if (head == "=" || head == "distinct")
+        && items.len() == 3
+        && infer_sort_quick(&items[1], scope, locals) == Some(SmtSort::Entity)
+    {
+        return true;
+    }
+    if head == "ite"
+        && items.len() == 4
+        && infer_sort_quick(&items[2], scope, locals) == Some(SmtSort::Entity)
+    {
+        return true;
+    }
+    if head == "let" && items.len() == 3 {
+        if let SExpr::List(bindings) = &items[1] {
+            let mut next_locals = locals.clone();
+            for b in bindings {
+                if let SExpr::List(pair) = b {
+                    if pair.len() == 2 {
+                        if let SExpr::Atom(v) = &pair[0] {
+                            if expr_uses_entity_equality_or_ite(&pair[1], scope, locals) {
+                                return true;
+                            }
+                            if let Some(s) = infer_sort_quick(&pair[1], scope, locals) {
+                                next_locals.insert(v.clone(), s);
+                            }
+                        }
+                    }
+                }
+            }
+            return expr_uses_entity_equality_or_ite(&items[2], scope, &next_locals);
+        }
+    }
+    items[1..]
+        .iter()
+        .any(|sub| expr_uses_entity_equality_or_ite(sub, scope, locals))
+}
+
+fn infer_sort_quick(
+    expr: &SExpr,
+    scope: &Scope,
+    locals: &BTreeMap<String, SmtSort>,
+) -> Option<SmtSort> {
+    match expr {
+        SExpr::Atom(a) => {
+            if a == "true" || a == "false" {
+                Some(SmtSort::Bool)
+            } else if a.parse::<i64>().is_ok() {
+                Some(SmtSort::Int)
+            } else if a.starts_with('"') {
+                Some(SmtSort::String)
+            } else if let Some(&s) = locals.get(a) {
+                Some(s)
+            } else {
+                scope.consts.get(a).copied()
+            }
+        }
+        SExpr::List(items) => {
+            let SExpr::Atom(head) = items.first()? else {
+                return None;
+            };
+            match head.as_str() {
+                "not" | "and" | "or" | "=>" | "=" | "distinct" | "<" | "<=" | ">" | ">="
+                | "forall" => Some(SmtSort::Bool),
+                "+" | "-" | "*" | "div" | "mod" | "abs" => Some(SmtSort::Int),
+                "ite" if items.len() == 4 => infer_sort_quick(&items[2], scope, locals),
+                "let" if items.len() == 3 => {
+                    let SExpr::List(bindings) = &items[1] else {
+                        return None;
+                    };
+                    let mut next_locals = locals.clone();
+                    for b in bindings {
+                        if let SExpr::List(pair) = b {
+                            if pair.len() == 2 {
+                                if let SExpr::Atom(v) = &pair[0] {
+                                    if let Some(s) = infer_sort_quick(&pair[1], scope, locals) {
+                                        next_locals.insert(v.clone(), s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    infer_sort_quick(&items[2], scope, &next_locals)
+                }
+                other => scope.funs.get(other).map(|sig| sig.ret),
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Exact QF_LIA + Boolean DPLL(T) Solver
+// ============================================================================
+
+const MAX_SOLVER_STEPS: usize = 200_000;
+const MAX_INEQUALITIES_PER_STEP: usize = 2_048;
+
+#[derive(Debug, Clone)]
+enum LiaResult {
+    Sat(Vec<i128>),
+    Unsat,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+enum EliminationStep {
+    Assigned(usize, i128),
+    Defined {
+        var: usize,
+        denom: i128,
+        rest: BTreeMap<usize, i128>,
+        rhs: i128,
+    },
+    FourierMotzkin {
+        var: usize,
+        lower: Vec<(i128, BTreeMap<usize, i128>, i128)>,
+        upper: Vec<(i128, BTreeMap<usize, i128>, i128)>,
+    },
+}
+
+fn ceil_div_i128(num: i128, den: i128) -> i128 {
+    debug_assert!(den > 0);
+    let q = num.div_euclid(den);
+    let r = num.rem_euclid(den);
+    if r == 0 {
+        q
+    } else {
+        q + 1
+    }
+}
+
+/// Solves a conjunction of `LeqConstraint`s over `num_vars` integer variables (`0..num_vars`),
+/// returning an exact integer assignment `Vec<i128>` when satisfiable.
+fn solve_qf_lia(
+    constraints: &[LeqConstraint],
+    num_vars: usize,
+    steps: &mut usize,
+) -> LiaResult {
+    solve_qf_lia_inner(constraints, num_vars, steps, 0)
+}
+
+fn solve_qf_lia_inner(
+    constraints: &[LeqConstraint],
+    num_vars: usize,
+    steps: &mut usize,
+    depth: usize,
+) -> LiaResult {
+    if depth > 16 {
+        return LiaResult::Unknown;
+    }
+    let mut active: BTreeSet<LeqConstraint> = constraints.iter().cloned().collect();
+    let mut history: Vec<EliminationStep> = Vec::new();
+    let mut eliminated: BTreeSet<usize> = BTreeSet::new();
+
+    loop {
+        *steps += 1;
+        if *steps > MAX_SOLVER_STEPS || active.len() > MAX_INEQUALITIES_PER_STEP {
+            return LiaResult::Unknown;
+        }
+
+        // 1. Bound propagation & single-variable interval tightening
+        let mut bounds: BTreeMap<usize, (i128, i128)> = BTreeMap::new();
+        let mut changed_bounds = true;
+        while changed_bounds {
+            changed_bounds = false;
+            for c in &active {
+                if c.coeffs.is_empty() {
+                    if 0 > c.rhs {
+                        return LiaResult::Unsat;
+                    }
+                    continue;
+                }
+                if c.coeffs.len() == 1 {
+                    let (&v, &a) = c.coeffs.iter().next().unwrap();
+                    let entry = bounds.entry(v).or_insert((i128::MIN / 4, i128::MAX / 4));
+                    if a > 0 {
+                        // a * v <= rhs  =>  v <= floor(rhs / a)
+                        let ub = c.rhs.div_euclid(a);
+                        if ub < entry.1 {
+                            entry.1 = ub;
+                            changed_bounds = true;
+                        }
+                    } else {
+                        // (-|a|) * v <= rhs  =>  |a| * v >= -rhs  =>  v >= ceil(-rhs / |a|)
+                        let Some(neg_rhs) = c.rhs.checked_neg() else {
+                            return LiaResult::Unknown;
+                        };
+                        let Some(abs_a) = a.checked_neg() else {
+                            return LiaResult::Unknown;
+                        };
+                        let lb = ceil_div_i128(neg_rhs, abs_a);
+                        if lb > entry.0 {
+                            entry.0 = lb;
+                            changed_bounds = true;
+                        }
+                    }
+                    if entry.0 > entry.1 {
+                        return LiaResult::Unsat;
+                    }
+                }
+            }
+        }
+
+        // 2. If any variable has a fixed value (lb == ub), substitute it out immediately
+        let fixed_var = bounds
+            .iter()
+            .find(|(&v, &(lb, ub))| lb == ub && !eliminated.contains(&v))
+            .map(|(&v, &(val, _))| (v, val));
+        if let Some((v, val)) = fixed_var {
+            eliminated.insert(v);
+            history.push(EliminationStep::Assigned(v, val));
+            let Some(next_active) = substitute_var(&active, v, val) else {
+                return LiaResult::Unknown;
+            };
+            match next_active {
+                Ok(set) => {
+                    active = set;
+                    continue;
+                }
+                Err(()) => return LiaResult::Unsat,
+            }
+        }
+
+        // 2b. Equality detection: if active contains both `c <= rhs` and `-c <= -rhs`,
+        // eliminate one variable from the equation (preferring a variable with `|a| == 1`).
+        let mut found_eq: Option<(usize, i128, BTreeMap<usize, i128>, i128)> = None;
+        for c in &active {
+            if c.coeffs.len() < 2 {
+                continue;
+            }
+            let mut neg_coeffs = BTreeMap::new();
+            let mut ok = true;
+            for (&u, &a) in &c.coeffs {
+                if let Some(na) = a.checked_neg() {
+                    neg_coeffs.insert(u, na);
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            let Some(neg_rhs) = c.rhs.checked_neg() else {
+                continue;
+            };
+            if !ok {
+                continue;
+            }
+            let twin = LeqConstraint {
+                coeffs: neg_coeffs,
+                rhs: neg_rhs,
+            };
+            if active.contains(&twin) {
+                // Pick variable in `c` with smallest `|a|`
+                let (&best_u, &best_a) = c
+                    .coeffs
+                    .iter()
+                    .min_by_key(|(_, &a)| a.unsigned_abs())
+                    .unwrap();
+                let mut rest = c.coeffs.clone();
+                rest.remove(&best_u);
+                found_eq = Some((best_u, best_a, rest, c.rhs));
+                break;
+            }
+        }
+        if let Some((eq_v, eq_a, eq_rest, eq_rhs)) = found_eq {
+            let Some(next_active) =
+                substitute_linear_eq(&active, eq_v, eq_a, &eq_rest, eq_rhs)
+            else {
+                return LiaResult::Unknown;
+            };
+            match next_active {
+                Ok(set) => {
+                    eliminated.insert(eq_v);
+                    history.push(EliminationStep::Defined {
+                        var: eq_v,
+                        denom: eq_a,
+                        rest: eq_rest,
+                        rhs: eq_rhs,
+                    });
+                    active = set;
+                    continue;
+                }
+                Err(()) => return LiaResult::Unsat,
+            }
+        }
+
+        // Collect remaining variables present in active constraints
+        let mut remaining_vars: BTreeSet<usize> = BTreeSet::new();
+        for c in &active {
+            for &v in c.coeffs.keys() {
+                if !eliminated.contains(&v) {
+                    remaining_vars.insert(v);
+                }
+            }
+        }
+        if remaining_vars.is_empty() {
+            break;
+        }
+
+        // Pick variable to eliminate: prefer a variable with unit coefficient (`|a| == 1`) on all
+        // lower bounds or all upper bounds (exact Fourier-Motzkin without dark shadow), minimizing
+        // `pos_count * neg_count`.
+        let mut best_var: Option<(usize, bool, usize, i128)> = None;
+        for &v in &remaining_vars {
+            let mut pos_count = 0usize;
+            let mut neg_count = 0usize;
+            let mut max_pos_coeff = 1i128;
+            let mut max_neg_coeff = 1i128;
+            for c in &active {
+                if let Some(&a) = c.coeffs.get(&v) {
+                    if a > 0 {
+                        pos_count += 1;
+                        if a > max_pos_coeff {
+                            max_pos_coeff = a;
+                        }
+                    } else if a < 0 {
+                        neg_count += 1;
+                        let abs_a = -a;
+                        if abs_a > max_neg_coeff {
+                            max_neg_coeff = abs_a;
+                        }
+                    }
+                }
+            }
+            let exact = max_pos_coeff == 1 || max_neg_coeff == 1 || pos_count == 0 || neg_count == 0;
+            let prod = pos_count.saturating_mul(neg_count);
+            let min_max_coeff = max_pos_coeff.min(max_neg_coeff);
+            match best_var {
+                None => best_var = Some((v, exact, prod, min_max_coeff)),
+                Some((_, best_exact, best_prod, best_coeff)) => {
+                    if (exact && !best_exact)
+                        || (exact == best_exact
+                            && (prod, min_max_coeff) < (best_prod, best_coeff))
+                    {
+                        best_var = Some((v, exact, prod, min_max_coeff));
+                    }
+                }
+            }
+        }
+
+        let (elim_v, _, _, _) = best_var.unwrap();
+        let mut upper = Vec::new();
+        let mut lower = Vec::new();
+        let mut others = BTreeSet::new();
+
+        for c in &active {
+            match c.coeffs.get(&elim_v).copied() {
+                Some(a) if a > 0 => {
+                    let mut rest = c.coeffs.clone();
+                    rest.remove(&elim_v);
+                    upper.push((a, rest, c.rhs));
+                }
+                Some(a) if a < 0 => {
+                    let mut rest = c.coeffs.clone();
+                    rest.remove(&elim_v);
+                    lower.push((-a, rest, c.rhs));
+                }
+                _ => {
+                    others.insert(c.clone());
+                }
+            }
+        }
+
+        // Combine every lower bound `(-a_l)*v + rest_l <= rhs_l` (`a_l * v >= -rhs_l + rest_l`)
+        // with every upper bound `a_u*v + rest_u <= rhs_u`:
+        // `a_u * rest_l + a_l * rest_u <= a_u * rhs_l + a_l * rhs_u`.
+        for (a_l, rest_l, rhs_l) in &lower {
+            for (a_u, rest_u, rhs_u) in &upper {
+                let mut comb_coeffs = BTreeMap::new();
+                for (&v, &c_l) in rest_l {
+                    let Some(term) = a_u.checked_mul(c_l) else {
+                        return LiaResult::Unknown;
+                    };
+                    if term != 0 {
+                        comb_coeffs.insert(v, term);
+                    }
+                }
+                for (&v, &c_u) in rest_u {
+                    let Some(term) = a_l.checked_mul(c_u) else {
+                        return LiaResult::Unknown;
+                    };
+                    let prev = comb_coeffs.get(&v).copied().unwrap_or(0);
+                    let Some(sum) = prev.checked_add(term) else {
+                        return LiaResult::Unknown;
+                    };
+                    if sum == 0 {
+                        comb_coeffs.remove(&v);
+                    } else {
+                        comb_coeffs.insert(v, sum);
+                    }
+                }
+                let Some(t1) = a_u.checked_mul(*rhs_l) else {
+                    return LiaResult::Unknown;
+                };
+                let Some(t2) = a_l.checked_mul(*rhs_u) else {
+                    return LiaResult::Unknown;
+                };
+                let Some(comb_rhs) = t1.checked_add(t2) else {
+                    return LiaResult::Unknown;
+                };
+                let Some(neg_rhs) = comb_rhs.checked_neg() else {
+                    return LiaResult::Unknown;
+                };
+                let lin = LinExpr {
+                    coeffs: comb_coeffs,
+                    constant: neg_rhs,
+                };
+                let Some(norm) = normalize_leq_zero(&lin) else {
+                    return LiaResult::Unknown;
+                };
+                match norm {
+                    NormLeq::AlwaysTrue => {}
+                    NormLeq::AlwaysFalse => return LiaResult::Unsat,
+                    NormLeq::Constraint(nc) => {
+                        others.insert(nc);
+                    }
+                }
+            }
+        }
+
+        eliminated.insert(elim_v);
+        history.push(EliminationStep::FourierMotzkin {
+            var: elim_v,
+            lower,
+            upper,
+        });
+        active = others;
+    }
+
+    let mut model = vec![0i128; num_vars];
+
+    // Reconstruct eliminated variables in reverse order
+    for step in history.into_iter().rev() {
+        match step {
+            EliminationStep::Assigned(v, val) => {
+                model[v] = val;
+            }
+            EliminationStep::Defined {
+                var,
+                denom,
+                rest,
+                rhs,
+            } => {
+                // denom * var + sum(rest) == rhs  =>  denom * var == rhs - sum(rest)
+                let mut sum_rest = 0i128;
+                for (&u, &c) in &rest {
+                    let Some(prod) = c.checked_mul(model[u]) else {
+                        return LiaResult::Unknown;
+                    };
+                    let Some(next) = sum_rest.checked_add(prod) else {
+                        return LiaResult::Unknown;
+                    };
+                    sum_rest = next;
+                }
+                let Some(num) = rhs.checked_sub(sum_rest) else {
+                    return LiaResult::Unknown;
+                };
+                if num % denom != 0 {
+                    return LiaResult::Unsat;
+                }
+                model[var] = num / denom;
+            }
+            EliminationStep::FourierMotzkin { var, lower, upper } => {
+                let mut lb = i128::MIN / 4;
+                let mut ub = i128::MAX / 4;
+                for (a_l, rest_l, rhs_l) in &lower {
+                    // -a_l * var + sum(rest_l) <= rhs_l  <=>  a_l * var >= sum(rest_l) - rhs_l
+                    let mut sum_rest = 0i128;
+                    for (&u, &c) in rest_l {
+                        let Some(prod) = c.checked_mul(model[u]) else {
+                            return LiaResult::Unknown;
+                        };
+                        let Some(next) = sum_rest.checked_add(prod) else {
+                            return LiaResult::Unknown;
+                        };
+                        sum_rest = next;
+                    }
+                    let Some(num) = sum_rest.checked_sub(*rhs_l) else {
+                        return LiaResult::Unknown;
+                    };
+                    let cand_lb = ceil_div_i128(num, *a_l);
+                    if cand_lb > lb {
+                        lb = cand_lb;
+                    }
+                }
+                for (a_u, rest_u, rhs_u) in &upper {
+                    // a_u * var + sum(rest_u) <= rhs_u  <=>  a_u * var <= rhs_u - sum(rest_u)
+                    let mut sum_rest = 0i128;
+                    for (&u, &c) in rest_u {
+                        let Some(prod) = c.checked_mul(model[u]) else {
+                            return LiaResult::Unknown;
+                        };
+                        let Some(next) = sum_rest.checked_add(prod) else {
+                            return LiaResult::Unknown;
+                        };
+                        sum_rest = next;
+                    }
+                    let Some(num) = rhs_u.checked_sub(sum_rest) else {
+                        return LiaResult::Unknown;
+                    };
+                    let cand_ub = num.div_euclid(*a_u);
+                    if cand_ub < ub {
+                        ub = cand_ub;
+                    }
+                }
+                if lb <= ub {
+                    model[var] = if lb <= 0 && 0 <= ub {
+                        0
+                    } else if lb > 0 {
+                        lb
+                    } else {
+                        ub
+                    };
+                } else {
+                    // Dark-shadow splinter: try exact Omega splinters on the tightest side
+                    return solve_omega_splinters(
+                        constraints,
+                        num_vars,
+                        var,
+                        &lower,
+                        &upper,
+                        steps,
+                        depth + 1,
+                    );
+                }
+            }
+        }
+    }
+
+    LiaResult::Sat(model)
+}
+
+fn solve_omega_splinters(
+    constraints: &[LeqConstraint],
+    num_vars: usize,
+    var: usize,
+    lower: &[(i128, BTreeMap<usize, i128>, i128)],
+    upper: &[(i128, BTreeMap<usize, i128>, i128)],
+    steps: &mut usize,
+    depth: usize,
+) -> LiaResult {
+    // Omega Test exact splinter rule (Pugh 1991):
+    // When real shadow holds (`a_u * L <= a_l * U`) but no integer `var` satisfies both,
+    // any integer solution must satisfy `a_l * var == L + rem` (or `a_u * var == U - rem`)
+    // for some remainder `0 <= rem < a_l` (or `0 <= rem < a_u`).
+    let max_a_l = lower.iter().map(|(a, _, _)| *a).max().unwrap_or(1);
+    let max_a_u = upper.iter().map(|(a, _, _)| *a).max().unwrap_or(1);
+    if max_a_l.min(max_a_u) > 32 {
+        return LiaResult::Unknown;
+    }
+
+    let make_eq_splinter = |coeffs: BTreeMap<usize, i128>, rhs: i128| -> Option<[LeqConstraint; 2]> {
+        let neg_rhs = rhs.checked_neg()?;
+        let c1 = match normalize_leq_zero(&LinExpr {
+            coeffs: coeffs.clone(),
+            constant: neg_rhs,
+        })? {
+            NormLeq::Constraint(c) => c,
+            _ => return None,
+        };
+        let mut neg_coeffs = BTreeMap::new();
+        for (&u, &c) in &coeffs {
+            neg_coeffs.insert(u, c.checked_neg()?);
+        }
+        let c2 = match normalize_leq_zero(&LinExpr {
+            coeffs: neg_coeffs,
+            constant: rhs,
+        })? {
+            NormLeq::Constraint(c) => c,
+            _ => return None,
+        };
+        Some([c1, c2])
+    };
+
+    if max_a_l <= max_a_u {
+        for (a_l, rest_l, rhs_l) in lower {
+            if *a_l <= 1 {
+                continue;
+            }
+            for rem in 0..*a_l {
+                let Some(target_rhs) = rhs_l.checked_sub(rem) else {
+                    return LiaResult::Unknown;
+                };
+                let mut c1_coeffs = rest_l.clone();
+                c1_coeffs.insert(var, -*a_l);
+                let Some([c1, c2]) = make_eq_splinter(c1_coeffs, target_rhs) else {
+                    continue;
+                };
+                let mut next = constraints.to_vec();
+                next.push(c1);
+                next.push(c2);
+                match solve_qf_lia_inner(&next, num_vars, steps, depth) {
+                    LiaResult::Sat(m) => return LiaResult::Sat(m),
+                    LiaResult::Unknown => return LiaResult::Unknown,
+                    LiaResult::Unsat => {}
+                }
+            }
+        }
+    } else {
+        for (a_u, rest_u, rhs_u) in upper {
+            if *a_u <= 1 {
+                continue;
+            }
+            for rem in 0..*a_u {
+                let Some(target_rhs) = rhs_u.checked_sub(rem) else {
+                    return LiaResult::Unknown;
+                };
+                let mut c1_coeffs = rest_u.clone();
+                c1_coeffs.insert(var, *a_u);
+                let Some([c1, c2]) = make_eq_splinter(c1_coeffs, target_rhs) else {
+                    continue;
+                };
+                let mut next = constraints.to_vec();
+                next.push(c1);
+                next.push(c2);
+                match solve_qf_lia_inner(&next, num_vars, steps, depth) {
+                    LiaResult::Sat(m) => return LiaResult::Sat(m),
+                    LiaResult::Unknown => return LiaResult::Unknown,
+                    LiaResult::Unsat => {}
+                }
+            }
+        }
+    }
+    LiaResult::Unsat
+}
+
+fn substitute_linear_eq(
+    active: &BTreeSet<LeqConstraint>,
+    var: usize,
+    denom: i128,
+    rest: &BTreeMap<usize, i128>,
+    rhs: i128,
+) -> Option<Result<BTreeSet<LeqConstraint>, ()>> {
+    // We have `denom * var == rhs - sum(rest)`.
+    // Normalize so `abs_d = |denom| > 0` and `abs_d * var == s_rhs - sum(s_rest)`.
+    let (abs_d, s_rest, s_rhs) = if denom > 0 {
+        (denom, rest.clone(), rhs)
+    } else {
+        let mut nr = BTreeMap::new();
+        for (&u, &c) in rest {
+            nr.insert(u, c.checked_neg()?);
+        }
+        (denom.checked_neg()?, nr, rhs.checked_neg()?)
+    };
+
+    let mut next = BTreeSet::new();
+    for c in active {
+        if let Some(&a) = c.coeffs.get(&var) {
+            // Multiply constraint `a * var + sum_{u != var} c_u * u <= c.rhs` by `abs_d > 0`:
+            // `a * (s_rhs - sum(s_rest)) + abs_d * sum_{u != var} c_u * u <= abs_d * c.rhs`
+            // `<=> sum_u (abs_d * c_u - a * s_rest_u) * u <= abs_d * c.rhs - a * s_rhs`
+            let mut new_coeffs = BTreeMap::new();
+            for (&u, &cu) in &c.coeffs {
+                if u == var {
+                    continue;
+                }
+                let term = abs_d.checked_mul(cu)?;
+                if term != 0 {
+                    new_coeffs.insert(u, term);
+                }
+            }
+            for (&u, &ru) in &s_rest {
+                let sub_term = a.checked_mul(ru)?;
+                let prev = new_coeffs.get(&u).copied().unwrap_or(0);
+                let diff = prev.checked_sub(sub_term)?;
+                if diff == 0 {
+                    new_coeffs.remove(&u);
+                } else {
+                    new_coeffs.insert(u, diff);
+                }
+            }
+            let new_rhs = abs_d
+                .checked_mul(c.rhs)?
+                .checked_sub(a.checked_mul(s_rhs)?)?;
+            let neg_rhs = new_rhs.checked_neg()?;
+            let lin = LinExpr {
+                coeffs: new_coeffs,
+                constant: neg_rhs,
+            };
+            match normalize_leq_zero(&lin)? {
+                NormLeq::AlwaysTrue => {}
+                NormLeq::AlwaysFalse => return Some(Err(())),
+                NormLeq::Constraint(nc) => {
+                    next.insert(nc);
+                }
+            }
+        } else {
+            next.insert(c.clone());
+        }
+    }
+    Some(Ok(next))
+}
+
+fn substitute_var(
+    active: &BTreeSet<LeqConstraint>,
+    var: usize,
+    val: i128,
+) -> Option<Result<BTreeSet<LeqConstraint>, ()>> {
+    let mut next = BTreeSet::new();
+    for c in active {
+        if let Some(&a) = c.coeffs.get(&var) {
+            let mut coeffs = c.coeffs.clone();
+            coeffs.remove(&var);
+            let prod = a.checked_mul(val)?;
+            let new_rhs = c.rhs.checked_sub(prod)?;
+            let neg_rhs = new_rhs.checked_neg()?;
+            let lin = LinExpr {
+                coeffs,
+                constant: neg_rhs,
+            };
+            match normalize_leq_zero(&lin)? {
+                NormLeq::AlwaysTrue => {}
+                NormLeq::AlwaysFalse => return Some(Err(())),
+                NormLeq::Constraint(nc) => {
+                    next.insert(nc);
+                }
+            }
+        } else {
+            next.insert(c.clone());
+        }
+    }
+    Some(Ok(next))
+}
+
+#[derive(Debug, Clone)]
+enum SolveOutcome {
+    Sat {
+        bool_model: BTreeMap<usize, bool>,
+        int_model: Vec<i128>,
+    },
+    Unsat,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TruthVal {
+    True,
+    False,
+    Undef,
+}
+
+fn eval_partial(
+    f: &Formula,
+    bool_model: &BTreeMap<usize, bool>,
+    active_leqs: &BTreeSet<LeqConstraint>,
+) -> TruthVal {
+    match f {
+        Formula::True => TruthVal::True,
+        Formula::False => TruthVal::False,
+        Formula::BoolVar(v, pol) => match bool_model.get(v) {
+            Some(&val) => {
+                if val == *pol {
+                    TruthVal::True
+                } else {
+                    TruthVal::False
+                }
+            }
+            None => TruthVal::Undef,
+        },
+        Formula::Leq(c) => {
+            if active_leqs.contains(c) {
+                return TruthVal::True;
+            }
+            // Check if negation `sum (-a_i) x_i <= -rhs - 1` or any stronger bound on same lhs is active
+            for act in active_leqs {
+                if act.coeffs == c.coeffs && act.rhs <= c.rhs {
+                    return TruthVal::True;
+                }
+                if act.coeffs.len() == c.coeffs.len()
+                    && act.coeffs.iter().all(|(k, v)| c.coeffs.get(k) == Some(&-*v))
+                    && act.rhs < -c.rhs
+                {
+                    return TruthVal::False;
+                }
+            }
+            TruthVal::Undef
+        }
+        Formula::Not(inner) => match eval_partial(inner, bool_model, active_leqs) {
+            TruthVal::True => TruthVal::False,
+            TruthVal::False => TruthVal::True,
+            TruthVal::Undef => TruthVal::Undef,
+        },
+        Formula::And(items) => {
+            let mut all_true = true;
+            for it in items {
+                match eval_partial(it, bool_model, active_leqs) {
+                    TruthVal::False => return TruthVal::False,
+                    TruthVal::Undef => all_true = false,
+                    TruthVal::True => {}
+                }
+            }
+            if all_true {
+                TruthVal::True
+            } else {
+                TruthVal::Undef
+            }
+        }
+        Formula::Or(items) => {
+            let mut all_false = true;
+            for it in items {
+                match eval_partial(it, bool_model, active_leqs) {
+                    TruthVal::True => return TruthVal::True,
+                    TruthVal::Undef => all_false = false,
+                    TruthVal::False => {}
+                }
+            }
+            if all_false {
+                TruthVal::False
+            } else {
+                TruthVal::Undef
+            }
+        }
+    }
+}
+
+fn dpll_solve(
+    goals: Vec<Formula>,
+    bool_model: &mut BTreeMap<usize, bool>,
+    lia_constraints: &mut Vec<LeqConstraint>,
+    num_int_vars: usize,
+    steps: &mut usize,
+) -> SolveOutcome {
+    *steps += 1;
+    if *steps > MAX_SOLVER_STEPS {
+        return SolveOutcome::Unknown;
+    }
+
+    let mut pending = goals;
+    let mut disjunctions: Vec<Vec<Formula>> = Vec::new();
+    let base_lia_len = lia_constraints.len();
+    let mut assigned_bools: Vec<usize> = Vec::new();
+    let mut active_leqs: BTreeSet<LeqConstraint> = lia_constraints.iter().cloned().collect();
+
+    // Fixed-point unit + theory-atom propagation
+    let mut conflict = false;
+    loop {
+        while let Some(f) = pending.pop() {
+            match f {
+                Formula::True => {}
+                Formula::False => {
+                    conflict = true;
+                    break;
+                }
+                Formula::BoolVar(v, pol) => {
+                    if let Some(&existing) = bool_model.get(&v) {
+                        if existing != pol {
+                            conflict = true;
+                            break;
+                        }
+                    } else {
+                        bool_model.insert(v, pol);
+                        assigned_bools.push(v);
+                    }
+                }
+                Formula::Leq(c) => {
+                    if eval_partial(&Formula::Leq(c.clone()), bool_model, &active_leqs)
+                        == TruthVal::False
+                    {
+                        conflict = true;
+                        break;
+                    }
+                    if active_leqs.insert(c.clone()) {
+                        lia_constraints.push(c);
+                    }
+                }
+                Formula::Not(inner) => {
+                    pending.push(negate_nnf(*inner));
+                }
+                Formula::And(items) => {
+                    for it in items.into_iter().rev() {
+                        pending.push(it);
+                    }
+                }
+                Formula::Or(items) => {
+                    disjunctions.push(items);
+                }
+            }
+        }
+        if conflict {
+            break;
+        }
+
+        // Simplify all disjunctions against currently known bools and active linear inequalities
+        let mut unit_propagated = false;
+        let mut next_disjunctions = Vec::with_capacity(disjunctions.len());
+        for disj in disjunctions {
+            let mut simplified = Vec::new();
+            let mut satisfied = false;
+            for lit in disj {
+                match eval_partial(&lit, bool_model, &active_leqs) {
+                    TruthVal::True => {
+                        satisfied = true;
+                        break;
+                    }
+                    TruthVal::False => {}
+                    TruthVal::Undef => {
+                        if !simplified.contains(&lit) {
+                            simplified.push(lit);
+                        }
+                    }
+                }
+            }
+            if !satisfied {
+                match simplified.len() {
+                    0 => {
+                        conflict = true;
+                        break;
+                    }
+                    1 => {
+                        pending.push(simplified.into_iter().next().unwrap());
+                        unit_propagated = true;
+                    }
+                    _ => next_disjunctions.push(simplified),
+                }
+            }
+        }
+        disjunctions = next_disjunctions;
+        if conflict || !unit_propagated {
+            break;
+        }
+    }
+
+    if conflict {
+        lia_constraints.truncate(base_lia_len);
+        for v in assigned_bools {
+            bool_model.remove(&v);
+        }
+        return SolveOutcome::Unsat;
+    }
+
+    // Eager DPLL(T) theory check: if new LIA constraints were added at this level (or at a leaf),
+    // check LIA feasibility now so infeasible branches are pruned immediately.
+    if disjunctions.is_empty() || lia_constraints.len() > base_lia_len {
+        match solve_qf_lia(lia_constraints, num_int_vars, steps) {
+            LiaResult::Unsat => {
+                lia_constraints.truncate(base_lia_len);
+                for v in assigned_bools {
+                    bool_model.remove(&v);
+                }
+                return SolveOutcome::Unsat;
+            }
+            LiaResult::Unknown => {
+                lia_constraints.truncate(base_lia_len);
+                for v in assigned_bools {
+                    bool_model.remove(&v);
+                }
+                return SolveOutcome::Unknown;
+            }
+            LiaResult::Sat(int_model) => {
+                if disjunctions.is_empty() {
+                    lia_constraints.truncate(base_lia_len);
+                    for v in assigned_bools {
+                        bool_model.remove(&v);
+                    }
+                    return SolveOutcome::Sat {
+                        bool_model: bool_model.clone(),
+                        int_model,
+                    };
+                }
+            }
+        }
+    }
+
+    // Pick shortest disjunction (MRV heuristic)
+    let mut best_idx = 0;
+    for i in 1..disjunctions.len() {
+        if disjunctions[i].len() < disjunctions[best_idx].len() {
+            best_idx = i;
+        }
+    }
+    let choices = disjunctions.swap_remove(best_idx);
+
+    let mut saw_unknown = false;
+    for branch in choices {
+        let mut next_goals: Vec<Formula> = disjunctions
+            .iter()
+            .cloned()
+            .map(Formula::Or)
+            .collect();
+        next_goals.push(branch);
+        match dpll_solve(next_goals, bool_model, lia_constraints, num_int_vars, steps) {
+            SolveOutcome::Sat {
+                bool_model: bm,
+                int_model: im,
+            } => {
+                lia_constraints.truncate(base_lia_len);
+                for v in assigned_bools {
+                    bool_model.remove(&v);
+                }
+                return SolveOutcome::Sat {
+                    bool_model: bm,
+                    int_model: im,
+                };
+            }
+            SolveOutcome::Unknown => {
+                saw_unknown = true;
+            }
+            SolveOutcome::Unsat => {}
+        }
+    }
+
+    lia_constraints.truncate(base_lia_len);
+    for v in assigned_bools {
+        bool_model.remove(&v);
+    }
+    if saw_unknown {
+        SolveOutcome::Unknown
+    } else {
+        SolveOutcome::Unsat
+    }
+}
+
+fn negate_nnf(f: Formula) -> Formula {
+    match f {
+        Formula::True => Formula::False,
+        Formula::False => Formula::True,
+        Formula::BoolVar(v, pol) => Formula::BoolVar(v, !pol),
+        Formula::Not(inner) => *inner,
+        Formula::Leq(c) => Formula::not(Formula::Leq(c)),
+        Formula::And(items) => Formula::Or(items.into_iter().map(negate_nnf).collect()),
+        Formula::Or(items) => Formula::And(items.into_iter().map(negate_nnf).collect()),
+    }
+}
+
+fn eval_formula_under_model(
+    f: &Formula,
+    bool_model: &BTreeMap<usize, bool>,
+    int_model: &[i128],
+) -> Option<bool> {
+    match f {
+        Formula::True => Some(true),
+        Formula::False => Some(false),
+        Formula::BoolVar(v, pol) => {
+            let val = bool_model.get(v).copied().unwrap_or(false);
+            Some(val == *pol)
+        }
+        Formula::Leq(c) => {
+            let mut sum = 0i128;
+            for (&v, &a) in &c.coeffs {
+                let val = *int_model.get(v)?;
+                sum = sum.checked_add(a.checked_mul(val)?)?;
+            }
+            Some(sum <= c.rhs)
+        }
+        Formula::Not(inner) => Some(!eval_formula_under_model(inner, bool_model, int_model)?),
+        Formula::And(items) => {
+            for it in items {
+                if !eval_formula_under_model(it, bool_model, int_model)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        Formula::Or(items) => {
+            for it in items {
+                if eval_formula_under_model(it, bool_model, int_model)? {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CheckSatOutcome {
+    Sat(String),
+    Unsat,
+    Unknown,
+}
+
+fn solve_scope(scope: &Scope) -> CheckSatOutcome {
+    let entity_eq = scope
+        .assertions
+        .iter()
+        .any(|a| expr_uses_entity_equality_or_ite(a, scope, &BTreeMap::new()));
+    let mut ctx = LoweringCtx::new(scope, entity_eq);
+
+    // Pre-allocate all declared Int and Bool constants so `(get-model)` includes every declared
+    // constant deterministically.
+    for (name, &sort) in &scope.consts {
+        if scope.defined_ints.contains_key(name) || name == "__entity_witness" {
+            continue;
+        }
+        match sort {
+            SmtSort::Int => {
+                ctx.get_or_alloc_int_var(name);
+            }
+            SmtSort::Bool => {
+                ctx.get_or_alloc_bool_var(name);
+            }
+            _ => {}
+        }
+    }
+
+    let mut formulas = Vec::with_capacity(scope.assertions.len());
+    for assertion in &scope.assertions {
+        let Some(LoweredTerm::Bool(f)) = ctx.lower_term(assertion, &BTreeMap::new()) else {
+            return CheckSatOutcome::Unknown;
+        };
+        formulas.push(f);
+    }
+    formulas.extend(ctx.side_constraints.clone());
+
+    let mut bool_model = BTreeMap::new();
+    let mut lia_constraints = Vec::new();
+    let mut steps = 0usize;
+    let num_int_vars = ctx.int_var_names.len();
+
+    match dpll_solve(
+        formulas.clone(),
+        &mut bool_model,
+        &mut lia_constraints,
+        num_int_vars,
+        &mut steps,
+    ) {
+        SolveOutcome::Unsat => CheckSatOutcome::Unsat,
+        SolveOutcome::Unknown => CheckSatOutcome::Unknown,
+        SolveOutcome::Sat {
+            bool_model,
+            int_model,
+        } => {
+            // Soundness guard: independently verify that the candidate model satisfies every
+            // lowered assertion and side constraint before reporting `sat`.
+            for f in &formulas {
+                if eval_formula_under_model(f, &bool_model, &int_model) != Some(true) {
+                    return CheckSatOutcome::Unknown;
+                }
+            }
+            let mut model_lines = Vec::new();
+            model_lines.push("(".to_string());
+            for (name, &sort) in &scope.consts {
+                if scope.defined_ints.contains_key(name) || name == "__entity_witness" {
+                    continue;
+                }
+                match sort {
+                    SmtSort::Int => {
+                        let v = ctx.int_var_ids.get(name).copied().unwrap_or(0);
+                        let val = int_model.get(v).copied().unwrap_or(0);
+                        let val_str = if val < 0 {
+                            format!("(- {})", -val)
+                        } else {
+                            val.to_string()
+                        };
+                        model_lines.push(format!("  (define-fun {} () Int {})", name, val_str));
+                    }
+                    SmtSort::Bool => {
+                        let v = ctx.bool_var_ids.get(name).copied().unwrap_or(0);
+                        let val = bool_model.get(&v).copied().unwrap_or(false);
+                        model_lines.push(format!("  (define-fun {} () Bool {})", name, val));
+                    }
+                    _ => {}
+                }
+            }
+            model_lines.push(")".to_string());
+            CheckSatOutcome::Sat(model_lines.join("\n") + "\n")
+        }
+    }
+}
+
 /// Entry point for the in-repo `bil-smt` backend behind `--prover bil-smt`.
 ///
-/// In Roadmap 8.1.2, this validates that `smt2_input` falls inside the decidable fragment and
-/// expands universal `Entity` quantifiers, returning `Verdict::Unknown` (never a guess) both
-/// outside the fragment and while the 8.1.3 decision procedure is not yet wired in.
+/// Validates that `smt2_input` belongs to the decidable `bil-smt` fragment, instantiates universal
+/// `Entity` quantifiers over the finite Herbrand universe, and executes the incremental command
+/// stream (`assert`, `push`, `pop`, `check-sat`, `get-model`) using the exact `QF_UFLIA` decision
+/// procedure. Outside the fragment (or on arithmetic overflow / step limit), returns
+/// `Verdict::Unknown` (never a guess).
 pub fn run_bil_smt(smt2_input: &str) -> ProverResult {
-    match instantiate_entity_quantifiers(smt2_input) {
-        Ok(_qf_script) => ProverResult {
+    let start = Instant::now();
+    let qf_script = match instantiate_entity_quantifiers(smt2_input) {
+        Ok(s) => s,
+        Err(reason) => {
+            return ProverResult {
+                prover: "bil-smt".to_string(),
+                verdict: Verdict::Unknown,
+                stdout: "unknown\n".to_string(),
+                stderr: String::new(),
+                elapsed_ms: start.elapsed().as_millis(),
+                detail: format!("outside bil-smt fragment: {}", reason),
+            };
+        }
+    };
+
+    let Some(forms) = parse_sexprs(&qf_script) else {
+        return ProverResult {
             prover: "bil-smt".to_string(),
             verdict: Verdict::Unknown,
             stdout: "unknown\n".to_string(),
             stderr: String::new(),
-            elapsed_ms: 0,
-            detail: "bil-smt fragment accepted (decision procedure pending 8.1.3)".to_string(),
-        },
-        Err(reason) => ProverResult {
-            prover: "bil-smt".to_string(),
-            verdict: Verdict::Unknown,
-            stdout: "unknown\n".to_string(),
-            stderr: String::new(),
-            elapsed_ms: 0,
-            detail: format!("outside bil-smt fragment: {}", reason),
-        },
+            elapsed_ms: start.elapsed().as_millis(),
+            detail: "outside bil-smt fragment: malformed instantiated script".to_string(),
+        };
+    };
+
+    let mut scope = Scope::default();
+    let mut stack: Vec<Scope> = Vec::new();
+    let mut stdout = String::new();
+    let mut first_verdict: Option<(Verdict, String)> = None;
+    let mut last_model: Option<String> = None;
+
+    for form in &forms {
+        let SExpr::List(items) = form else {
+            continue;
+        };
+        let Some(SExpr::Atom(cmd)) = items.first() else {
+            continue;
+        };
+        match cmd.as_str() {
+            "declare-const" => {
+                if let (SExpr::Atom(name), SExpr::Atom(sort_name)) = (&items[1], &items[2]) {
+                    let sort = SmtSort::parse(sort_name).unwrap();
+                    if sort == SmtSort::Entity && !scope.entity_consts.contains(name) {
+                        scope.entity_consts.push(name.clone());
+                    }
+                    scope.consts.insert(name.clone(), sort);
+                }
+            }
+            "define-const" => {
+                if let (SExpr::Atom(name), _, val_expr) = (&items[1], &items[2], &items[3]) {
+                    let k = eval_const_int(val_expr, &scope.defined_ints).unwrap();
+                    scope.consts.insert(name.clone(), SmtSort::Int);
+                    scope.defined_ints.insert(name.clone(), k);
+                }
+            }
+            "declare-fun" => {
+                if let (SExpr::Atom(name), SExpr::List(arg_sorts), SExpr::Atom(ret_name)) =
+                    (&items[1], &items[2], &items[3])
+                {
+                    let ret = SmtSort::parse(ret_name).unwrap();
+                    if arg_sorts.is_empty() {
+                        if ret == SmtSort::Entity && !scope.entity_consts.contains(name) {
+                            scope.entity_consts.push(name.clone());
+                        }
+                        scope.consts.insert(name.clone(), ret);
+                    } else {
+                        scope.funs.insert(
+                            name.clone(),
+                            FunSig {
+                                args: vec![SmtSort::Entity; arg_sorts.len()],
+                                ret,
+                            },
+                        );
+                    }
+                }
+            }
+            "push" => {
+                let n = items
+                    .get(1)
+                    .and_then(|x| match x {
+                        SExpr::Atom(a) => a.parse::<usize>().ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                for _ in 0..n {
+                    stack.push(scope.clone());
+                }
+            }
+            "pop" => {
+                let n = items
+                    .get(1)
+                    .and_then(|x| match x {
+                        SExpr::Atom(a) => a.parse::<usize>().ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                for _ in 0..n {
+                    if let Some(prev) = stack.pop() {
+                        scope = prev;
+                    }
+                }
+            }
+            "assert" => {
+                if items.len() == 2 {
+                    scope.assertions.push(items[1].clone());
+                }
+            }
+            "check-sat" => match solve_scope(&scope) {
+                CheckSatOutcome::Sat(model_str) => {
+                    stdout.push_str("sat\n");
+                    last_model = Some(model_str);
+                    if first_verdict.is_none() {
+                        first_verdict = Some((
+                            Verdict::Consistent,
+                            "bil-smt found satisfying model (sat)".to_string(),
+                        ));
+                    }
+                }
+                CheckSatOutcome::Unsat => {
+                    stdout.push_str("unsat\n");
+                    last_model = None;
+                    if first_verdict.is_none() {
+                        first_verdict = Some((
+                            Verdict::Inconsistent,
+                            "bil-smt proved unsatisfiable (unsat)".to_string(),
+                        ));
+                    }
+                }
+                CheckSatOutcome::Unknown => {
+                    stdout.push_str("unknown\n");
+                    last_model = None;
+                    if first_verdict.is_none() {
+                        first_verdict = Some((
+                            Verdict::Unknown,
+                            "bil-smt inconclusive (unknown)".to_string(),
+                        ));
+                    }
+                }
+            },
+            "get-model" => {
+                if let Some(ref m) = last_model {
+                    stdout.push_str(m);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let (verdict, detail) = first_verdict
+        .unwrap_or_else(|| (Verdict::Unknown, "bil-smt no check-sat command".to_string()));
+    if stdout.is_empty() {
+        stdout.push_str("unknown\n");
+    }
+
+    ProverResult {
+        prover: "bil-smt".to_string(),
+        verdict,
+        stdout,
+        stderr: String::new(),
+        elapsed_ms: start.elapsed().as_millis(),
+        detail,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_check::symbolic_bmc_program;
     use crate::smt::{
-        emit_ontology_consistency_smt2, find_solver_binary, run_smt_prover, Prover, SolverBackend,
+        attach_model, emit_ontology_consistency_smt2, find_solver_binary, parse_smt_model,
+        prove_subsumption, run_smt_incremental_batch_with_prover, run_smt_prover, Prover,
+        SolverBackend, SubsumptionResult,
     };
     use crate::wp::generate_obligations;
     use crate::CompilationSession;
@@ -772,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn every_domain_example_vc_is_in_fragment_and_instantiation_matches_z3() {
+    fn every_domain_example_vc_ontology_subsumption_and_bmc_matches_z3() {
         let has_z3 = find_solver_binary("z3").is_some();
         let files = domain_files();
         assert_eq!(files.len(), 14);
@@ -780,6 +2818,7 @@ mod tests {
         let mut quantified_obligations = 0usize;
         let mut z3_batch = String::new();
         let mut expected_verdicts: Vec<(String, &'static str)> = Vec::new();
+        let mut bmc_systems_checked = 0usize;
 
         for path in files {
             let src = std::fs::read_to_string(&path).unwrap();
@@ -801,11 +2840,14 @@ mod tests {
                         e
                     )
                 });
-                assert!(
-                    !qf.contains("(forall"),
-                    "{}: instantiated ontology script still has forall:\n{}",
+                assert!(!qf.contains("(forall"));
+                let bil_res = run_bil_smt(&ont_smt2);
+                assert_eq!(
+                    bil_res.verdict,
+                    Verdict::Consistent,
+                    "{}: expected ontology consistency SAT from bil-smt, got {:?}",
                     path.display(),
-                    qf
+                    bil_res
                 );
                 if has_z3 {
                     z3_batch.push_str("(reset)\n");
@@ -816,7 +2858,44 @@ mod tests {
                 }
             }
 
-            // 2. Check every VC obligation script
+            // 2. Check prove_subsumption on declared concept hierarchy edges
+            for (cname, cinfo) in &session.ontology.concepts {
+                if let Some(parent) = &cinfo.parent {
+                    let sub_res = prove_subsumption(
+                        &session.program,
+                        &session.ontology,
+                        cname,
+                        parent,
+                        Prover::BilSmt,
+                    );
+                    assert_eq!(
+                        sub_res,
+                        SubsumptionResult::Subsumed {
+                            prover: "bil-smt".to_string()
+                        },
+                        "{}: expected {} <: {} subsumed by bil-smt",
+                        path.display(),
+                        cname,
+                        parent
+                    );
+                    let rev_res = prove_subsumption(
+                        &session.program,
+                        &session.ontology,
+                        parent,
+                        cname,
+                        Prover::BilSmt,
+                    );
+                    assert!(
+                        matches!(rev_res, SubsumptionResult::NotSubsumed { .. }),
+                        "{}: expected parent {} not subsumed by child {}",
+                        path.display(),
+                        parent,
+                        cname
+                    );
+                }
+            }
+
+            // 3. Check every VC obligation script
             let obs = generate_obligations(&session.program, &session.ontology);
             for ob in obs {
                 let script = ob.smt2_script.unwrap_or_else(|| {
@@ -840,12 +2919,17 @@ mod tests {
                         script
                     )
                 });
-                assert!(
-                    !qf.contains("(forall"),
-                    "{}::{}: instantiated script still contains forall:\n{}",
+                assert!(!qf.contains("(forall"));
+                let bil_res = run_bil_smt(&script);
+                assert_eq!(
+                    bil_res.verdict,
+                    Verdict::Inconsistent,
+                    "{}::{} ({}): expected unsat from bil-smt, got {:?}\n{}",
                     path.display(),
                     ob.fn_name,
-                    qf
+                    ob.kind,
+                    bil_res,
+                    script
                 );
                 if has_z3 {
                     z3_batch.push_str("(reset)\n");
@@ -857,6 +2941,21 @@ mod tests {
                         "unsat",
                     ));
                 }
+            }
+
+            // 4. Check symbolic BMC (k = 3) with Prover::BilSmt
+            let bmc_reports =
+                symbolic_bmc_program(&session.program, &session.ontology, 3, Prover::BilSmt);
+            for rep in bmc_reports {
+                bmc_systems_checked += 1;
+                assert!(
+                    rep.safe_up_to_k,
+                    "{}::{}: expected BMC k=3 safe under bil-smt, got {:?}",
+                    path.display(),
+                    rep.system_name,
+                    rep.verdict
+                );
+                assert_eq!(rep.verdict, Verdict::Inconsistent);
             }
         }
         if has_z3 {
@@ -885,10 +2984,11 @@ mod tests {
         }
         assert_eq!(total_obligations, 147);
         assert!(quantified_obligations > 0);
+        assert_eq!(bmc_systems_checked, 4);
     }
 
     #[test]
-    fn seeded_bug_refutation_is_preserved_under_entity_instantiation() {
+    fn seeded_bug_refutation_and_counterexample_model_extraction_work_in_bil_smt() {
         let src =
             std::fs::read_to_string("examples/domains/seeded_bugs/reactor_trip_shared_input.bil")
                 .unwrap();
@@ -899,12 +2999,111 @@ mod tests {
             .find(|o| o.fn_name == "high_temp_trip")
             .unwrap();
         let script = trip_ob.smt2_script.as_ref().unwrap();
-        let qf = instantiate_entity_quantifiers(script).expect("in fragment");
+        let bil_res = run_bil_smt(script);
+        assert_eq!(bil_res.verdict, Verdict::Consistent);
+
+        let with_model = attach_model(bil_res, script);
+        let parsed = parse_smt_model(&with_model.stdout).expect("expected parsed counterexample");
+        assert!(
+            parsed.contains("setpoint =")
+                && parsed.contains("t1 =")
+                && parsed.contains("t2 =")
+                && parsed.contains("t3 ="),
+            "unexpected model format: {}",
+            parsed
+        );
+
         if find_solver_binary("z3").is_some() {
             let orig_res = run_smt_prover(Prover::Z3, script);
-            let qf_res = run_smt_prover(Prover::Z3, &qf);
             assert_eq!(orig_res.verdict, Verdict::Consistent);
-            assert_eq!(qf_res.verdict, Verdict::Consistent);
+        }
+    }
+
+    #[test]
+    fn incremental_batch_div_mod_lia_strings_and_ackermann_match_z3() {
+        // 1. Incremental batch push/pop
+        let base = "(set-logic ALL)\n(declare-const x Int)\n(assert (> x 10))\n";
+        let refs = vec![
+            "(<= x 5)".to_string(),
+            "(> x 20)".to_string(),
+            "(= x 10)".to_string(),
+        ];
+        let (prover_name, verdicts) =
+            run_smt_incremental_batch_with_prover(Prover::BilSmt, base, &refs).unwrap();
+        assert_eq!(prover_name, "bil-smt");
+        assert_eq!(
+            verdicts,
+            vec![
+                Verdict::Inconsistent,
+                Verdict::Consistent,
+                Verdict::Inconsistent
+            ]
+        );
+
+        // 2. Non-unit LIA, GCD infeasibility, Omega splinter, div/mod, abs, ite, let, String, Entity eq
+        let queries = [
+            // GCD parity infeasibility: 2x - 2y = 1 (unsat)
+            (
+                "(set-logic ALL)\n(declare-const x Int)\n(declare-const y Int)\n(assert (= (- (* 2 x) (* 2 y)) 1))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            // Omega dark shadow splinter: 27 <= 11x + 13y <= 45 and -10 <= 7x - 9y <= 4 (unsat in Int, sat in Real)
+            (
+                "(set-logic ALL)\n(declare-const x Int)\n(declare-const y Int)\n(assert (<= 27 (+ (* 11 x) (* 13 y))))\n(assert (<= (+ (* 11 x) (* 13 y)) 45))\n(assert (<= (- 10) (- (* 7 x) (* 9 y))))\n(assert (<= (- (* 7 x) (* 9 y)) 4))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            // Non-unit satisfiable system: 3x + 2y = 7 and x >= 1 and y >= 1 (sat: x=1, y=2)
+            (
+                "(set-logic ALL)\n(declare-const x Int)\n(declare-const y Int)\n(assert (= (+ (* 3 x) (* 2 y)) 7))\n(assert (>= x 1))\n(assert (>= y 1))\n(check-sat)\n(get-model)\n",
+                Verdict::Consistent,
+            ),
+            // Euclidean div and mod identity: x = 5 * (div x 5) + (mod x 5) is valid -> negation unsat
+            (
+                "(set-logic ALL)\n(declare-const x Int)\n(assert (not (= x (+ (* 5 (div x 5)) (mod x 5)))))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            // abs and ite and let
+            (
+                "(set-logic ALL)\n(declare-const x Int)\n(assert (let ((a (abs x)) (b (ite (>= x 0) x (- x)))) (distinct a b)))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            // String equality and disequality
+            (
+                "(set-logic ALL)\n(declare-const s String)\n(assert (= s \"alpha\"))\n(assert (= s \"beta\"))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            (
+                "(set-logic ALL)\n(declare-const s String)\n(assert (distinct s \"alpha\"))\n(assert (distinct s \"beta\"))\n(check-sat)\n",
+                Verdict::Consistent,
+            ),
+            // Uninterpreted function congruence over Entity equality: a = b && f(a) != f(b) is unsat
+            (
+                "(set-logic ALL)\n(declare-sort Entity 0)\n(declare-const a Entity)\n(declare-const b Entity)\n(declare-fun f (Entity) Int)\n(assert (= a b))\n(assert (distinct (f a) (f b)))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+            // Quantifier over Entity with no declared Entity constants (uses __entity_witness)
+            (
+                "(set-logic ALL)\n(declare-sort Entity 0)\n(declare-fun p (Entity) Bool)\n(assert (forall ((x Entity)) (and (p x) (not (p x)))))\n(check-sat)\n",
+                Verdict::Inconsistent,
+            ),
+        ];
+
+        let has_z3 = find_solver_binary("z3").is_some();
+        for (script, expected) in queries {
+            let bil_res = run_bil_smt(script);
+            assert_eq!(
+                bil_res.verdict, expected,
+                "unexpected bil-smt verdict for:\n{}",
+                script
+            );
+            if has_z3 {
+                let z3_res = run_smt_prover(Prover::Z3, script);
+                assert_eq!(
+                    bil_res.verdict, z3_res.verdict,
+                    "bil-smt disagreed with z3 on:\n{}",
+                    script
+                );
+            }
         }
     }
 
@@ -948,12 +3147,10 @@ mod tests {
             assert!(res.detail.contains("outside bil-smt fragment"), "{}", res.detail);
         }
 
-        // Valid fragment script also returns Unknown in 8.1.2 (decision procedure is 8.1.3)
+        // Valid fragment script now decides SAT / UNSAT in 8.1.3
         let valid = "(set-logic ALL)\n(declare-const x Int)\n(assert (> x 0))\n(check-sat)\n";
         let res = run_smt_prover(Prover::BilSmt, valid);
         assert_eq!(res.prover, "bil-smt");
-        assert_eq!(res.verdict, Verdict::Unknown);
-        assert!(res.detail.contains("fragment accepted"), "{}", res.detail);
+        assert_eq!(res.verdict, Verdict::Consistent);
     }
 }
-
