@@ -6,7 +6,7 @@ Planning IDs are `N.P.T` = Milestone.Phase.Task (for example `7.3.4` is Mileston
 
 Release versions line up with milestones: **Milestone N ships as release `v0.N.0`.** A fix released between milestones is `v0.N.Z` with `Z` counting patches (this `Z` is a release patch number, not a task number).
 
-Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.7.1` is a patch release of Milestone 7 that carries the Apache-2.0 license in `Cargo.toml`. Tags `v0.1.0` to `v0.7.0` were moved to metadata-only commits with the same license change (code unchanged).
+Milestones 1 to 8 are released and match the git tags `v0.1.0` to `v0.8.0`. `v0.7.1` is a patch release of Milestone 7 that carries the Apache-2.0 license in `Cargo.toml`. Tags `v0.1.0` to `v0.7.0` were moved to metadata-only commits with the same license change (code unchanged).
 
 | Milestone | Release | Name | Status |
 |---|---|---|---|
@@ -17,7 +17,7 @@ Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.
 | 5 | v0.5.0 | Strict Exit Codes, CLI Validation & Type Soundness | Released |
 | 6 | v0.6.0 | CI Gate, Counterexample Values & Hardening | Released |
 | 7 | v0.7.0 | Timed Guards, SMT Unfolding, Recursion & System to Verus Refinement | Released 2026-10-29 (patch v0.7.1) |
-| 8 | v0.8.0 | Solver independence | Phase 8.1 Complete |
+| 8 | v0.8.0 | Solver independence (`bil-smt`) | Released 2026-11-06 |
 
 Milestones 3 to 6 were not in the earlier roadmap. They are filled in from `CHANGELOG.md` and the git tags. Task lines for them are shortened summaries; the CHANGELOG entry for each release has the detail.
 
