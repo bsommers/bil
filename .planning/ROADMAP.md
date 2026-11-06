@@ -6,7 +6,7 @@ Planning IDs are `N.P.T` = Milestone.Phase.Task (for example `7.3.4` is Mileston
 
 Release versions line up with milestones: **Milestone N ships as release `v0.N.0`.** A fix released between milestones is `v0.N.Z` with `Z` counting patches (this `Z` is a release patch number, not a task number).
 
-Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.7.1` is a patch release of Milestone 7 that carries the Apache-2.0 license in `Cargo.toml` (the `v0.7.0` tag still says MIT).
+Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.7.1` is a patch release of Milestone 7 that carries the Apache-2.0 license in `Cargo.toml`. Tags `v0.1.0` to `v0.7.0` were moved to metadata-only commits with the same license change (code unchanged).
 
 | Milestone | Release | Name | Status |
 |---|---|---|---|
