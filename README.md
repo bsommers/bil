@@ -25,7 +25,7 @@
 
 ## Which commands need an SMT solver
 
-`bil` has no built-in SMT solver. It pipes SMT-LIB2 to z3, cvc5 or vampire if one is installed (`BIL_<NAME>_PATH`, `BIL_SOLVER_DIR`, `~/.local/bin`, then `PATH`). `check`, `run`, `vm`, `build`, `emit-verus` and explicit-state `model-check` do not need one. `verify` falls back to sampled (`BOUNDED`) results and exits 1 unless `--allow-bounded`. `solve` and `model-check --bmc` report that no solver ran. Measured details: `docs/SOLVER-MEASUREMENT.md`.
+`bil` includes an in-repo SMT decision procedure, `bil-smt` (`src/bil_smt.rs`), for its decidable fragment: quantifier-free linear integer arithmetic (`QF_LIA` with `div`/`mod`/`abs`), booleans, `ite`, `let`, string and entity equality, uninterpreted functions over `Entity`, and universal quantifiers `forall` over `Entity` (instantiated over the declared `Entity` constants). With `--prover auto` (the default), `bil` tries an installed external solver (`z3`, `cvc5`, `vampire`, looked up in `BIL_<NAME>_PATH`, `BIL_SOLVER_DIR`, `~/.local/bin`, then `PATH`) first and falls back to `bil-smt` when none is found, labelling proofs `PROVED (by bil-smt)`. All 14 domain examples in `examples/domains/` verify, `solve`, and `model-check --bmc` with no external solver installed. Queries outside the `bil-smt` fragment (such as universal quantifiers over `Int` in `examples/recursive_contracts.bil` or `examples/security_policy.bil`, or nonlinear integer multiplication) return `unknown` from `bil-smt` and need an external solver (or `--allow-bounded` on `verify`). `check`, `run`, `vm`, `build`, `emit-verus` and explicit-state `model-check` do not use an SMT solver. Measured details: `docs/SOLVER-MEASUREMENT.md`.
 
 ---
 
@@ -33,8 +33,8 @@
 
 ```bash
 cargo run -- check <file.bil>                    # OntoLogic DAG + contradiction linter + HM typechecker
-cargo run -- solve <file.bil> [--subsumes C P]   # Z3/CVC5 SMT-LIB2 ontology consistency & subsumption prover
-cargo run -- verify <file.bil> [--allow-bounded] # Dijkstra WP, Refinement & Verus proof verifier (Bounded + Z3); exits 1 on bounded-only obligations unless --allow-bounded
+cargo run -- solve <file.bil> [--subsumes C P]   # SMT-LIB2 ontology consistency & subsumption prover (z3/cvc5/vampire/bil-smt)
+cargo run -- verify <file.bil> [--allow-bounded] # Dijkstra WP, Refinement & Verus proof verifier (Bounded + SMT); exits 1 on bounded-only obligations unless --allow-bounded
 cargo run -- model-check <file.bil>              # Explicit-state + LTL temporal (`~>`, `eventually`) model checker
 cargo run -- run <file.bil> [--seed N] [--trace] # Tree-walk interpreter with nondeterministic trace
 cargo run -- vm <file.bil> [--dump-bytecode]     # Execute Ghost-Erased LIR on the Register/Stack Bytecode VM

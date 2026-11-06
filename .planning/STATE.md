@@ -11,5 +11,5 @@ Numbering and release mapping: see `.planning/ROADMAP.md`. Milestone N ships as 
   - 5 (v0.5.0): strict exit codes, CLI validation, type soundness
   - 6 (v0.6.0): `scripts/ci.sh` gate, SMT counterexample values, hardening
   - 7 (v0.7.0): timed guards, SMT unfolding of user functions, recursion by `variant`, sample budget, `bil emit-verus` refinement of `system` blocks, project site
-- **Next Milestone**: 8 (`v0.8.0`) — solver independence. In progress: 8.1.1 (measure), 8.1.2 (fragment + `bil-smt` interface), 8.1.3 (decision procedure), and 8.1.4 (soundness gate) done; next is 8.1.5 (wire-in). See `docs/SOLVER-CONSIDERATIONS.md` and `docs/SOLVER-MEASUREMENT.md`.
+- **Next Milestone**: 8 (`v0.8.0`) — solver independence. Phase 8.1 complete (2026-11-06): 8.1.1 (measure), 8.1.2 (fragment + `bil-smt` interface), 8.1.3 (decision procedure), 8.1.4 (soundness gate), and 8.1.5 (`--prover auto` fallback + docs). Phase 8.2 (proof checking) is not scheduled. See `docs/SOLVER-CONSIDERATIONS.md` and `docs/SOLVER-MEASUREMENT.md`.
 - **Test status**: run `scripts/ci.sh` (clippy `-D warnings`, tests under coverage with a 78% floor, Verus tests when `verus` is installed, `cargo audit`). Figures from the last run are in the release tag message.

@@ -26,6 +26,12 @@ All three executable backends enforce identical **64-bit signed two's-complement
 - In SMT-LIB2 (`src/smt.rs`), `Int` denotes mathematical integers $\mathbb{Z}$ without 64-bit upper/lower bounds.
 - In bounded counterexample search (`src/wp.rs`), any expression that triggers an `i64` arithmetic overflow or division-by-zero is treated as a **refutation (`Status::Refuted`)** of the verification condition unless precluded by the function's `requires` precondition.
 
+### 1.3 In-Repo Decision Procedure (`bil-smt`, `src/bil_smt.rs`)
+`bil-smt` is a self-contained decision procedure used when `--prover bil-smt` is selected or when `--prover auto` finds no external `z3`, `cvc5`, or `vampire` binary:
+- **Decidable Fragment**: Sorts `Bool`, `Int`, `String`, and uninterpreted `Entity`; linear integer arithmetic (`+`, `-`, `*` by a constant, Euclidean `div` and `mod` by a non-zero constant, `abs`, `< <= > >= = distinct`); boolean connectives, `ite`, and `let`; string and `Entity` equality/disequality; uninterpreted functions `(declare-fun f (Entity ...) Bool|Int)` with `Entity` parameters; and universal quantifiers `(forall ((x Entity) ...) body)` over `Entity` when no declared function returns `Entity` and no `exists` occurs.
+- **Finite Herbrand Instantiation & Ackermann Reduction**: Because no function symbol constructs new `Entity` terms and no existential quantifier over `Entity` appears, a universally quantified `Entity` formula is equisatisfiable with its conjunction over the declared `Entity` constants (or a single fresh witness constant when none are declared). Uninterpreted functions over `Entity` are reduced to `QF_LIA` via Ackermann congruence constraints and decided by DPLL(T) + exact Fourier-Motzkin / Omega elimination (`i128`), with every `sat` assignment checked against the original assertions before being reported.
+- **Fail-Closed Outside the Fragment**: Any query using `Real`, nonlinear multiplication, division/modulo by a variable, `exists`, or `forall` over `Int` (such as unfolded recursive functions with a `variant`) is rejected with `Verdict::Unknown` (`outside bil-smt fragment: ...`), never a guess.
+
 ---
 
 ## 2. Open-World vs. Closed-World Concept Quantification

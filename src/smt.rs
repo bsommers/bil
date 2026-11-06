@@ -86,7 +86,7 @@ impl Prover {
             Prover::Cvc5 => "cvc5",
             Prover::Vampire => "vampire",
             Prover::BilSmt => "bil-smt",
-            Prover::Auto => "auto(z3->cvc5->vampire)",
+            Prover::Auto => "auto(z3->cvc5->vampire->bil-smt)",
         }
     }
 }
@@ -245,7 +245,11 @@ pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
             if cvc5_res.verdict != Verdict::Skipped {
                 return cvc5_res;
             }
-            run_smt_prover(Prover::Vampire, smt2_input)
+            let vamp_res = run_smt_prover(Prover::Vampire, smt2_input);
+            if vamp_res.verdict != Verdict::Skipped {
+                return vamp_res;
+            }
+            run_smt_prover(Prover::BilSmt, smt2_input)
         }
     }
 }

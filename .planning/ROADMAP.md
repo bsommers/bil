@@ -17,7 +17,7 @@ Milestones 1 to 7 are released and match the git tags `v0.1.0` to `v0.7.0`. `v0.
 | 5 | v0.5.0 | Strict Exit Codes, CLI Validation & Type Soundness | Released |
 | 6 | v0.6.0 | CI Gate, Counterexample Values & Hardening | Released |
 | 7 | v0.7.0 | Timed Guards, SMT Unfolding, Recursion & System to Verus Refinement | Released 2026-10-29 (patch v0.7.1) |
-| 8 | v0.8.0 | Solver independence | Planned |
+| 8 | v0.8.0 | Solver independence | Phase 8.1 Complete |
 
 Milestones 3 to 6 were not in the earlier roadmap. They are filled in from `CHANGELOG.md` and the git tags. Task lines for them are shortened summaries; the CHANGELOG entry for each release has the detail.
 
@@ -171,14 +171,14 @@ Proves that safety invariants are preserved by the emitted steps. Does not cover
 
 ---
 
-## Milestone 8 (v0.8.0): Solver independence (PLANNED, not started)
+## Milestone 8 (v0.8.0): Solver independence
 
 Analysis: `docs/SOLVER-CONSIDERATIONS.md` (option D). Effort is an estimate: 8 to 16 weeks.
 
 - **Goal**: `bil verify` can produce PROVED with no external solver installed, for the queries it can decide. z3, cvc5 and vampire remain the default and the fallback for everything else.
 - **Non-goals**: beating z3; a general SMT solver (option E); removing the external provers.
 
-### Phase 8.1: In-repo solver for a fixed fragment
+### Phase 8.1: In-repo solver for a fixed fragment (DONE 2026-11-06)
 - 8.1.1 **Measure** (about 1 day, no changes to `src/`) — DONE 2026-10-30, results in `docs/SOLVER-MEASUREMENT.md`; gate passed (narrow fragment)
   - Run the 14 domain examples and record which SMT features each emitted query uses (`Int`, `Real`, `forall`, `exists`, uninterpreted sorts and functions).
   - Record what `solve` and `model-check --bmc` do with no solver installed.
@@ -190,7 +190,7 @@ Analysis: `docs/SOLVER-CONSIDERATIONS.md` (option D). Effort is an estimate: 8 t
 - 8.1.4 **Soundness gate** — DONE 2026-11-06 (`src/bil_smt.rs` repo-wide differential soundness gate against z3 across all examples, seeded bugs, and inline test queries; `tests/domain_examples.rs` end-to-end domain model verification and seeded-bug suite with `bil-smt` as the only prover)
   - Differential test: every query in the repo's examples and tests gives the same sat/unsat answer as z3. Any disagreement fails CI.
   - The seeded-bug suite (`tests/domain_examples.rs`) is still caught with `bil-smt` as the only prover.
-- 8.1.5 **Wire-in**
+- 8.1.5 **Wire-in** — DONE 2026-11-06 (`src/smt.rs`, `tests/domain_examples.rs`, `tests/cli.rs`, `README.md`, `CHANGELOG.md`, `docs/SEMANTICS.md`)
   - `--prover auto` tries an installed solver first, then `bil-smt`. Results are labelled `PROVED (by bil-smt)`.
   - Update README solver wording, CHANGELOG, `docs/SEMANTICS.md`.
 

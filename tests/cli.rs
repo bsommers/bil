@@ -221,6 +221,56 @@ fn verify_exits_nonzero_when_solver_fails_and_sampling_misses() {
 }
 
 #[test]
+fn prover_auto_falls_back_to_bil_smt_when_no_external_solver_is_installed() {
+    let dir = scratch_dir("auto-fallback-bil-smt");
+    let valid_src = write_source(
+        &dir,
+        "fn inc(x: Int) -> Int requires x >= 0 ensures result > x = x + 1\n",
+    );
+    let out = Command::new(BIL)
+        .args(["verify", valid_src.to_str().unwrap()])
+        .env("BIL_Z3_PATH", "/nonexistent")
+        .env("BIL_Z3", "/nonexistent")
+        .env("CLIF2OL_Z3", "/nonexistent")
+        .env("BIL_CVC5_PATH", "/nonexistent")
+        .env("BIL_CVC5", "/nonexistent")
+        .env("CLIF2OL_CVC5", "/nonexistent")
+        .env("BIL_VAMPIRE_PATH", "/nonexistent")
+        .env("BIL_VAMPIRE", "/nonexistent")
+        .env("CLIF2OL_VAMPIRE", "/nonexistent")
+        .env("BIL_SOLVER_DIR", "/nonexistent")
+        .env("HOME", "/nonexistent")
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("spawn bil");
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{}", text);
+    assert!(text.contains("[PROVED (by bil-smt)]"), "{}", text);
+
+    // Out-of-fragment query (nonlinear x * x == 1369) returns Unknown from bil-smt,
+    // leaving only bounded evidence, which exits 1 unless --allow-bounded is passed.
+    let nonlinear_src = write_source(&dir, SMT_ONLY_REFUTABLE);
+    let out_nl = Command::new(BIL)
+        .args(["verify", nonlinear_src.to_str().unwrap()])
+        .env("BIL_Z3_PATH", "/nonexistent")
+        .env("BIL_Z3", "/nonexistent")
+        .env("CLIF2OL_Z3", "/nonexistent")
+        .env("BIL_CVC5_PATH", "/nonexistent")
+        .env("BIL_CVC5", "/nonexistent")
+        .env("CLIF2OL_CVC5", "/nonexistent")
+        .env("BIL_VAMPIRE_PATH", "/nonexistent")
+        .env("BIL_VAMPIRE", "/nonexistent")
+        .env("CLIF2OL_VAMPIRE", "/nonexistent")
+        .env("BIL_SOLVER_DIR", "/nonexistent")
+        .env("HOME", "/nonexistent")
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("spawn bil");
+    assert_eq!(out_nl.status.code(), Some(1), "{}", stdout(&out_nl));
+    assert!(stdout(&out_nl).contains("[BOUNDED"), "{}", stdout(&out_nl));
+}
+
+#[test]
 fn model_check_exit_codes_follow_violations() {
     let dir = scratch_dir("mc-exit");
     let bad = write_source(

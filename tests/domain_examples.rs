@@ -100,18 +100,20 @@ fn every_domain_model_verifies_with_bil_smt_only() {
 }
 
 fn check_domain_model_bil_smt_only(p: &str) {
-    for cmd in ["check", "verify", "model-check", "run", "vm"] {
-        let out = if cmd == "verify" {
-            bil_no_external_solvers(&[cmd, p, "--prover", "bil-smt"])
-        } else {
-            bil_no_external_solvers(&[cmd, p])
-        };
+    for cmd in ["check", "solve", "verify", "model-check", "run", "vm"] {
+        let out = bil_no_external_solvers(&[cmd, p]);
         let t = text(&out);
         assert_eq!(
             out.status.code(),
             Some(0),
-            "bil {cmd} {p} (bil-smt only) failed:\n{t}"
+            "bil {cmd} {p} (auto -> bil-smt fallback) failed:\n{t}"
         );
+        if cmd == "solve" {
+            assert!(
+                t.contains("via bil-smt"),
+                "{p}: expected solve via bil-smt:\n{t}"
+            );
+        }
         if cmd == "verify" {
             assert!(
                 t.contains("[PROVED (by bil-smt)]"),
@@ -127,12 +129,12 @@ fn check_domain_model_bil_smt_only(p: &str) {
         .iter()
         .any(|name| p.ends_with(name))
     {
-        let out = bil_no_external_solvers(&["model-check", p, "--bmc", "3", "--prover", "bil-smt"]);
+        let out = bil_no_external_solvers(&["model-check", p, "--bmc", "3"]);
         let t = text(&out);
         assert_eq!(
             out.status.code(),
             Some(0),
-            "bil model-check --bmc 3 --prover bil-smt {p} failed:\n{t}"
+            "bil model-check --bmc 3 {p} (auto -> bil-smt fallback) failed:\n{t}"
         );
         assert!(
             t.contains("[BMC PROVED SAFE (k=3)] Prover `bil-smt`"),
@@ -244,16 +246,12 @@ fn every_seeded_bug_is_caught_with_bil_smt_only() {
     for (file, cmd, code, needle) in SEEDED {
         let p = dir.join(file);
         let p_str = p.to_str().unwrap();
-        let out = if *cmd == "verify" {
-            bil_no_external_solvers(&[cmd, p_str, "--prover", "bil-smt"])
-        } else {
-            bil_no_external_solvers(&[cmd, p_str])
-        };
+        let out = bil_no_external_solvers(&[cmd, p_str]);
         let t = text(&out);
         assert_eq!(
             out.status.code(),
             Some(*code),
-            "bil {cmd} {file} (bil-smt only):\n{t}"
+            "bil {cmd} {file} (auto -> bil-smt fallback):\n{t}"
         );
         assert!(
             t.contains(needle),
