@@ -238,7 +238,7 @@ fn build_vc_obligation(
     vc: &Expr,
     include_axioms: bool,
     proved_lemmas: &[ProofDecl],
-    run_smt: bool,
+    prover: Option<Prover>,
 ) -> ProofObligation {
     let (bounded_ok, ce, samples) =
         check_vc_bounded(program, ontology, fn_params, state_params, vc);
@@ -259,10 +259,10 @@ fn build_vc_obligation(
         include_axioms,
         proved_lemmas,
     );
-    let smt_res = if run_smt {
+    let smt_res = if let Some(p) = prover {
         smt2_script
             .as_ref()
-            .map(|script| attach_model(run_smt_prover(Prover::Auto, script), script))
+            .map(|script| attach_model(run_smt_prover(p, script), script))
     } else {
         None
     };
@@ -303,9 +303,9 @@ fn build_vc_obligations_batch(
     specs: Vec<(ObligationKind, Vec<Param>, Expr)>,
     include_axioms: bool,
     proved_lemmas: &[ProofDecl],
-    run_smt: bool,
+    prover: Option<Prover>,
 ) -> Vec<ProofObligation> {
-    if !run_smt || specs.len() <= 1 {
+    let Some(p) = prover else {
         return specs
             .into_iter()
             .map(|(kind, state_params, vc)| {
@@ -319,7 +319,26 @@ fn build_vc_obligations_batch(
                     &vc,
                     include_axioms,
                     proved_lemmas,
-                    run_smt,
+                    None,
+                )
+            })
+            .collect();
+    };
+    if specs.len() <= 1 {
+        return specs
+            .into_iter()
+            .map(|(kind, state_params, vc)| {
+                build_vc_obligation(
+                    program,
+                    ontology,
+                    fn_name,
+                    kind,
+                    fn_params,
+                    &state_params,
+                    &vc,
+                    include_axioms,
+                    proved_lemmas,
+                    Some(p),
                 )
             })
             .collect();
@@ -354,7 +373,7 @@ fn build_vc_obligations_batch(
 
     let batch_smt = match (header_opt, refutations_opt) {
         (Some(header), Some(refutations)) => {
-            run_smt_incremental_batch_with_prover(Prover::Auto, &header, &refutations)
+            run_smt_incremental_batch_with_prover(p, &header, &refutations)
         }
         _ => None,
     };
@@ -373,7 +392,7 @@ fn build_vc_obligations_batch(
                     &vc,
                     include_axioms,
                     proved_lemmas,
-                    run_smt,
+                    Some(p),
                 )
             })
             .collect();
@@ -448,19 +467,28 @@ pub fn generate_obligations(
     program: &Program,
     ontology: &OntologyRegistry,
 ) -> Vec<ProofObligation> {
-    verify_program_inner(program, ontology, false)
+    verify_program_inner(program, ontology, None)
 }
 
 /// Generates and verifies all Dijkstra Weakest Precondition (`wp`), Refinement (`refines`),
 /// and Verus Ghost Proof (`proof`) obligations using both bounded domain search and unbounded SMT-LIB2.
 pub fn verify_program(program: &Program, ontology: &OntologyRegistry) -> Vec<ProofObligation> {
-    verify_program_inner(program, ontology, true)
+    verify_program_inner(program, ontology, Some(Prover::Auto))
+}
+
+/// [`verify_program`] with an explicit SMT [`Prover`] selection.
+pub fn verify_program_with_prover(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    prover: Prover,
+) -> Vec<ProofObligation> {
+    verify_program_inner(program, ontology, Some(prover))
 }
 
 fn verify_program_inner(
     program: &Program,
     ontology: &OntologyRegistry,
-    run_smt: bool,
+    prover: Option<Prover>,
 ) -> Vec<ProofObligation> {
     let mut obligations = Vec::new();
     let mut specs = BTreeMap::new();
@@ -471,8 +499,8 @@ fn verify_program_inner(
     }
 
     let has_axioms = program.items.iter().any(|i| matches!(i, Item::Axiom(_)));
-    let axioms_consistent = if run_smt && has_axioms {
-        let consistency = crate::smt::check_ontology_consistency(program, ontology, Prover::Auto);
+    let axioms_consistent = if let Some(p) = prover.filter(|_| has_axioms) {
+        let consistency = crate::smt::check_ontology_consistency(program, ontology, p);
         consistency.verdict != Verdict::Inconsistent
     } else {
         true
@@ -496,7 +524,7 @@ fn verify_program_inner(
                     &vc,
                     axioms_consistent,
                     &proved_lemmas,
-                    run_smt,
+                    prover,
                 );
                 if matches!(ob.status, Status::Proved { .. }) {
                     proved_lemmas.push(pr.clone());
@@ -537,7 +565,7 @@ fn verify_program_inner(
                             &vc_pre,
                             false,
                             &proved_lemmas,
-                            run_smt,
+                            prover,
                         ));
 
                         // (Pre_spec && Post_impl) => Post_spec (checked over actual execution of f + SMT on contract)
@@ -557,11 +585,11 @@ fn verify_program_inner(
                             false,
                             &proved_lemmas,
                         );
-                        let smt_res = if run_smt {
+                        let smt_res = if let Some(p) = prover {
                             smt2_script
                                 .as_ref()
                                 .map(|script| {
-                                    attach_model(run_smt_prover(Prover::Auto, script), script)
+                                    attach_model(run_smt_prover(p, script), script)
                                 })
                         } else {
                             None
@@ -631,7 +659,7 @@ fn verify_program_inner(
                             batch_specs,
                             false,
                             &proved_lemmas,
-                            run_smt,
+                            prover,
                         ));
                     }
                     Expr::DoOd {
@@ -735,7 +763,7 @@ fn verify_program_inner(
                             batch_specs,
                             false,
                             &proved_lemmas,
-                            run_smt,
+                            prover,
                         ));
                     }
                     _ => {
@@ -753,11 +781,11 @@ fn verify_program_inner(
                                 axioms_consistent,
                                 &proved_lemmas,
                             );
-                            let smt_res = if run_smt {
+                            let smt_res = if let Some(p) = prover {
                                 smt2_script
                                     .as_ref()
                                     .map(|script| {
-                                    attach_model(run_smt_prover(Prover::Auto, script), script)
+                                    attach_model(run_smt_prover(p, script), script)
                                 })
                             } else {
                                 None

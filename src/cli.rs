@@ -20,10 +20,10 @@ pub fn print_usage() {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("  bil check <file.bil>                   Run OntoLogic DAG linter & Hindley-Milner typechecker");
-    eprintln!("  bil solve <file.bil> [--prover z3|cvc5|vampire|auto] [--subsumes Child Parent] [--emit-smt2]");
-    eprintln!("  bil verify <file.bil> [--format json] [--allow-bounded]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
+    eprintln!("  bil solve <file.bil> [--prover z3|cvc5|vampire|bil-smt|auto] [--subsumes Child Parent] [--emit-smt2]");
+    eprintln!("  bil verify <file.bil> [--prover z3|cvc5|vampire|bil-smt|auto] [--format json] [--allow-bounded]  Generate & prove Dijkstra WP, Refinement & Proof obligations");
     eprintln!("                                         (exits 1 if any obligation is only bounded-checked, unless --allow-bounded)");
-    eprintln!("  bil model-check <file.bil> [--max-states N] [--bmc K] [--format json] Exhaustively or symbolically verify system models");
+    eprintln!("  bil model-check <file.bil> [--max-states N] [--bmc K] [--prover z3|cvc5|vampire|bil-smt|auto] [--format json] Exhaustively or symbolically verify system models");
     eprintln!("  bil run <file.bil> [--seed N] [--trace] Execute program, axioms, GCL & functional pipelines");
     eprintln!("  bil vm <file.bil> [--seed N] [--dump-bytecode] Execute Ghost-Erased LIR on the Register/Stack Bytecode VM");
     eprintln!("  bil build <file.bil> [-o <out_bin>]    Compile Ghost-Erased LIR to a standalone native ELF binary");
@@ -84,10 +84,10 @@ fn unknown_flag(cmd: &str, flag: &str) -> i32 {
 
 fn parse_prover(value: &str) -> Result<Prover, i32> {
     match value.to_ascii_lowercase().as_str() {
-        "z3" | "cvc5" | "vampire" | "auto" => Ok(Prover::parse(value)),
+        "z3" | "cvc5" | "vampire" | "bil-smt" | "auto" => Ok(Prover::parse(value)),
         _ => {
             eprintln!(
-                "error: invalid value `{}` for `--prover` (expected z3, cvc5, vampire or auto)",
+                "error: invalid value `{}` for `--prover` (expected z3, cvc5, vampire, bil-smt or auto)",
                 value
             );
             Err(1)
@@ -101,6 +101,7 @@ struct PipelineOpts {
     trace: bool,
     max_states: usize,
     bmc_k: Option<usize>,
+    prover: Prover,
     json_output: bool,
     /// Accept bounded-only (sampled, not proved) obligations as passing.
     allow_bounded: bool,
@@ -112,6 +113,7 @@ fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> 
         trace: false,
         max_states: 50_000,
         bmc_k: None,
+        prover: Prover::Auto,
         json_output: false,
         allow_bounded: false,
     };
@@ -127,6 +129,7 @@ fn parse_pipeline_opts(cmd: &str, args: &[String]) -> Result<PipelineOpts, i32> 
             s if s.starts_with("--bmc=") => {
                 opts.bmc_k = Some(parse_flag("--bmc", &s["--bmc=".len()..])?)
             }
+            "--prover" | "-p" => opts.prover = parse_prover(flag_value(args, &mut i)?)?,
             "--format" => match flag_value(args, &mut i)? {
                 "json" => opts.json_output = true,
                 "text" => opts.json_output = false,
@@ -245,7 +248,7 @@ pub fn run_cli(args: &[String]) -> i32 {
         }
         "solve" => {
             if args.len() < 3 {
-                eprintln!("Usage: bil solve <file.bil> [--prover z3|cvc5|vampire|auto] [--subsumes Child Parent] [--emit-smt2]");
+                eprintln!("Usage: bil solve <file.bil> [--prover z3|cvc5|vampire|bil-smt|auto] [--subsumes Child Parent] [--emit-smt2]");
                 return 1;
             }
             let path = &args[2];
@@ -431,6 +434,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                 trace,
                 max_states,
                 bmc_k,
+                prover,
                 json_output,
                 allow_bounded,
             } = match parse_pipeline_opts(cmd, args) {
@@ -460,7 +464,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
 
             if cmd == "verify" || cmd == "all" {
-                let obligations = session.verify();
+                let obligations = session.verify_with_prover(prover);
                 let all_ok = obligations.iter().all(|ob| ob.verified);
                 if json_output && cmd == "verify" {
                     if let Ok(js) = serde_json::to_string_pretty(&obligations) {
@@ -510,7 +514,7 @@ pub fn run_cli(args: &[String]) -> i32 {
 
             if cmd == "model-check" || cmd == "all" {
                 if let Some(k) = bmc_k {
-                    let bmc_reports = session.symbolic_bmc(k, Prover::Auto);
+                    let bmc_reports = session.symbolic_bmc(k, prover);
                     let any_unsat_violation = bmc_reports
                         .iter()
                         .any(|r| r.verdict == Verdict::Consistent);

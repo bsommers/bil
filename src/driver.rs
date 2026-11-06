@@ -153,6 +153,10 @@ impl CompilationSession {
         wp::verify_program(&self.program, &self.ontology)
     }
 
+    pub fn verify_with_prover(&self, prover: Prover) -> Vec<ProofObligation> {
+        wp::verify_program_with_prover(&self.program, &self.ontology, prover)
+    }
+
     pub fn model_check(&self, max_states: usize) -> Result<Vec<ModelCheckReport>, String> {
         model_check::model_check_program(&self.program, &self.ontology, max_states)
     }

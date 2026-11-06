@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod bil_smt;
 pub mod builtins;
 pub mod cli;
 pub mod codegen;

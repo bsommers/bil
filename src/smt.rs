@@ -1,3 +1,4 @@
+pub use crate::bil_smt::{instantiate_entity_quantifiers, run_bil_smt, OutOfFragment};
 use crate::ast::*;
 use crate::ontology::OntologyRegistry;
 use serde::Serialize;
@@ -64,6 +65,7 @@ pub enum Prover {
     Z3,
     Cvc5,
     Vampire,
+    BilSmt,
     Auto,
 }
 
@@ -73,6 +75,7 @@ impl Prover {
             "z3" => Prover::Z3,
             "cvc5" => Prover::Cvc5,
             "vampire" => Prover::Vampire,
+            "bil-smt" => Prover::BilSmt,
             _ => Prover::Auto,
         }
     }
@@ -82,6 +85,7 @@ impl Prover {
             Prover::Z3 => "z3",
             Prover::Cvc5 => "cvc5",
             Prover::Vampire => "vampire",
+            Prover::BilSmt => "bil-smt",
             Prover::Auto => "auto(z3->cvc5->vampire)",
         }
     }
@@ -167,12 +171,25 @@ impl SolverBackend for ProcessSolver {
             Prover::Z3 => "z3",
             Prover::Cvc5 => "cvc5",
             Prover::Vampire => "vampire",
+            Prover::BilSmt => "bil-smt",
             Prover::Auto => "auto",
         }
     }
 
     fn check(&self, smt2_input: &str) -> ProverResult {
         run_smt_prover(self.prover, smt2_input)
+    }
+}
+
+pub struct BilSmtSolver;
+
+impl SolverBackend for BilSmtSolver {
+    fn name(&self) -> &str {
+        "bil-smt"
+    }
+
+    fn check(&self, smt2_input: &str) -> ProverResult {
+        run_bil_smt(smt2_input)
     }
 }
 
@@ -218,6 +235,7 @@ pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
             &["--input_syntax", "smtlib2", "--mode", "smtcomp", "-t", "5"],
             smt2_input,
         ),
+        Prover::BilSmt => run_bil_smt(smt2_input),
         Prover::Auto => {
             let z3_res = run_smt_prover(Prover::Z3, smt2_input);
             if z3_res.verdict != Verdict::Skipped {
@@ -333,9 +351,65 @@ pub fn parse_smt_model(output: &str) -> Option<String> {
     Some(format!("{{ {} }}", parts.join(", ")))
 }
 
-enum SExpr {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SExpr {
     Atom(String),
     List(Vec<SExpr>),
+}
+
+/// Strips `;...\n` line comments before tokenizing an SMT-LIB2 script.
+fn strip_smt_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_quote: Option<char> = None;
+    let mut in_comment = false;
+    for c in s.chars() {
+        if in_comment {
+            if c == '\n' {
+                in_comment = false;
+                out.push('\n');
+            }
+        } else if let Some(q) = in_quote {
+            out.push(c);
+            if c == q {
+                in_quote = None;
+            }
+        } else if c == ';' {
+            in_comment = true;
+        } else if c == '"' || c == '|' {
+            in_quote = Some(c);
+            out.push(c);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+pub fn parse_sexprs(s: &str) -> Option<Vec<SExpr>> {
+    let stripped = strip_smt_comments(s);
+    let tokens = tokenize_sexpr(&stripped);
+    let mut pos = 0;
+    let mut forms = Vec::new();
+    let mut depth = 0i32;
+    for t in &tokens {
+        if t == "(" {
+            depth += 1;
+        } else if t == ")" {
+            depth -= 1;
+            if depth < 0 {
+                return None;
+            }
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    while pos < tokens.len() {
+        let (form, next) = read_sexpr(&tokens, pos);
+        forms.push(form);
+        pos = next;
+    }
+    Some(forms)
 }
 
 fn tokenize_sexpr(s: &str) -> Vec<String> {
