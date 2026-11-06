@@ -798,14 +798,13 @@ pub fn check_ontology_consistency(
     run_smt_prover(prover, &smt)
 }
 
-/// Proves whether `child` is subsumed by `parent` ($A \sqsubseteq B$) via refutation (`OntoLogic/Solver.hs::proveSubsumptionWith`).
-pub fn prove_subsumption(
+/// Emits complete SMT-LIB2 refutation script for checking whether `child` is subsumed by `parent` ($A \sqsubseteq B$).
+pub fn emit_subsumption_smt2(
     program: &Program,
     ontology: &OntologyRegistry,
     child: &str,
     parent: &str,
-    prover: Prover,
-) -> SubsumptionResult {
+) -> String {
     let mut smt = emit_ontology_smt2_base(program, ontology);
     let cid = sanitize_smt_ident(child);
     let pid = sanitize_smt_ident(parent);
@@ -815,7 +814,18 @@ pub fn prove_subsumption(
     ));
     smt.push_str(&format!("(assert (not (subClassOf {} {})))\n", cid, pid));
     smt.push_str("(check-sat)\n");
+    smt
+}
 
+/// Proves whether `child` is subsumed by `parent` ($A \sqsubseteq B$) via refutation (`OntoLogic/Solver.hs::proveSubsumptionWith`).
+pub fn prove_subsumption(
+    program: &Program,
+    ontology: &OntologyRegistry,
+    child: &str,
+    parent: &str,
+    prover: Prover,
+) -> SubsumptionResult {
+    let smt = emit_subsumption_smt2(program, ontology, child, parent);
     let res = run_smt_prover(prover, &smt);
     match res.verdict {
         Verdict::Inconsistent => SubsumptionResult::Subsumed { prover: res.prover },

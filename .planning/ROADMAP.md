@@ -187,7 +187,7 @@ Analysis: `docs/SOLVER-CONSIDERATIONS.md` (option D). Effort is an estimate: 8 t
   - Define the fragment (quantifier-free linear integer arithmetic, booleans, `ite`, `let`, string/entity equality, uninterpreted functions over `Entity`, and universal quantifiers over `Entity` instantiated over declared `Entity` constants; differential test confirms 100% agreement with z3 across all 14 domain examples).
   - Add a `bil-smt` backend behind `--prover` in `src/smt.rs` (`solve`, `verify`, `model-check --bmc`). Outside the fragment (and before 8.1.3) it returns `unknown`, never a guess.
 - 8.1.3 **Decision procedure** for the fragment, unit-tested against z3's answers on the same queries — DONE 2026-11-06 (`src/bil_smt.rs`: Ackermannized `QF_UFLIA` lowering + DPLL(T) with exact Fourier-Motzkin / Omega `QF_LIA` and model verification; 100% agreement with z3 across all 14 domain examples, ontology consistency, subsumption, and symbolic BMC)
-- 8.1.4 **Soundness gate**
+- 8.1.4 **Soundness gate** — DONE 2026-11-06 (`src/bil_smt.rs` repo-wide differential soundness gate against z3 across all examples, seeded bugs, and inline test queries; `tests/domain_examples.rs` end-to-end domain model verification and seeded-bug suite with `bil-smt` as the only prover)
   - Differential test: every query in the repo's examples and tests gives the same sat/unsat answer as z3. Any disagreement fails CI.
   - The seeded-bug suite (`tests/domain_examples.rs`) is still caught with `bil-smt` as the only prover.
 - 8.1.5 **Wire-in**

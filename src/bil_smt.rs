@@ -260,9 +260,10 @@ pub fn instantiate_entity_quantifiers(smt2_input: &str) -> Result<String, OutOfF
 
     // Second pass: emit the quantifier-free SMT-LIB2 script with every `forall ((x Entity))`
     // expanded over the active Entity constants (or `__entity_witness` if none were declared).
+    let all_entity_consts = scope.entity_consts.clone();
     let mut out_lines = Vec::new();
-    let mut scope = Scope::default();
-    let mut stack: Vec<Scope> = Vec::new();
+    let mut declared_entities: BTreeSet<String> = BTreeSet::new();
+    let mut active_entities: Vec<String> = all_entity_consts.clone();
     let mut injected_witness = false;
 
     for form in &forms {
@@ -279,19 +280,16 @@ pub fn instantiate_entity_quantifiers(smt2_input: &str) -> Result<String, OutOfF
             "declare-const" => {
                 if let (SExpr::Atom(name), SExpr::Atom(sort_name)) = (&items[1], &items[2]) {
                     let sort = SmtSort::parse(sort_name).unwrap();
-                    if sort == SmtSort::Entity && !scope.entity_consts.contains(name) {
-                        scope.entity_consts.push(name.clone());
+                    if sort == SmtSort::Entity {
+                        if declared_entities.insert(name.clone()) {
+                            out_lines.push(render_sexpr(form));
+                        }
+                        continue;
                     }
-                    scope.consts.insert(name.clone(), sort);
                 }
                 out_lines.push(render_sexpr(form));
             }
             "define-const" => {
-                if let (SExpr::Atom(name), _, val_expr) = (&items[1], &items[2], &items[3]) {
-                    let k = eval_const_int(val_expr, &scope.defined_ints).unwrap();
-                    scope.consts.insert(name.clone(), SmtSort::Int);
-                    scope.defined_ints.insert(name.clone(), k);
-                }
                 out_lines.push(render_sexpr(form));
             }
             "declare-fun" => {
@@ -299,42 +297,36 @@ pub fn instantiate_entity_quantifiers(smt2_input: &str) -> Result<String, OutOfF
                     (&items[1], &items[2], &items[3])
                 {
                     let ret = SmtSort::parse(ret_name).unwrap();
-                    if arg_sorts.is_empty() {
-                        if ret == SmtSort::Entity && !scope.entity_consts.contains(name) {
-                            scope.entity_consts.push(name.clone());
+                    if arg_sorts.is_empty() && ret == SmtSort::Entity {
+                        if declared_entities.insert(name.clone()) {
+                            out_lines.push(render_sexpr(form));
                         }
-                        scope.consts.insert(name.clone(), ret);
-                    } else {
-                        scope.funs.insert(
-                            name.clone(),
-                            FunSig {
-                                args: vec![SmtSort::Entity; arg_sorts.len()],
-                                ret,
-                            },
-                        );
+                        continue;
                     }
                 }
                 out_lines.push(render_sexpr(form));
             }
-            "push" => {
-                stack.push(scope.clone());
-                out_lines.push(render_sexpr(form));
-            }
-            "pop" => {
-                if let Some(prev) = stack.pop() {
-                    scope = prev;
-                }
+            "push" | "pop" => {
                 out_lines.push(render_sexpr(form));
             }
             "assert" => {
-                if uses_entity_quantifier && scope.entity_consts.is_empty() && !injected_witness {
-                    let witness = "__entity_witness".to_string();
-                    out_lines.push(format!("(declare-const {} Entity)", witness));
-                    scope.entity_consts.push(witness.clone());
-                    scope.consts.insert(witness, SmtSort::Entity);
-                    injected_witness = true;
+                if uses_entity_quantifier {
+                    if active_entities.is_empty() && !injected_witness {
+                        let witness = "__entity_witness".to_string();
+                        out_lines.push(format!("(declare-const {} Entity)", witness));
+                        declared_entities.insert(witness.clone());
+                        active_entities.push(witness);
+                        injected_witness = true;
+                    } else {
+                        for ent in &all_entity_consts {
+                            if declared_entities.insert(ent.clone()) {
+                                out_lines.push(format!("(declare-const {} Entity)", ent));
+                            }
+                        }
+                    }
                 }
-                let expanded = expand_quantifiers(&items[1], &scope.entity_consts, &BTreeMap::new());
+                let expanded =
+                    expand_quantifiers(&items[1], &active_entities, &BTreeMap::new());
                 out_lines.push(format!("(assert {})", render_sexpr(&expanded)));
             }
             _ => {
@@ -2403,12 +2395,13 @@ fn dpll_solve(
             }
             LiaResult::Sat(int_model) => {
                 if disjunctions.is_empty() {
+                    let sat_bool_model = bool_model.clone();
                     lia_constraints.truncate(base_lia_len);
                     for v in assigned_bools {
                         bool_model.remove(&v);
                     }
                     return SolveOutcome::Sat {
-                        bool_model: bool_model.clone(),
+                        bool_model: sat_bool_model,
                         int_model,
                     };
                 }
@@ -2789,11 +2782,11 @@ pub fn run_bil_smt(smt2_input: &str) -> ProverResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_check::symbolic_bmc_program;
+    use crate::model_check::{emit_symbolic_bmc_smt2, symbolic_bmc_program};
     use crate::smt::{
-        attach_model, emit_ontology_consistency_smt2, find_solver_binary, parse_smt_model,
-        prove_subsumption, run_smt_incremental_batch_with_prover, run_smt_prover, Prover,
-        SolverBackend, SubsumptionResult,
+        attach_model, emit_ontology_consistency_smt2, emit_subsumption_smt2, find_solver_binary,
+        parse_smt_model, prove_subsumption, run_smt_incremental_batch_with_prover, run_smt_prover,
+        Prover, SolverBackend, SubsumptionResult,
     };
     use crate::wp::generate_obligations;
     use crate::CompilationSession;
@@ -3152,5 +3145,455 @@ mod tests {
         let res = run_smt_prover(Prover::BilSmt, valid);
         assert_eq!(res.prover, "bil-smt");
         assert_eq!(res.verdict, Verdict::Consistent);
+    }
+
+    #[test]
+    fn repo_wide_soundness_gate_matches_z3_on_all_examples_and_tests() {
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(repo_wide_soundness_gate_inner)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn repo_wide_soundness_gate_inner() {
+        let has_z3 = find_solver_binary("z3").is_some();
+
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for dir in ["examples", "examples/domains", "examples/domains/seeded_bugs"] {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|x| x == "bil"))
+                .collect();
+            files.sort();
+            for path in files {
+                let src = std::fs::read_to_string(&path).unwrap();
+                sources.push((path.display().to_string(), src));
+            }
+        }
+
+        // Inline test programs used across tests/*.rs
+        let inline_programs: &[(&str, &str)] = &[
+            (
+                "tests/cli.rs::SMT_ONLY_REFUTABLE",
+                r#"
+                fn sq(x: Int) -> Int
+                  requires x * x == 1369
+                  ensures  result == 0
+                =
+                  if true -> 0 - x fi
+                "#,
+            ),
+            (
+                "tests/cli.rs::linear_smt_only_refutable",
+                r#"
+                fn linear_smt_only(a: Int, b: Int) -> Int
+                  requires a == 37 && b == -73
+                  ensures  result == 0
+                =
+                  if true -> a + b fi
+                "#,
+            ),
+            (
+                "tests/soundness.rs::bogus_and_bad",
+                r#"
+                proof bogus()
+                  requires true
+                  ensures  false
+                {
+                  true
+                }
+                fn bad(x: Int) -> Int
+                  requires x > 0
+                  ensures  result < 0
+                =
+                  x
+                "#,
+            ),
+            (
+                "tests/soundness.rs::vacuous_src",
+                r#"
+                concept Tank { level: Int, cap: Int }
+                axiom A1: forall t in Tank : t.level > t.cap
+                axiom A2: forall t in Tank : t.cap >= t.level
+                fn impossible(t: Tank) -> Int
+                  requires t.level >= 0
+                  ensures  result < 0
+                =
+                  t.level
+                "#,
+            ),
+            (
+                "tests/soundness.rs::missed_by_bounded_src",
+                r#"
+                fn sneaky(x: Int) -> Int
+                  requires x == 7
+                  ensures  result == 0
+                =
+                  x
+                "#,
+            ),
+            (
+                "tests/soundness.rs::euclid_div_mod",
+                r#"
+                proof euclid_mod()
+                  requires true
+                  ensures  (-7) % 2 == 1 && (-7) / 2 == -4
+                {
+                  true
+                }
+                fn neg_mod(x: Int) -> Int
+                  requires x == -7
+                  ensures  result == 1
+                =
+                  x % 2
+                fn neg_div(x: Int) -> Int
+                  requires x == -7
+                  ensures  result == -4
+                =
+                  x / 2
+                "#,
+            ),
+            (
+                "tests/soundness.rs::nested_do_od_and_threshold",
+                r#"
+                fn countdown(n: Int) -> Int
+                  requires n >= 0
+                  ensures  result == 0
+                =
+                  let start = n in
+                  do c = start
+                    invariant c >= 0
+                    variant c
+                    c > 0 -> c := c - 1
+                  od then c
+
+                fn buggy_threshold(x: Int) -> Int
+                  requires x >= 0
+                  ensures  result > 0
+                =
+                  if x == 4321 -> 0
+                  [] x != 4321 -> 1
+                  fi
+                "#,
+            ),
+            (
+                "tests/soundness.rs::bmc_counters",
+                r#"
+                system BoundedCounter {
+                    state count: Int = 0
+                    state locked: Bool = false
+                    invariant CountWithinBounds:
+                        count >= 0 && count <= 3
+                    transition
+                        !locked && count < 3 -> count := count + 1
+                    []  !locked && count == 3 -> locked := true
+                    []  locked && count > 0 -> count := count - 1
+                    []  locked && count == 0 -> locked := false
+                }
+                system OverflowCounter {
+                    state count: Int = 0
+                    invariant MaxTwo:
+                        count <= 2
+                    transition
+                        count < 5 -> count := count + 1
+                    []  count >= 5 -> count := 0
+                }
+                "#,
+            ),
+            (
+                "tests/timed_guards.rs::met_and_late",
+                r#"
+                system EpiMet {
+                  state detected: Bool = false
+                  state heater_off: Bool = false
+                  state wait: Int = 0
+                  clock scan period 1ms
+                  deadline Cut: detected => heater_off within 3ms
+                  terminal heater_off
+                  transition
+                     !detected               -> detected := true
+                  [] detected && wait < 2    -> wait := wait + 1
+                  [] detected && wait >= 2   -> heater_off := true
+                }
+                system EpiLate {
+                  state detected: Bool = false
+                  state heater_off: Bool = false
+                  state wait: Int = 0
+                  clock scan period 1ms
+                  deadline Cut: detected => heater_off within 3ms
+                  terminal heater_off
+                  transition
+                     !detected               -> detected := true
+                  [] detected && wait < 3    -> wait := wait + 1
+                  [] detected && wait >= 3   -> heater_off := true
+                }
+                "#,
+            ),
+            (
+                "tests/differential.rs::gcl_and_edge_cases",
+                r#"
+                fn abs_val(x: Int) -> Int
+                    ensures result >= 0
+                = if
+                    x >= 0 -> x
+                    [] x < 0 -> -x
+                  fi
+
+                fn count_down(n: Int) -> Int
+                    requires n >= 0
+                    ensures result == 0
+                = do r = n
+                    invariant r >= 0
+                    variant r
+                    r > 0 -> r := r - 1
+                  od then r
+
+                fn loop_collatz_steps(n: Int) -> Int
+                    requires n >= 1
+                    ensures result >= 0
+                =
+                    do cur = n, steps = 0
+                        invariant cur >= 1 && steps >= 0
+                        variant cur
+                    :
+                        cur > 1 && cur % 2 == 0 -> cur := cur / 2, steps := steps + 1
+                    [] cur > 1 && cur % 2 != 0 -> cur := cur - 1, steps := steps + 1
+                    od
+                    then steps
+                "#,
+            ),
+            (
+                "tests/security.rs::keyword_fn",
+                r#"
+                fn unsafe(self: Int) -> Int
+                  requires self >= 0
+                  ensures result == self + 1
+                =
+                  self + 1
+                "#,
+            ),
+        ];
+        for (label, src) in inline_programs {
+            sources.push(((*label).to_string(), (*src).to_string()));
+        }
+
+        // Collect all individual SMT-LIB2 queries: (label, script)
+        let mut all_queries: Vec<(String, String)> = Vec::new();
+        let mut incremental_batches_checked = 0usize;
+
+        for (label, src) in &sources {
+            let session = CompilationSession::from_source(src)
+                .unwrap_or_else(|e| panic!("{}: failed to compile: {}", label, e));
+
+            // 1. Ontology consistency query when axioms or concepts exist
+            let has_axioms = session
+                .program
+                .items
+                .iter()
+                .any(|i| matches!(i, crate::ast::Item::Axiom(_)));
+            if has_axioms || !session.ontology.concepts.is_empty() {
+                let ont_smt2 =
+                    emit_ontology_consistency_smt2(&session.program, &session.ontology);
+                all_queries.push((format!("{}::ontology_consistency", label), ont_smt2));
+            }
+
+            // 2. All concept pair subsumption queries
+            let concept_names: Vec<&String> = session.ontology.concepts.keys().collect();
+            for &c1 in &concept_names {
+                for &c2 in &concept_names {
+                    if c1 != c2 {
+                        let sub_smt2 =
+                            emit_subsumption_smt2(&session.program, &session.ontology, c1, c2);
+                        all_queries.push((
+                            format!("{}::subsumption({}<:{})", label, c1, c2),
+                            sub_smt2,
+                        ));
+                    }
+                }
+            }
+
+            // 3. All WP verification obligation scripts
+            let obs = generate_obligations(&session.program, &session.ontology);
+            for ob in &obs {
+                if let Some(script) = &ob.smt2_script {
+                    all_queries.push((
+                        format!("{}::vc::{} ({})", label, ob.fn_name, ob.kind),
+                        script.clone(),
+                    ));
+                }
+            }
+
+            // 4. Incremental (push 1)/(pop 1) batch for multi-obligation functions
+            let mut fn_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for ob in &obs {
+                if let Some(script) = &ob.smt2_script {
+                    fn_groups
+                        .entry(ob.fn_name.clone())
+                        .or_default()
+                        .push(script.clone());
+                }
+            }
+            for (fn_name, scripts) in fn_groups {
+                if scripts.len() < 2 {
+                    continue;
+                }
+                let last_script = scripts.last().unwrap();
+                let Some((header, _)) = last_script.split_once(";; Refutation of VC:") else {
+                    continue;
+                };
+                let mut refutations = Vec::with_capacity(scripts.len());
+                for sc in &scripts {
+                    if let Some((_, tail)) = sc.split_once(";; Refutation of VC:") {
+                        if let Some(assert_line) =
+                            tail.lines().find(|l| l.starts_with("(assert (not "))
+                        {
+                            let inner = assert_line
+                                .strip_prefix("(assert ")
+                                .and_then(|s| s.strip_suffix(')'))
+                                .unwrap();
+                            refutations.push(inner.to_string());
+                        }
+                    }
+                }
+                if refutations.len() == scripts.len()
+                    && scripts
+                        .iter()
+                        .all(|sc| instantiate_entity_quantifiers(sc).is_ok())
+                {
+                    let (_, bil_verdicts) = run_smt_incremental_batch_with_prover(
+                        Prover::BilSmt,
+                        header,
+                        &refutations,
+                    )
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{}::{}: expected bil-smt incremental batch to succeed",
+                            label, fn_name
+                        )
+                    });
+                    for (sc, inc_v) in scripts.iter().zip(&bil_verdicts) {
+                        let single_v = run_bil_smt(sc).verdict;
+                        assert_eq!(
+                            *inc_v, single_v,
+                            "{}::{}: incremental push/pop verdict differed from standalone verdict",
+                            label, fn_name
+                        );
+                    }
+                    incremental_batches_checked += 1;
+                }
+            }
+
+            // 5. Symbolic BMC queries for k = 1..=6 on every system block
+            for item in &session.program.items {
+                if let crate::ast::Item::System(sys) = item {
+                    for k in 1..=6 {
+                        if let Some(bmc_smt2) =
+                            emit_symbolic_bmc_smt2(sys, &session.ontology, k)
+                        {
+                            all_queries.push((
+                                format!("{}::bmc::{} (k={})", label, sys.name, k),
+                                bmc_smt2,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut in_fragment_count = 0usize;
+        let mut out_of_fragment_count = 0usize;
+        let mut z3_batch = String::new();
+        let mut z3_checks: Vec<(String, Verdict, bool)> = Vec::new();
+
+        for (q_label, script) in &all_queries {
+            let in_fragment = instantiate_entity_quantifiers(script).is_ok();
+            let bil_res = run_bil_smt(script);
+
+            if in_fragment {
+                in_fragment_count += 1;
+                // Soundness Invariant 2: Every in-fragment repo query must produce a definitive verdict
+                assert!(
+                    matches!(bil_res.verdict, Verdict::Consistent | Verdict::Inconsistent),
+                    "{}: in-fragment query returned non-definitive verdict {:?}\n{}",
+                    q_label,
+                    bil_res,
+                    script
+                );
+            } else {
+                out_of_fragment_count += 1;
+                // Soundness Invariant 3: Out-of-fragment queries must return Unknown, never a guess
+                assert_eq!(
+                    bil_res.verdict,
+                    Verdict::Unknown,
+                    "{}: out-of-fragment query must return Unknown, got {:?}\n{}",
+                    q_label,
+                    bil_res,
+                    script
+                );
+            }
+
+            if has_z3 {
+                z3_batch.push_str("(reset)\n");
+                z3_batch.push_str(script);
+                z3_checks.push((q_label.clone(), bil_res.verdict, in_fragment));
+            }
+        }
+
+        assert!(
+            in_fragment_count >= 450,
+            "expected >= 450 in-fragment repo queries, got {}",
+            in_fragment_count
+        );
+        assert!(
+            out_of_fragment_count >= 5,
+            "expected >= 5 out-of-fragment repo queries (e.g. recursive_contracts, gcd_refinement, SMT_ONLY_REFUTABLE), got {}",
+            out_of_fragment_count
+        );
+        assert!(incremental_batches_checked >= 20);
+
+        if has_z3 {
+            let z3_res = run_smt_prover(Prover::Z3, &z3_batch);
+            let z3_verdicts: Vec<Verdict> = z3_res
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter_map(|l| match l {
+                    "sat" => Some(Verdict::Consistent),
+                    "unsat" => Some(Verdict::Inconsistent),
+                    "unknown" => Some(Verdict::Unknown),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                z3_verdicts.len(),
+                z3_checks.len(),
+                "expected {} z3 verdicts from batch, got {}",
+                z3_checks.len(),
+                z3_verdicts.len()
+            );
+
+            for ((q_label, bil_v, in_fragment), z3_v) in z3_checks.iter().zip(z3_verdicts) {
+                // Soundness Invariant 1: bil-smt must NEVER disagree with z3 (never SAT when z3 says UNSAT, never UNSAT when z3 says SAT)
+                let disagreed = (*bil_v == Verdict::Consistent && z3_v == Verdict::Inconsistent)
+                    || (*bil_v == Verdict::Inconsistent && z3_v == Verdict::Consistent);
+                assert!(
+                    !disagreed,
+                    "CRITICAL SOUNDNESS DISAGREEMENT on {}: bil-smt returned {:?} while z3 returned {:?}",
+                    q_label,
+                    bil_v,
+                    z3_v
+                );
+                if *in_fragment {
+                    assert_eq!(
+                        *bil_v, z3_v,
+                        "In-fragment query {} mismatch: bil-smt returned {:?} while z3 returned {:?}",
+                        q_label, bil_v, z3_v
+                    );
+                }
+            }
+        }
     }
 }

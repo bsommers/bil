@@ -10,6 +10,27 @@ fn bil(args: &[&str]) -> Output {
     Command::new(BIL).args(args).output().expect("spawn bil")
 }
 
+/// Runs `bil` with every external solver path and lookup variable poisoned so that no external
+/// solver (`z3`, `cvc5`, `vampire`) can possibly be found or spawned.
+fn bil_no_external_solvers(args: &[&str]) -> Output {
+    Command::new(BIL)
+        .args(args)
+        .env("BIL_Z3_PATH", "/nonexistent")
+        .env("BIL_Z3", "/nonexistent")
+        .env("CLIF2OL_Z3", "/nonexistent")
+        .env("BIL_CVC5_PATH", "/nonexistent")
+        .env("BIL_CVC5", "/nonexistent")
+        .env("CLIF2OL_CVC5", "/nonexistent")
+        .env("BIL_VAMPIRE_PATH", "/nonexistent")
+        .env("BIL_VAMPIRE", "/nonexistent")
+        .env("CLIF2OL_VAMPIRE", "/nonexistent")
+        .env("BIL_SOLVER_DIR", "/nonexistent")
+        .env("HOME", "/nonexistent")
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("spawn bil without external solvers")
+}
+
 fn text(out: &Output) -> String {
     format!(
         "{}{}",
@@ -64,6 +85,59 @@ fn check_domain_model(p: &str) {
                 "{p}: every obligation should be proved by SMT:\n{t}"
             );
         }
+    }
+}
+
+#[test]
+fn every_domain_model_verifies_with_bil_smt_only() {
+    let files = bil_files("examples/domains");
+    assert!(files.len() >= 14, "expected the domain models, found {files:?}");
+    std::thread::scope(|scope| {
+        for path in &files {
+            scope.spawn(move || check_domain_model_bil_smt_only(path.to_str().unwrap()));
+        }
+    });
+}
+
+fn check_domain_model_bil_smt_only(p: &str) {
+    for cmd in ["check", "verify", "model-check", "run", "vm"] {
+        let out = if cmd == "verify" {
+            bil_no_external_solvers(&[cmd, p, "--prover", "bil-smt"])
+        } else {
+            bil_no_external_solvers(&[cmd, p])
+        };
+        let t = text(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "bil {cmd} {p} (bil-smt only) failed:\n{t}"
+        );
+        if cmd == "verify" {
+            assert!(
+                t.contains("[PROVED (by bil-smt)]"),
+                "{p}: expected PROVED (by bil-smt):\n{t}"
+            );
+            assert!(
+                !t.contains("BOUNDED") && !t.contains("REFUTED"),
+                "{p}: every obligation should be proved by bil-smt:\n{t}"
+            );
+        }
+    }
+    if ["control_antiwindup_pi.bil", "process_safety_reactor.bil"]
+        .iter()
+        .any(|name| p.ends_with(name))
+    {
+        let out = bil_no_external_solvers(&["model-check", p, "--bmc", "3", "--prover", "bil-smt"]);
+        let t = text(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "bil model-check --bmc 3 --prover bil-smt {p} failed:\n{t}"
+        );
+        assert!(
+            t.contains("[BMC PROVED SAFE (k=3)] Prover `bil-smt`"),
+            "{p}: expected BMC PROVED SAFE from bil-smt:\n{t}"
+        );
     }
 }
 
@@ -155,5 +229,54 @@ fn every_seeded_bug_is_caught() {
         let t = text(&out);
         assert_eq!(out.status.code(), Some(*code), "bil {cmd} {file}:\n{t}");
         assert!(t.contains(needle), "bil {cmd} {file}: missing {needle:?}:\n{t}");
+    }
+}
+
+#[test]
+fn every_seeded_bug_is_caught_with_bil_smt_only() {
+    let dir = Path::new("examples/domains/seeded_bugs");
+    let listed: Vec<PathBuf> = SEEDED.iter().map(|(f, ..)| dir.join(f)).collect();
+    assert_eq!(
+        bil_files(dir.to_str().unwrap()),
+        listed,
+        "every seeded bug needs an expectation here"
+    );
+    for (file, cmd, code, needle) in SEEDED {
+        let p = dir.join(file);
+        let p_str = p.to_str().unwrap();
+        let out = if *cmd == "verify" {
+            bil_no_external_solvers(&[cmd, p_str, "--prover", "bil-smt"])
+        } else {
+            bil_no_external_solvers(&[cmd, p_str])
+        };
+        let t = text(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(*code),
+            "bil {cmd} {file} (bil-smt only):\n{t}"
+        );
+        assert!(
+            t.contains(needle),
+            "bil {cmd} {file} (bil-smt only): missing {needle:?}:\n{t}"
+        );
+        if *file == "reactor_trip_shared_input.bil" {
+            assert!(
+                t.contains("[PROVED (by bil-smt)] fn `vote_2oo3`"),
+                "expected vote_2oo3 proved by bil-smt:\n{t}"
+            );
+            assert!(
+                t.contains("[SMT bil-smt: consistent (SAT)"),
+                "expected bil-smt SAT refutation on high_temp_trip:\n{t}"
+            );
+            assert!(
+                t.contains("Counterexample: {")
+                    && t.contains("setpoint =")
+                    && t.contains("t1 =")
+                    && t.contains("t2 =")
+                    && t.contains("t3 ="),
+                "expected concrete counterexample values, got:\n{t}"
+            );
+            assert!(!t.contains("SMT model: sat"), "unexpected raw sat:\n{t}");
+        }
     }
 }
