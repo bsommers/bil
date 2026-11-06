@@ -179,7 +179,7 @@ Analysis: `docs/SOLVER-CONSIDERATIONS.md` (option D). Effort is an estimate: 8 t
 - **Non-goals**: beating z3; a general SMT solver (option E); removing the external provers.
 
 ### Phase 8.1: In-repo solver for a fixed fragment
-- 8.1.1 **Measure** (about 1 day, no changes to `src/`)
+- 8.1.1 **Measure** (about 1 day, no changes to `src/`) — DONE 2026-10-30, results in `docs/SOLVER-MEASUREMENT.md`; gate passed (narrow fragment)
   - Run the 14 domain examples and record which SMT features each emitted query uses (`Int`, `Real`, `forall`, `exists`, uninterpreted sorts and functions).
   - Record what `solve` and `model-check --bmc` do with no solver installed.
   - **Decision gate**: continue only if the decidable fragment covers most queries. Otherwise stop and reconsider options B, C or F.

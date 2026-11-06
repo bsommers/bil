@@ -23,6 +23,12 @@
 
 ---
 
+## Which commands need an SMT solver
+
+`bil` has no built-in SMT solver. It pipes SMT-LIB2 to z3, cvc5 or vampire if one is installed (`BIL_<NAME>_PATH`, `BIL_SOLVER_DIR`, `~/.local/bin`, then `PATH`). `check`, `run`, `vm`, `build`, `emit-verus` and explicit-state `model-check` do not need one. `verify` falls back to sampled (`BOUNDED`) results and exits 1 unless `--allow-bounded`. `solve` and `model-check --bmc` report that no solver ran. Measured details: `docs/SOLVER-MEASUREMENT.md`.
+
+---
+
 ## CLI Usage
 
 ```bash
