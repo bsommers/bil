@@ -296,7 +296,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                     }
                     Ok(SubsumptionResult::Unknown { detail }) => {
                         println!("⚠️  Subsumption Unknown: {}", detail);
-                        0
+                        1
                     }
                     Err(e) => {
                         eprintln!("{}", e);
@@ -326,7 +326,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                             }
                             Verdict::Unknown | Verdict::Skipped => {
                                 println!("⚠️  SMT Solver Result ({}): {}", res.prover, res.detail);
-                                0
+                                1
                             }
                         }
                     }
@@ -515,9 +515,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             if cmd == "model-check" || cmd == "all" {
                 if let Some(k) = bmc_k {
                     let bmc_reports = session.symbolic_bmc(k, prover);
-                    let any_unsat_violation = bmc_reports
-                        .iter()
-                        .any(|r| r.verdict == Verdict::Consistent);
+                    let any_not_proved = bmc_reports.iter().any(|r| !r.safe_up_to_k);
                     if json_output && cmd == "model-check" {
                         if let Ok(js) = serde_json::to_string_pretty(&bmc_reports) {
                             println!("{}", js);
@@ -553,7 +551,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                              outside the Int/Bool SMT subset, so no verdict was produced"
                         );
                     }
-                    if any_unsat_violation || !unencodable.is_empty() {
+                    if any_not_proved || !unencodable.is_empty() {
                         return 1;
                     }
                 } else {

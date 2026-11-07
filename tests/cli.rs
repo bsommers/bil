@@ -220,6 +220,25 @@ fn verify_exits_nonzero_when_solver_fails_and_sampling_misses() {
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
 }
 
+fn bil_no_external_solvers(args: &[&str]) -> Output {
+    Command::new(BIL)
+        .args(args)
+        .env("BIL_Z3_PATH", "/nonexistent")
+        .env("BIL_Z3", "/nonexistent")
+        .env("CLIF2OL_Z3", "/nonexistent")
+        .env("BIL_CVC5_PATH", "/nonexistent")
+        .env("BIL_CVC5", "/nonexistent")
+        .env("CLIF2OL_CVC5", "/nonexistent")
+        .env("BIL_VAMPIRE_PATH", "/nonexistent")
+        .env("BIL_VAMPIRE", "/nonexistent")
+        .env("CLIF2OL_VAMPIRE", "/nonexistent")
+        .env("BIL_SOLVER_DIR", "/nonexistent")
+        .env("HOME", "/nonexistent")
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("spawn bil")
+}
+
 #[test]
 fn prover_auto_falls_back_to_bil_smt_when_no_external_solver_is_installed() {
     let dir = scratch_dir("auto-fallback-bil-smt");
@@ -227,47 +246,70 @@ fn prover_auto_falls_back_to_bil_smt_when_no_external_solver_is_installed() {
         &dir,
         "fn inc(x: Int) -> Int requires x >= 0 ensures result > x = x + 1\n",
     );
-    let out = Command::new(BIL)
-        .args(["verify", valid_src.to_str().unwrap()])
-        .env("BIL_Z3_PATH", "/nonexistent")
-        .env("BIL_Z3", "/nonexistent")
-        .env("CLIF2OL_Z3", "/nonexistent")
-        .env("BIL_CVC5_PATH", "/nonexistent")
-        .env("BIL_CVC5", "/nonexistent")
-        .env("CLIF2OL_CVC5", "/nonexistent")
-        .env("BIL_VAMPIRE_PATH", "/nonexistent")
-        .env("BIL_VAMPIRE", "/nonexistent")
-        .env("CLIF2OL_VAMPIRE", "/nonexistent")
-        .env("BIL_SOLVER_DIR", "/nonexistent")
-        .env("HOME", "/nonexistent")
-        .env("PATH", "/nonexistent")
-        .output()
-        .expect("spawn bil");
+    let out = bil_no_external_solvers(&["verify", valid_src.to_str().unwrap()]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{}", text);
     assert!(text.contains("[PROVED (by bil-smt)]"), "{}", text);
+    assert!(!text.contains("vampire"), "{}", text);
 
     // Out-of-fragment query (nonlinear x * x == 1369) returns Unknown from bil-smt,
     // leaving only bounded evidence, which exits 1 unless --allow-bounded is passed.
     let nonlinear_src = write_source(&dir, SMT_ONLY_REFUTABLE);
-    let out_nl = Command::new(BIL)
-        .args(["verify", nonlinear_src.to_str().unwrap()])
-        .env("BIL_Z3_PATH", "/nonexistent")
-        .env("BIL_Z3", "/nonexistent")
-        .env("CLIF2OL_Z3", "/nonexistent")
-        .env("BIL_CVC5_PATH", "/nonexistent")
-        .env("BIL_CVC5", "/nonexistent")
-        .env("CLIF2OL_CVC5", "/nonexistent")
-        .env("BIL_VAMPIRE_PATH", "/nonexistent")
-        .env("BIL_VAMPIRE", "/nonexistent")
-        .env("CLIF2OL_VAMPIRE", "/nonexistent")
-        .env("BIL_SOLVER_DIR", "/nonexistent")
-        .env("HOME", "/nonexistent")
-        .env("PATH", "/nonexistent")
-        .output()
-        .expect("spawn bil");
+    let out_nl = bil_no_external_solvers(&["verify", nonlinear_src.to_str().unwrap()]);
     assert_eq!(out_nl.status.code(), Some(1), "{}", stdout(&out_nl));
     assert!(stdout(&out_nl).contains("[BOUNDED"), "{}", stdout(&out_nl));
+    assert!(!stdout(&out_nl).contains("vampire"), "{}", stdout(&out_nl));
+}
+
+#[test]
+fn solve_and_bmc_exit_nonzero_when_no_verdict_is_produced() {
+    let dir = scratch_dir("no-verdict-exit");
+    // Out-of-fragment ontology axiom (nonlinear multiplication on Entity field)
+    let nl_ont = write_source(
+        &dir,
+        "concept Box { side: Int }\n\
+         concept Cube <: Box { vol: Int }\n\
+         axiom NonLin: forall b in Box : b.side * b.side >= 0\n",
+    );
+    let nl_path = nl_ont.to_str().unwrap();
+
+    // 1. `bil solve` on an out-of-fragment ontology with no external solver returns Unknown -> exit 1
+    let solve_nl = bil_no_external_solvers(&["solve", nl_path]);
+    let solve_nl_text = stdout(&solve_nl);
+    assert_eq!(solve_nl.status.code(), Some(1), "{}", solve_nl_text);
+    assert!(solve_nl_text.contains("no external solver found"), "{}", solve_nl_text);
+    assert!(!solve_nl_text.contains("vampire"), "{}", solve_nl_text);
+
+    // 2. `bil solve --subsumes` on an out-of-fragment ontology with no external solver returns Unknown -> exit 1
+    let sub_nl = bil_no_external_solvers(&["solve", nl_path, "--subsumes", "Cube", "Box"]);
+    let sub_nl_text = stdout(&sub_nl);
+    assert_eq!(sub_nl.status.code(), Some(1), "{}", sub_nl_text);
+    assert!(sub_nl_text.contains("Subsumption Unknown"), "{}", sub_nl_text);
+    assert!(!sub_nl_text.contains("vampire"), "{}", sub_nl_text);
+
+    // 3. `bil solve` with an explicitly requested missing solver returns Skipped -> exit 1
+    let solve_skip = bil_no_external_solvers(&["solve", nl_path, "--prover", "z3"]);
+    assert_eq!(solve_skip.status.code(), Some(1), "{}", stdout(&solve_skip));
+
+    // 4. `bil model-check --bmc` on a system with nonlinear invariant returns INCONCLUSIVE -> exit 1 (text & json)
+    let nl_sys = write_source(
+        &dir,
+        "system NonLinSys {\n\
+           state x: Int = 2\n\
+           invariant SqPos: x * x >= 0\n\
+           terminal x == 4\n\
+           transition x < 4 -> x := x + 1\n\
+         }\n",
+    );
+    let sys_path = nl_sys.to_str().unwrap();
+    let bmc_inc = bil_no_external_solvers(&["model-check", sys_path, "--bmc", "2"]);
+    let bmc_text = stdout(&bmc_inc);
+    assert_eq!(bmc_inc.status.code(), Some(1), "{}", bmc_text);
+    assert!(bmc_text.contains("[BMC INCONCLUSIVE"), "{}", bmc_text);
+    assert!(!bmc_text.contains("vampire"), "{}", bmc_text);
+
+    let bmc_json = bil_no_external_solvers(&["model-check", sys_path, "--bmc=2", "--json"]);
+    assert_eq!(bmc_json.status.code(), Some(1), "{}", stdout(&bmc_json));
 }
 
 #[test]

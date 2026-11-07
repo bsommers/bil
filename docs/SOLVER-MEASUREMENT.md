@@ -66,5 +66,5 @@ Limits of this evidence:
 
 ## Follow-ups found
 
-1. `model-check --bmc` (INCONCLUSIVE) and `solve` (solver not found) exit 0 without a verdict. Decide whether they should exit non-zero like `verify`.
-2. Messages say `vampire` when no solver is installed at all.
+1. `model-check --bmc` (INCONCLUSIVE) and `solve` (solver not found) exit 0 without a verdict. Decide whether they should exit non-zero like `verify`. — **Resolved**: both now exit `1` whenever no verdict (`unknown` or `skipped`) is produced.
+2. Messages say `vampire` when no solver is installed at all. — **Resolved**: `--prover auto` falls back to in-repo `bil-smt`, and on out-of-fragment queries reports `bil-smt` with `(no external solver found)` rather than `vampire`.

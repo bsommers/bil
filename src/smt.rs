@@ -249,7 +249,11 @@ pub fn run_smt_prover(prover: Prover, smt2_input: &str) -> ProverResult {
             if vamp_res.verdict != Verdict::Skipped {
                 return vamp_res;
             }
-            run_smt_prover(Prover::BilSmt, smt2_input)
+            let mut bil_res = run_smt_prover(Prover::BilSmt, smt2_input);
+            if bil_res.verdict == Verdict::Unknown {
+                bil_res.detail = format!("{} (no external solver found)", bil_res.detail);
+            }
+            bil_res
         }
     }
 }

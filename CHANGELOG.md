@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`bil solve` and `bil model-check --bmc` exit `1` when no verdict is produced.** When `bil solve` (or `bil solve --subsumes`) gets `unknown` or `skipped` instead of a `sat`/`unsat` verdict, or when `bil model-check --bmc` prints `[BMC INCONCLUSIVE]`, the CLI now exits `1` instead of `0` (matching `bil verify`). When `--prover auto` finds no external solver and `bil-smt` returns `unknown` on an out-of-fragment query, the diagnostic reports `bil-smt` with `(no external solver found)` instead of naming `vampire`.
+
 ## [v0.8.0] - 2026-11-06
 
 ### Added
